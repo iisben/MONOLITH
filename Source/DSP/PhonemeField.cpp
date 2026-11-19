@@ -106,6 +106,30 @@ namespace
     {
         return std::exp (db * 0.1151292546497022842f);
     }
+
+    struct PrecomputedLogTable
+    {
+        std::array<std::array<float, 5>, PhonemeField::kNumStates> logFreq {};
+        std::array<std::array<float, 5>, PhonemeField::kNumStates> logBw {};
+
+        PrecomputedLogTable()
+        {
+            for (size_t k = 0; k < PhonemeField::kNumStates; ++k)
+            {
+                for (size_t f = 0; f < 5; ++f)
+                {
+                    logFreq[k][f] = std::log (kTenorFormants[k].freq[f]);
+                    logBw[k][f]   = std::log (kTenorFormants[k].bw[f]);
+                }
+            }
+        }
+    };
+
+    const PrecomputedLogTable& getLogTable() noexcept
+    {
+        static const PrecomputedLogTable table;
+        return table;
+    }
 } // namespace
 
 const std::array<PhonemeAnchor, PhonemeField::kNumStates>& PhonemeField::getAnchors() noexcept
@@ -157,14 +181,15 @@ FormantTarget PhonemeField::evaluate (float x, float y,
     float breathAcc = 0.0f;
     float nasalAcc  = 0.0f;
 
+    const auto& logTbl = getLogTable();
     for (size_t k = 0; k < kNumStates; ++k)
     {
         const float w = weights[k] * invWeight;
         const auto& spec = kTenorFormants[k];
         for (size_t f = 0; f < 5; ++f)
         {
-            logFreqAcc[f] += w * std::log (spec.freq[f]);
-            logBwAcc[f]   += w * std::log (spec.bw[f]);
+            logFreqAcc[f] += w * logTbl.logFreq[k][f];
+            logBwAcc[f]   += w * logTbl.logBw[k][f];
             gainDbAcc[f]  += w * spec.gainDb[f];
         }
         voicedAcc += w * spec.voicedMix;

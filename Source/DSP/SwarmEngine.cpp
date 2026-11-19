@@ -17,6 +17,11 @@ namespace
     {
         return std::exp (db * 0.1151292546497022842f);
     }
+
+    inline void smoothToward (float& state, float target, float alpha) noexcept
+    {
+        state += alpha * (target - state);
+    }
 } // namespace
 
 void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::AudioProcessorValueTreeState& apvts)
@@ -24,7 +29,6 @@ void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::Audi
     sr = std::max (8000.0, sampleRate);
     preparedMaxBlock = std::max (32, maxBlockSize);
 
-    // Cache all 41 parameter pointers once on prepare (never look up strings on audio thread)
     ptrs.phonemeX       = apvts.getRawParameterValue (params::phonemeX);
     ptrs.phonemeY       = apvts.getRawParameterValue (params::phonemeY);
     ptrs.orbitEnable    = apvts.getRawParameterValue (params::orbitEnable);
@@ -72,8 +76,9 @@ void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::Audi
     ptrs.glideTime      = apvts.getRawParameterValue (params::glideTime);
     ptrs.expressionLevel= apvts.getRawParameterValue (params::expressionLevel);
 
-    // Ensure shared LF glottal tables are initialized outside processBlock()
+    // Pre-initialize shared read-only static tables outside processBlock()
     (void) LfGlottalTables::instance();
+    (void) PhonemeField::evaluate (0.5f, 0.8f, VocalRegister::Tenor, 220.0f, 0.0f, 0.5f);
 
     for (int i = 0; i < kMaxVoices; ++i)
         voices[static_cast<size_t> (i)].prepare (sr, preparedMaxBlock, i);
@@ -84,18 +89,14 @@ void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::Audi
     busL.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
     busR.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
 
-    smoothExpr.reset (sr, 0.035);
     smoothMasterGain.reset (sr, 0.025);
-    smoothColossus.reset (sr, 0.030);
-    smoothSpecter.reset (sr, 0.030);
-    smoothRot.reset (sr, 0.030);
-    smoothAbyss.reset (sr, 0.030);
+    const float initGain = dbToGain (loadParam (ptrs.masterGain, params::defaults::masterGain));
+    smoothMasterGain.setCurrentAndTargetValue (initGain);
 
     const float initExpr = loadParam (ptrs.expressionLevel, params::defaults::expressionLevel);
     lastParamExpression = initExpr;
     midiModWheel = initExpr;
     uiExpression.store (initExpr, std::memory_order_relaxed);
-    smoothExpr.setCurrentAndTargetValue (initExpr);
 
     reset();
 }
@@ -111,18 +112,19 @@ void SwarmEngine::reset() noexcept
     std::fill (busL.begin(), busL.end(), 0.0f);
     std::fill (busR.begin(), busR.end(), 0.0f);
 
-    pitchBendSemitones  = 0.0f;
-    channelAftertouch   = 0.0f;
-    sustainPedalDown    = false;
-    cc64FreezeActive    = false;
-    lastMidiFreezeState = false;
+    pitchBendSemitones = 0.0f;
+    channelAftertouch  = 0.0f;
+    sustainPedalDown   = false;
+    cc64FreezeActive   = false;
     sustainedNotes.fill (false);
     heldNotes.fill (-1);
     heldVelocities.fill (0.0f);
-    heldCount           = 0;
-    lastTriggeredNote   = -1;
-    sampleCounter       = 0;
-    midiCc1Received     = false;
+    heldCount          = 0;
+    lastTriggeredNote  = -1;
+    sampleCounter      = 0;
+    noteTriggerSeq     = 0;
+    midiCc1Received    = false;
+    smoothersPrimed    = false;
 }
 
 int SwarmEngine::getLatencySamples() const noexcept
@@ -147,14 +149,14 @@ void SwarmEngine::panicImmediate() noexcept
 
 int SwarmEngine::allocateVoiceIndex() noexcept
 {
-    // 1. Free inactive voice
+    // 1. Prefer completely free inactive voice
     for (int i = 0; i < kMaxVoices; ++i)
     {
         if (! voices[static_cast<size_t> (i)].isActive())
             return i;
     }
 
-    // 2. Steal oldest releasing voice with lowest amplitude
+    // 2. Steal releasing voice with lowest amplitude
     int bestIdx = -1;
     float lowestScore = 1.0e9f;
     for (int i = 0; i < kMaxVoices; ++i)
@@ -172,7 +174,7 @@ int SwarmEngine::allocateVoiceIndex() noexcept
     if (bestIdx >= 0)
         return bestIdx;
 
-    // 3. Steal oldest/quietest active voice
+    // 3. Steal chronologically oldest active voice (using monotonic noteTriggerSeq)
     uint64_t oldestAge = std::numeric_limits<uint64_t>::max();
     bestIdx = 0;
     for (int i = 0; i < kMaxVoices; ++i)
@@ -184,7 +186,6 @@ int SwarmEngine::allocateVoiceIndex() noexcept
             bestIdx = i;
         }
     }
-    voices[static_cast<size_t> (bestIdx)].forceFastRelease();
     return bestIdx;
 }
 
@@ -192,10 +193,10 @@ void SwarmEngine::triggerNoteOn (int midiNote, float velocity01, bool legatoOn, 
 {
     const int note = std::clamp (midiNote, 0, 127);
     const float vel = std::clamp (velocity01, 0.05f, 1.0f);
+    const uint64_t stamp = ++noteTriggerSeq;
 
     if (legatoOn)
     {
-        // Track held note stack without allocating
         int existingPos = -1;
         for (int i = 0; i < heldCount; ++i)
         {
@@ -212,7 +213,6 @@ void SwarmEngine::triggerNoteOn (int midiNote, float velocity01, bool legatoOn, 
             ++heldCount;
         }
 
-        // Reuse primary active voice (monophonic legato choir glide) if one is already sounding
         if (heldCount > 1 && voices[0].isActive())
         {
             voices[0].glideToNote (note, vel, glideSec);
@@ -220,32 +220,34 @@ void SwarmEngine::triggerNoteOn (int midiNote, float velocity01, bool legatoOn, 
             return;
         }
 
-        // Silence extra voices cleanly and start note on voice 0
         for (int i = 1; i < kMaxVoices; ++i)
         {
             if (voices[static_cast<size_t> (i)].isActive())
                 voices[static_cast<size_t> (i)].forceFastRelease();
         }
-        voices[0].startNote (note, vel, glideSec);
+        voices[0].startNote (note, vel, glideSec, stamp);
         lastTriggeredNote = note;
         return;
     }
 
-    // Polyphonic mode: retrigger same note cleanly if already active, else allocate
     sustainedNotes[static_cast<size_t> (note)] = false;
+
+    // If the same note is currently held (duplicate NoteOn without NoteOff), retrigger that voice cleanly
     for (int i = 0; i < kMaxVoices; ++i)
     {
         if (voices[static_cast<size_t> (i)].isActive()
+            && ! voices[static_cast<size_t> (i)].isReleasing()
             && voices[static_cast<size_t> (i)].getMidiNote() == note)
         {
-            voices[static_cast<size_t> (i)].startNote (note, vel, glideSec);
+            voices[static_cast<size_t> (i)].startNote (note, vel, glideSec, stamp);
             lastTriggeredNote = note;
             return;
         }
     }
 
+    // Otherwise allocate a free voice first so releasing tails of the same note overlap organically
     const int idx = allocateVoiceIndex();
-    voices[static_cast<size_t> (idx)].startNote (note, vel, glideSec);
+    voices[static_cast<size_t> (idx)].startNote (note, vel, glideSec, stamp);
     lastTriggeredNote = note;
 }
 
@@ -331,12 +333,12 @@ void SwarmEngine::handleMidiMessage (const juce::MidiMessage& msg,
         const int cc  = msg.getControllerNumber();
         const int val = msg.getControllerValue();
 
-        if (cc == 1) // Mod Wheel -> Expression swell
+        if (cc == 1)
         {
             midiModWheel = static_cast<float> (val) / 127.0f;
             midiCc1Received = true;
         }
-        else if (cc == 64) // Sustain or Freeze pedal
+        else if (cc == 64)
         {
             const bool down = val >= 64;
             if (cc64TriggersFreeze)
@@ -366,7 +368,7 @@ void SwarmEngine::handleMidiMessage (const juce::MidiMessage& msg,
                 }
             }
         }
-        else if (cc == 120 || cc == 123) // All Sound Off / All Notes Off
+        else if (cc == 120 || cc == 123)
         {
             for (auto& v : voices)
                 v.stopNote (cc == 123);
@@ -392,7 +394,6 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
     if (panicRequested.exchange (false, std::memory_order_acq_rel))
         panicImmediate();
 
-    // Clear extra channels beyond stereo
     for (int ch = 2; ch < numChannels; ++ch)
         buffer.clear (ch, 0, totalSamples);
 
@@ -448,7 +449,6 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
     const float glideSec       = loadParam (ptrs.glideTime, params::defaults::glideTime);
     const float paramExpr      = loadParam (ptrs.expressionLevel, params::defaults::expressionLevel);
 
-    // Track whether parameter/UI changed externally (preset/automation/drag) vs MIDI CC1
     if (uiExprTouched.exchange (false, std::memory_order_acq_rel)
         || std::abs (paramExpr - lastParamExpression) > 1.0e-4f)
     {
@@ -456,171 +456,241 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
         midiCc1Received = false;
     }
 
-    // Handle MIDI events up-front; if MIDI timestamps span chunks we still safely render in <= preparedMaxBlock chunks
-    for (const auto metadata : midiMessages)
-        handleMidiMessage (metadata.getMessage(), legatoOn, glideSec, cc64FreezeOn);
-
-    const float exprTarget = midiCc1Received ? midiModWheel : paramExpr;
-    smoothExpr.setTargetValue (exprTarget);
-    smoothColossus.setTargetValue (colossusTarget);
-    smoothSpecter.setTargetValue (specterTarget);
-    smoothRot.setTargetValue (rotTarget);
-    smoothAbyss.setTargetValue (abyssTarget);
-
-    const float cVal = smoothColossus.getNextValue();
-    const float sVal = smoothSpecter.getNextValue();
-    const float rVal = smoothRot.getNextValue();
-    const float aVal = smoothAbyss.getNextValue();
-    smoothColossus.skip (std::max (0, totalSamples - 1));
-    smoothSpecter.skip (std::max (0, totalSamples - 1));
-    smoothRot.skip (std::max (0, totalSamples - 1));
-    smoothAbyss.skip (std::max (0, totalSamples - 1));
-
-    // Curved non-destructive macro evaluation + loudness compensation
-    const float cCurve = cVal * (0.65f + 0.35f * cVal);
-    const float sCurve = sVal * (0.65f + 0.35f * sVal);
-    const float rCurve = rVal * (0.65f + 0.35f * rVal);
-    const float aCurve = aVal * (0.65f + 0.35f * aVal);
-
-    const float effSize   = std::clamp (baseEnsSize + 10.0f * cCurve, 1.0f, 24.0f);
-    const float effSpread = std::clamp (baseSpread + 0.30f * cCurve, 0.0f, 1.0f);
-    const float effSub    = std::clamp (baseSub + 0.45f * cCurve + 0.16f * aCurve, 0.0f, 1.0f);
-    const float effCrown  = std::clamp (baseCrown + 0.35f * cCurve + 0.25f * sCurve, 0.0f, 1.0f);
-
-    const float effBreath = std::clamp (baseBreath + 0.48f * sCurve, 0.0f, 1.0f);
-    const float effTension = std::clamp (baseTension + 0.22f * cCurve - 0.38f * sCurve, 0.0f, 1.0f);
-    const float effThroat = std::clamp (baseThroat - 2.2f * sCurve - 1.8f * rCurve, -12.0f, 12.0f);
-
-    const float effDrive  = std::clamp (baseDrive + 0.52f * rCurve + 0.12f * cCurve, 0.0f, 1.0f);
-    const float effTape   = std::clamp (baseTape + 0.58f * rCurve + 0.10f * sCurve, 0.0f, 1.0f);
-    const float effOxide  = std::clamp (baseOxide + 0.48f * rCurve, 0.0f, 1.0f);
-
-    const float effSpaceMix   = std::clamp (baseSpaceMix + 0.32f * aCurve + 0.14f * cCurve + 0.14f * sCurve, 0.0f, 1.0f);
-    const float effSpaceDecay = std::clamp (baseSpaceDecay + 0.28f * aCurve + 0.12f * cCurve, 0.0f, 1.0f);
-    const float effSpaceDamp  = std::clamp (baseSpaceDamp + 0.34f * aCurve, 0.0f, 1.0f);
-    const float effShimmer    = std::clamp (baseShimmer + 0.42f * sCurve + 0.22f * aCurve, 0.0f, 1.0f);
-
-    // Gentle loudness compensation when stacking Colossus/Rot so clipping stays controlled
-    const float compDb = -1.8f * cCurve - 1.2f * rCurve;
-    smoothMasterGain.setTargetValue (dbToGain (masterGainDb + compDb));
-
-    // Advance 2D Organic Orbit engine and pull Specter gently toward Hollow/Whisper quadrant
-    orbitEngine.advance (totalSamples, orbitOn, orbitRateHz, orbitDepth01, orbitSyncOn, hostBpm, basePhX, basePhY);
-    const float orbitX = orbitEngine.getEffectiveX();
-    const float orbitY = orbitEngine.getEffectiveY();
-    const float effPhX = std::clamp (orbitX + sCurve * (0.45f - orbitX) * 0.55f, 0.0f, 1.0f);
-    const float effPhY = std::clamp (orbitY + sCurve * (0.20f - orbitY) * 0.65f, 0.0f, 1.0f);
-
-    // Dynamic 24-virtual-singer budgeting across active voices
-    int activeCount = 0;
-    for (const auto& v : voices)
+    if (! smoothersPrimed)
     {
-        if (v.isActive())
-            ++activeCount;
+        smPhX             = basePhX;
+        smPhY             = basePhY;
+        smEnsSize         = baseEnsSize;
+        smSpread          = baseSpread;
+        smVibrato         = baseVibrato;
+        smTension         = baseTension;
+        smBreath          = baseBreath;
+        smThroat          = baseThroat;
+        smFocus           = baseFocus;
+        smSub             = baseSub;
+        smCrown           = baseCrown;
+        smDrive           = baseDrive;
+        smTape            = baseTape;
+        smOxide           = baseOxide;
+        smScrewPitch      = baseScrewPitch;
+        smScrewDepth      = baseScrewDepth;
+        smPitchBend       = pitchBendSemitones;
+        smAftertouch      = channelAftertouch;
+        smExpr            = midiCc1Received ? midiModWheel : paramExpr;
+        smColossus        = colossusTarget;
+        smSpecter         = specterTarget;
+        smRot             = rotTarget;
+        smAbyss           = abyssTarget;
+        smSingersPerVoice = 1.0f + (baseEnsSize - 1.0f) * (7.0f / 23.0f);
+        smoothersPrimed   = true;
     }
-
-    const float desiredSingersPerVoice = 1.0f + (effSize - 1.0f) * (7.0f / 23.0f);
-    float singersPerVoice = desiredSingersPerVoice;
-    if (activeCount >= 4)
-    {
-        const float budgetCap = 24.0f / static_cast<float> (activeCount);
-        const float minStereo = (effSize >= 2.0f) ? 2.0f : 1.0f;
-        singersPerVoice = std::clamp (std::min (desiredSingersPerVoice, budgetCap), minStereo, 8.0f);
-    }
-
-    VoiceRenderParams vParams;
-    vParams.phonemeX          = effPhX;
-    vParams.phonemeY          = effPhY;
-    vParams.regMode           = regMode;
-    vParams.singersTarget     = singersPerVoice;
-    vParams.spread01          = effSpread;
-    vParams.vibratoDepth01    = baseVibrato;
-    vParams.attackSec         = baseAttack;
-    vParams.releaseSec        = baseRelease;
-    vParams.onsetMode         = onsetModeVal;
-    vParams.onsetAmount01     = baseOnsetAmt;
-    vParams.glottalTension01  = effTension;
-    vParams.breathAmount01    = effBreath;
-    vParams.throatShiftSt     = effThroat;
-    vParams.formantFocus01    = baseFocus;
-    vParams.subAbyss01        = effSub;
-    vParams.spectralCrown01   = effCrown;
-    vParams.drive01           = effDrive;
-    vParams.tapeInstability01 = effTape;
-    vParams.oxideDamping01    = effOxide;
-    vParams.screwPitchSt      = baseScrewPitch;
-    vParams.screwDepth01      = baseScrewDepth;
-    vParams.oversample4x      = os4x;
-    vParams.pitchBendSt       = pitchBendSemitones;
-    vParams.aftertouch01      = channelAftertouch;
-    vParams.glideTimeSec      = glideSec;
-
-    const bool freezeOn = uiFreeze || (cc64FreezeOn && cc64FreezeActive);
 
     std::array<float, 5> formantAcc {};
-    float breathAcc = 0.0f;
-    float sumSqL = 0.0f;
-    float sumSqR = 0.0f;
-    float peakL  = 0.0f;
-    float peakR  = 0.0f;
+    float breathAcc   = 0.0f;
+    float sumSqL      = 0.0f;
+    float sumSqR      = 0.0f;
+    float peakL       = 0.0f;
+    float peakR       = 0.0f;
+    int   chunkCount  = 0;
 
-    // Process in chunks <= preparedMaxBlock so host oversizing never overflows scratch buffers
-    int offset = 0;
-    int chunkCount = 0;
-    while (offset < totalSamples)
+    float lastEffPhX     = smPhX;
+    float lastEffPhY     = smPhY;
+    float lastEffSpread  = smSpread;
+    float lastEffTension = smTension;
+    float lastEffBreath  = smBreath;
+    float lastLiveExpr   = smExpr;
+
+    const int maxStep = std::min (preparedMaxBlock, kControlSubBlockMax);
+
+    auto renderSpan = [&] (int startOffset, int spanSamples) noexcept
     {
-        const int chunk = std::min (totalSamples - offset, preparedMaxBlock);
-        ++chunkCount;
-        std::fill (busL.begin(), busL.begin() + chunk, 0.0f);
-        std::fill (busR.begin(), busR.begin() + chunk, 0.0f);
+        int pos = startOffset;
+        int remaining = spanSamples;
 
-        vParams.expression01 = smoothExpr.getNextValue();
-        smoothExpr.skip (std::max (0, chunk - 1));
-
-        for (auto& v : voices)
+        while (remaining > 0)
         {
-            if (v.isActive())
-                v.renderBlock (busL.data(), busR.data(), chunk, vParams, sampleCounter, formantAcc, breathAcc);
+            const int chunk = std::min (remaining, maxStep);
+            ++chunkCount;
+
+            // Sample-rate-independent sub-block exponential smoothing (22 ms controls, 35 ms singer budget)
+            const float dtSec      = static_cast<float> (chunk) / static_cast<float> (sr);
+            const float ctrlAlpha  = 1.0f - std::exp (-dtSec / 0.022f);
+            const float exprAlpha  = 1.0f - std::exp (-dtSec / 0.030f);
+            const float sizeAlpha  = 1.0f - std::exp (-dtSec / 0.045f);
+
+            smoothToward (smPhX, basePhX, ctrlAlpha);
+            smoothToward (smPhY, basePhY, ctrlAlpha);
+            smoothToward (smEnsSize, baseEnsSize, sizeAlpha);
+            smoothToward (smSpread, baseSpread, ctrlAlpha);
+            smoothToward (smVibrato, baseVibrato, ctrlAlpha);
+            smoothToward (smTension, baseTension, ctrlAlpha);
+            smoothToward (smBreath, baseBreath, ctrlAlpha);
+            smoothToward (smThroat, baseThroat, ctrlAlpha);
+            smoothToward (smFocus, baseFocus, ctrlAlpha);
+            smoothToward (smSub, baseSub, ctrlAlpha);
+            smoothToward (smCrown, baseCrown, ctrlAlpha);
+            smoothToward (smDrive, baseDrive, ctrlAlpha);
+            smoothToward (smTape, baseTape, ctrlAlpha);
+            smoothToward (smOxide, baseOxide, ctrlAlpha);
+            smoothToward (smScrewPitch, baseScrewPitch, ctrlAlpha);
+            smoothToward (smScrewDepth, baseScrewDepth, ctrlAlpha);
+            smoothToward (smPitchBend, pitchBendSemitones, ctrlAlpha);
+            smoothToward (smAftertouch, channelAftertouch, exprAlpha);
+            smoothToward (smExpr, midiCc1Received ? midiModWheel : paramExpr, exprAlpha);
+            smoothToward (smColossus, colossusTarget, ctrlAlpha);
+            smoothToward (smSpecter, specterTarget, ctrlAlpha);
+            smoothToward (smRot, rotTarget, ctrlAlpha);
+            smoothToward (smAbyss, abyssTarget, ctrlAlpha);
+
+            const float cCurve = smColossus * (0.65f + 0.35f * smColossus);
+            const float sCurve = smSpecter  * (0.65f + 0.35f * smSpecter);
+            const float rCurve = smRot      * (0.65f + 0.35f * smRot);
+            const float aCurve = smAbyss    * (0.65f + 0.35f * smAbyss);
+
+            const float effSize    = std::clamp (smEnsSize + 10.0f * cCurve, 1.0f, 24.0f);
+            const float effSpread  = std::clamp (smSpread + 0.30f * cCurve, 0.0f, 1.0f);
+            const float effSub     = std::clamp (smSub + 0.45f * cCurve + 0.16f * aCurve, 0.0f, 1.0f);
+            const float effCrown   = std::clamp (smCrown + 0.35f * cCurve + 0.25f * sCurve, 0.0f, 1.0f);
+            const float effBreath  = std::clamp (smBreath + 0.48f * sCurve, 0.0f, 1.0f);
+            const float effTension = std::clamp (smTension + 0.22f * cCurve - 0.38f * sCurve, 0.0f, 1.0f);
+            const float effThroat  = std::clamp (smThroat - 2.2f * sCurve - 1.8f * rCurve, -12.0f, 12.0f);
+            const float effDrive   = std::clamp (smDrive + 0.52f * rCurve + 0.12f * cCurve, 0.0f, 1.0f);
+            const float effTape    = std::clamp (smTape + 0.58f * rCurve + 0.10f * sCurve, 0.0f, 1.0f);
+            const float effOxide   = std::clamp (smOxide + 0.48f * rCurve, 0.0f, 1.0f);
+
+            const float effSpaceMix   = std::clamp (baseSpaceMix + 0.32f * aCurve + 0.14f * cCurve + 0.14f * sCurve, 0.0f, 1.0f);
+            const float effSpaceDecay = std::clamp (baseSpaceDecay + 0.28f * aCurve + 0.12f * cCurve, 0.0f, 1.0f);
+            const float effSpaceDamp  = std::clamp (baseSpaceDamp + 0.34f * aCurve, 0.0f, 1.0f);
+            const float effShimmer    = std::clamp (baseShimmer + 0.42f * sCurve + 0.22f * aCurve, 0.0f, 1.0f);
+
+            const float compDb = -1.8f * cCurve - 1.2f * rCurve;
+            smoothMasterGain.setTargetValue (dbToGain (masterGainDb + compDb));
+
+            orbitEngine.advance (chunk, orbitOn, orbitRateHz, orbitDepth01, orbitSyncOn, hostBpm, smPhX, smPhY);
+            const float orbitX = orbitEngine.getEffectiveX();
+            const float orbitY = orbitEngine.getEffectiveY();
+            const float effPhX = std::clamp (orbitX + sCurve * (0.45f - orbitX) * 0.55f, 0.0f, 1.0f);
+            const float effPhY = std::clamp (orbitY + sCurve * (0.20f - orbitY) * 0.65f, 0.0f, 1.0f);
+
+            // Smooth dynamic 24-virtual-singer budgeting (zero step jumps when adding 4th+ chord notes)
+            int activeCount = 0;
+            for (const auto& v : voices)
+            {
+                if (v.isActive())
+                    ++activeCount;
+            }
+            const float desiredPerVoice = 1.0f + (effSize - 1.0f) * (7.0f / 23.0f);
+            float targetSingersPerVoice = desiredPerVoice;
+            if (activeCount >= 4)
+            {
+                const float budgetCap = 24.0f / static_cast<float> (activeCount);
+                const float minStereo = (effSize >= 2.0f) ? 2.0f : 1.0f;
+                targetSingersPerVoice = std::clamp (std::min (desiredPerVoice, budgetCap), minStereo, 8.0f);
+            }
+            smoothToward (smSingersPerVoice, targetSingersPerVoice, sizeAlpha);
+
+            VoiceRenderParams vParams;
+            vParams.phonemeX          = effPhX;
+            vParams.phonemeY          = effPhY;
+            vParams.regMode           = regMode;
+            vParams.singersTarget     = smSingersPerVoice;
+            vParams.spread01          = effSpread;
+            vParams.vibratoDepth01    = smVibrato;
+            vParams.attackSec         = baseAttack;
+            vParams.releaseSec        = baseRelease;
+            vParams.onsetMode         = onsetModeVal;
+            vParams.onsetAmount01     = baseOnsetAmt;
+            vParams.glottalTension01  = effTension;
+            vParams.breathAmount01    = effBreath;
+            vParams.throatShiftSt     = effThroat;
+            vParams.formantFocus01    = smFocus;
+            vParams.subAbyss01        = effSub;
+            vParams.spectralCrown01   = effCrown;
+            vParams.drive01           = effDrive;
+            vParams.tapeInstability01 = effTape;
+            vParams.oxideDamping01    = effOxide;
+            vParams.screwPitchSt      = smScrewPitch;
+            vParams.screwDepth01      = smScrewDepth;
+            vParams.oversample4x      = os4x;
+            vParams.pitchBendSt       = smPitchBend;
+            vParams.expression01      = smExpr;
+            vParams.aftertouch01      = smAftertouch;
+            vParams.glideTimeSec      = glideSec;
+
+            const bool freezeOn = uiFreeze || (cc64FreezeOn && cc64FreezeActive);
+
+            std::fill (busL.begin(), busL.begin() + chunk, 0.0f);
+            std::fill (busR.begin(), busR.begin() + chunk, 0.0f);
+
+            for (auto& v : voices)
+            {
+                if (v.isActive())
+                    v.renderBlock (busL.data(), busR.data(), chunk, vParams, formantAcc, breathAcc);
+            }
+
+            reverb.processBlock (busL.data(),
+                                 busR.data(),
+                                 chunk,
+                                 spaceModel,
+                                 effSpaceMix,
+                                 effSpaceDecay,
+                                 effSpaceDamp,
+                                 effShimmer,
+                                 freezeOn);
+
+            float* outL = buffer.getWritePointer (0) + pos;
+            float* outR = (numChannels > 1) ? (buffer.getWritePointer (1) + pos) : nullptr;
+
+            for (int i = 0; i < chunk; ++i)
+            {
+                const float g = smoothMasterGain.getNextValue();
+                const float l = softSafetyLimit (busL[static_cast<size_t> (i)] * g);
+                const float r = softSafetyLimit (busR[static_cast<size_t> (i)] * g);
+
+                if (outR != nullptr)
+                {
+                    outL[i] = l;
+                    outR[i] = r;
+                }
+                else
+                {
+                    outL[i] = 0.5f * (l + r);
+                }
+
+                sumSqL += l * l;
+                sumSqR += r * r;
+                peakL = std::max (peakL, std::abs (l));
+                peakR = std::max (peakR, std::abs (r));
+            }
+
+            lastEffPhX     = effPhX;
+            lastEffPhY     = effPhY;
+            lastEffSpread  = effSpread;
+            lastEffTension = effTension;
+            lastEffBreath  = effBreath;
+            lastLiveExpr   = smExpr;
+
+            sampleCounter += static_cast<uint64_t> (chunk);
+            pos       += chunk;
+            remaining -= chunk;
         }
+    };
 
-        reverb.processBlock (busL.data(),
-                             busR.data(),
-                             chunk,
-                             spaceModel,
-                             effSpaceMix,
-                             effSpaceDecay,
-                             effSpaceDamp,
-                             effShimmer,
-                             freezeOn);
-
-        float* outL = buffer.getWritePointer (0) + offset;
-        float* outR = (numChannels > 1) ? (buffer.getWritePointer (1) + offset) : nullptr;
-
-        for (int i = 0; i < chunk; ++i)
+    // Sample-accurate MIDI dispatch interleaved with smooth sub-block audio rendering
+    int cursor = 0;
+    for (const auto metadata : midiMessages)
+    {
+        const int eventSample = std::clamp (metadata.samplePosition, 0, totalSamples);
+        if (eventSample > cursor)
         {
-            const float g = smoothMasterGain.getNextValue();
-            const float l = softSafetyLimit (busL[static_cast<size_t> (i)] * g);
-            const float r = softSafetyLimit (busR[static_cast<size_t> (i)] * g);
-
-            if (outR != nullptr)
-            {
-                outL[i] = l;
-                outR[i] = r;
-            }
-            else
-            {
-                outL[i] = 0.5f * (l + r);
-            }
-
-            sumSqL += l * l;
-            sumSqR += r * r;
-            peakL = std::max (peakL, std::abs (l));
-            peakR = std::max (peakR, std::abs (r));
+            renderSpan (cursor, eventSample - cursor);
+            cursor = eventSample;
         }
-
-        sampleCounter += static_cast<uint64_t> (chunk);
-        offset += chunk;
+        handleMidiMessage (metadata.getMessage(), legatoOn, glideSec, cc64FreezeOn);
     }
+
+    if (cursor < totalSamples)
+        renderSpan (cursor, totalSamples - cursor);
 
     // Update lock-free UI telemetry
     int liveVoices  = 0;
@@ -644,13 +714,13 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
     telemetry.peakL.store (peakL, std::memory_order_relaxed);
     telemetry.peakR.store (peakR, std::memory_order_relaxed);
     telemetry.audioEnergy.store (std::clamp ((rmsL + rmsR) * 1.4f, 0.0f, 1.0f), std::memory_order_relaxed);
-    telemetry.breathDensity.store (std::clamp ((breathAcc * invChunks) * 0.45f + effBreath * 0.45f, 0.0f, 1.0f),
+    telemetry.breathDensity.store (std::clamp ((breathAcc * invChunks) * 0.45f + lastEffBreath * 0.45f, 0.0f, 1.0f),
                                    std::memory_order_relaxed);
-    telemetry.swarmSpreadLive.store (effSpread, std::memory_order_relaxed);
-    telemetry.tensionLive.store (effTension, std::memory_order_relaxed);
-    telemetry.effectivePhonemeX.store (effPhX, std::memory_order_relaxed);
-    telemetry.effectivePhonemeY.store (effPhY, std::memory_order_relaxed);
-    telemetry.liveExpression.store (vParams.expression01, std::memory_order_relaxed);
+    telemetry.swarmSpreadLive.store (lastEffSpread, std::memory_order_relaxed);
+    telemetry.tensionLive.store (lastEffTension, std::memory_order_relaxed);
+    telemetry.effectivePhonemeX.store (lastEffPhX, std::memory_order_relaxed);
+    telemetry.effectivePhonemeY.store (lastEffPhY, std::memory_order_relaxed);
+    telemetry.liveExpression.store (lastLiveExpr, std::memory_order_relaxed);
     telemetry.freezeEnergy.store (reverb.getFreezeEnergy(), std::memory_order_relaxed);
     telemetry.activeVoices.store (liveVoices, std::memory_order_relaxed);
     telemetry.activeSingers.store (std::min (liveSingers, 24), std::memory_order_relaxed);

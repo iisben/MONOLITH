@@ -3,6 +3,7 @@
 #include "../Source/State/ParameterIDs.h"
 #include "../Source/State/TelemetrySnapshot.h"
 
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -502,6 +503,334 @@ bool testFreezeAndScrewAndLegatoAndMacros()
     return true;
 }
 
+bool testClickPopAndCpuAudit()
+{
+    std::cout << "[5/6] Forensic Click, Pop, Discontinuity & Real-Time CPU Stress Audit...\n";
+
+    struct GlitchMetrics
+    {
+        float maxDelta = 0.0f;
+        float maxAccel = 0.0f;
+        float maxJerk  = 0.0f;
+        float maxPeak  = 0.0f;
+        int   worstJerkSample = 0;
+        std::array<float, 6> worstWindow {};
+    };
+
+    auto scanBuffer = [] (const juce::AudioBuffer<float>& buf,
+                          float& p1L, float& p2L, float& p3L,
+                          float& p1R, float& p2R, float& p3R,
+                          int& sampleIdx,
+                          GlitchMetrics& m)
+    {
+        const float* l = buf.getReadPointer (0);
+        const float* r = buf.getReadPointer (1);
+        const int n = buf.getNumSamples();
+        for (int i = 0; i < n; ++i)
+        {
+            const float xL = l[i];
+            const float xR = r[i];
+            const float dL = std::abs (xL - p1L);
+            const float dR = std::abs (xR - p1R);
+            const float aL = std::abs (xL - 2.0f * p1L + p2L);
+            const float aR = std::abs (xR - 2.0f * p1R + p2R);
+            const float jL = std::abs (xL - 3.0f * p1L + 3.0f * p2L - p3L);
+            const float jR = std::abs (xR - 3.0f * p1R + 3.0f * p2R - p3R);
+            const float d  = std::max (dL, dR);
+            const float a  = std::max (aL, aR);
+            const float j  = std::max (jL, jR);
+
+            if (d > m.maxDelta) { m.maxDelta = d; }
+            if (a > m.maxAccel) { m.maxAccel = a; }
+            if (j > m.maxJerk)
+            {
+                m.maxJerk = j;
+                m.worstJerkSample = sampleIdx;
+                if (jL >= jR)
+                    m.worstWindow = { p3L, p2L, p1L, xL, (i + 1 < n ? l[i + 1] : xL), (i + 2 < n ? l[i + 2] : xL) };
+                else
+                    m.worstWindow = { p3R, p2R, p1R, xR, (i + 1 < n ? r[i + 1] : xR), (i + 2 < n ? r[i + 2] : xR) };
+            }
+            m.maxPeak = std::max (m.maxPeak, std::max (std::abs (xL), std::abs (xR)));
+
+            p3L = p2L; p2L = p1L; p1L = xL;
+            p3R = p2R; p2R = p1R; p1R = xR;
+            ++sampleIdx;
+        }
+    };
+
+    bool allOk = true;
+
+    // Scenario A: Mip-map boundary sustained chords (E3/E4/E5 @ 48 kHz, D#3/D#4/D#5 @ 44.1 kHz)
+    for (double sr : { 44100.0, 48000.0 })
+    {
+        AuditHostProcessor host;
+        monolith::dsp::SwarmEngine engine;
+        monolith::TelemetrySnapshot telemetry;
+        const int block = 256;
+        engine.prepare (sr, block, host.apvts);
+        setParam (host.apvts, monolith::params::vibratoDepth, 0.75f);
+        setParam (host.apvts, monolith::params::driveAmount, 0.70f);
+        setParam (host.apvts, monolith::params::breathAmount, 0.05f);
+
+        juce::AudioBuffer<float> buf (2, block);
+        juce::MidiBuffer midi;
+        const int base = (sr < 45000.0) ? 51 : 52;
+        midi.addEvent (juce::MidiMessage::noteOn (1, base, 0.85f), 0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, base + 12, 0.85f), 0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, base + 24, 0.85f), 0);
+
+        float p1L = 0, p2L = 0, p3L = 0, p1R = 0, p2R = 0, p3R = 0;
+        int idx = 0;
+        GlitchMetrics gm;
+        for (int b = 0; b < 300; ++b)
+        {
+            buf.clear();
+            engine.processBlock (buf, midi, 120.0, telemetry);
+            midi.clear();
+            scanBuffer (buf, p1L, p2L, p3L, p1R, p2R, p3R, idx, gm);
+        }
+        std::cout << "  Mip-boundary @" << static_cast<int> (sr) << "Hz | maxDelta=" << gm.maxDelta
+                  << " | maxAccel=" << gm.maxAccel << " | maxJerk=" << gm.maxJerk << " | peak=" << gm.maxPeak << "\n";
+        if (gm.maxJerk > 0.16f)
+        {
+            std::cerr << "FAIL: Click/discontinuity detected on mip boundary at sample " << gm.worstJerkSample << "\n";
+            allOk = false;
+        }
+    }
+
+    // Scenario B: Dense 1->14 note chord ramp (singer budget change + 12-voice stealing)
+    //           + rapid same-note retriggering + full release tail with high Sub-Abyss & Tape Drift
+    {
+        AuditHostProcessor host;
+        monolith::dsp::SwarmEngine engine;
+        monolith::TelemetrySnapshot telemetry;
+        const double sr = 48000.0;
+        const int block = 512;
+        engine.prepare (sr, block, host.apvts);
+        setParam (host.apvts, monolith::params::ensembleSize, 24.0f);
+        setParam (host.apvts, monolith::params::subAbyss, 0.80f);
+        setParam (host.apvts, monolith::params::spectralCrown, 0.65f);
+        setParam (host.apvts, monolith::params::driveAmount, 0.78f);
+        setParam (host.apvts, monolith::params::tapeInstability, 0.75f);
+        setParam (host.apvts, monolith::params::breathAmount, 0.05f);
+        setParam (host.apvts, monolith::params::attackTime, 0.025f);
+        setParam (host.apvts, monolith::params::releaseTime, 0.45f);
+
+        juce::AudioBuffer<float> buf (2, block);
+        juce::MidiBuffer midi;
+        float p1L = 0, p2L = 0, p3L = 0, p1R = 0, p2R = 0, p3R = 0;
+        int idx = 0;
+        GlitchMetrics gm;
+
+        const int notes[15] = { 45, 48, 52, 55, 57, 60, 62, 64, 67, 69, 71, 72, 74, 76, 79 };
+        for (int step = 0; step < 15; ++step)
+        {
+            midi.addEvent (juce::MidiMessage::noteOn (1, notes[step], 0.85f), 37);
+            for (int b = 0; b < 14; ++b)
+            {
+                buf.clear();
+                engine.processBlock (buf, midi, 120.0, telemetry);
+                midi.clear();
+                scanBuffer (buf, p1L, p2L, p3L, p1R, p2R, p3R, idx, gm);
+            }
+        }
+
+        for (int step = 0; step < 15; ++step)
+            midi.addEvent (juce::MidiMessage::noteOff (1, notes[step]), 12);
+
+        for (int b = 0; b < 80; ++b)
+        {
+            if (b == 10 || b == 14 || b == 18)
+                midi.addEvent (juce::MidiMessage::noteOn (1, 52, 0.90f), 113);
+            if (b == 12 || b == 16 || b == 20)
+                midi.addEvent (juce::MidiMessage::noteOff (1, 52), 241);
+
+            buf.clear();
+            engine.processBlock (buf, midi, 120.0, telemetry);
+            midi.clear();
+            scanBuffer (buf, p1L, p2L, p3L, p1R, p2R, p3R, idx, gm);
+        }
+
+        std::cout << "  Steal/Retrigger/Release | maxDelta=" << gm.maxDelta
+                  << " | maxAccel=" << gm.maxAccel << " | maxJerk=" << gm.maxJerk << " | peak=" << gm.maxPeak
+                  << " @spl=" << gm.worstJerkSample << " win=["
+                  << gm.worstWindow[0] << "," << gm.worstWindow[1] << "," << gm.worstWindow[2] << ","
+                  << gm.worstWindow[3] << "," << gm.worstWindow[4] << "," << gm.worstWindow[5] << "]\n";
+        if (gm.maxJerk > 0.20f)
+        {
+            std::cerr << "FAIL: Click/pop detected during voice steal / retrigger / release\n";
+            allOk = false;
+        }
+    }
+
+    // Scenario C: Live automation + Space Model switch + 4x OS toggle + Preset switch mid-chord
+    {
+        AuditHostProcessor host;
+        monolith::dsp::SwarmEngine engine;
+        monolith::TelemetrySnapshot telemetry;
+        monolith::PresetManager pm;
+        const double sr = 48000.0;
+        const int block = 512;
+        engine.prepare (sr, block, host.apvts);
+
+        juce::AudioBuffer<float> buf (2, block);
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 48, 0.82f), 0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 55, 0.82f), 0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 63, 0.82f), 0);
+
+        float p1L = 0, p2L = 0, p3L = 0, p1R = 0, p2R = 0, p3R = 0;
+        int idx = 0;
+        GlitchMetrics gm;
+
+        for (int b = 0; b < 160; ++b)
+        {
+            const float u = static_cast<float> (b) / 159.0f;
+            setParam (host.apvts, monolith::params::phonemeX, 0.10f + 0.80f * std::abs (std::sin (u * 9.0f)));
+            setParam (host.apvts, monolith::params::phonemeY, 0.12f + 0.76f * std::abs (std::cos (u * 7.0f)));
+            setParam (host.apvts, monolith::params::screwPitch, -12.0f * std::abs (std::sin (u * 5.0f)));
+            setParam (host.apvts, monolith::params::tapeInstability, u);
+            setParam (host.apvts, monolith::params::driveAmount, u);
+            setParam (host.apvts, monolith::params::oxideDamping, u * 0.8f);
+            setParam (host.apvts, monolith::params::macroColossus, std::abs (std::sin (u * 6.0f)));
+            setParam (host.apvts, monolith::params::macroAbyss, std::abs (std::cos (u * 6.0f)));
+
+            if (b == 30) setParam (host.apvts, monolith::params::spaceType, 1.0f);
+            if (b == 60) setParam (host.apvts, monolith::params::spaceType, 2.0f);
+            if (b == 90) setParam (host.apvts, monolith::params::spaceType, 3.0f);
+            if (b == 75) setParam (host.apvts, monolith::params::oversampleHq, 1.0f);
+            if (b == 110) setParam (host.apvts, monolith::params::oversampleHq, 0.0f);
+            if (b == 130) pm.applyPreset (15, host.apvts);
+
+            buf.clear();
+            engine.processBlock (buf, midi, 120.0, telemetry);
+            midi.clear();
+            scanBuffer (buf, p1L, p2L, p3L, p1R, p2R, p3R, idx, gm);
+        }
+
+        std::cout << "  Live Automation/Switch  | maxDelta=" << gm.maxDelta
+                  << " | maxAccel=" << gm.maxAccel << " | maxJerk=" << gm.maxJerk << " | peak=" << gm.maxPeak
+                  << " @spl=" << gm.worstJerkSample << " win=["
+                  << gm.worstWindow[0] << "," << gm.worstWindow[1] << "," << gm.worstWindow[2] << ","
+                  << gm.worstWindow[3] << "," << gm.worstWindow[4] << "," << gm.worstWindow[5] << "]\n";
+        if (gm.maxJerk > 0.20f)
+        {
+            std::cerr << "FAIL: Click/pop detected during live automation / space / preset switch\n";
+            allOk = false;
+        }
+    }
+
+    // Scenario D: Real-Time CPU Stress Benchmark (12 voices / 24 singers @ 48 kHz, 64-sample buffer)
+    {
+        AuditHostProcessor host;
+        monolith::dsp::SwarmEngine engine;
+        monolith::TelemetrySnapshot telemetry;
+        const double sr = 48000.0;
+        const int block = 64;
+        engine.prepare (sr, block, host.apvts);
+        setParam (host.apvts, monolith::params::ensembleSize, 24.0f);
+        setParam (host.apvts, monolith::params::driveAmount, 0.65f);
+        setParam (host.apvts, monolith::params::tapeInstability, 0.55f);
+        setParam (host.apvts, monolith::params::oxideDamping, 0.45f);
+        setParam (host.apvts, monolith::params::spaceMix, 0.55f);
+        setParam (host.apvts, monolith::params::spaceShimmer, 0.50f);
+
+        juce::AudioBuffer<float> buf (2, block);
+        juce::MidiBuffer midi;
+        for (int n = 0; n < 12; ++n)
+            midi.addEvent (juce::MidiMessage::noteOn (1, 48 + n * 2, 0.8f), 0);
+
+        for (int b = 0; b < 100; ++b)
+        {
+            buf.clear();
+            engine.processBlock (buf, midi, 120.0, telemetry);
+            midi.clear();
+        }
+
+        const int benchBlocks = 1500;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int b = 0; b < benchBlocks; ++b)
+        {
+            buf.clear();
+            engine.processBlock (buf, midi, 120.0, telemetry);
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        const double elapsedMs = std::chrono::duration<double, std::milli> (t1 - t0).count();
+        const double audioMs   = (static_cast<double> (benchBlocks * block) / sr) * 1000.0;
+        const double cpuPct    = (elapsedMs / audioMs) * 100.0;
+
+        std::cout << "  CPU Stress (12v/24s, 64spl @48k): " << std::fixed << std::setprecision (2)
+                  << cpuPct << "% real-time (" << elapsedMs << " ms for " << audioMs << " ms audio)\n";
+        if (cpuPct > 45.0)
+        {
+            std::cerr << "FAIL: Real-time CPU load too high (" << cpuPct << "%), risking CoreAudio dropouts.\n";
+            allOk = false;
+        }
+    }
+
+    // Scenario E: Variable Logic-Pro block sizes (1, 3, 7, 17, 37, 64, 127, 512, 1024),
+    //             Register switching mid-chord, CC120 All Sound Off, Legato retrigger, and 4x OS CPU
+    {
+        AuditHostProcessor host;
+        monolith::dsp::SwarmEngine engine;
+        monolith::TelemetrySnapshot telemetry;
+        const double sr = 48000.0;
+        engine.prepare (sr, 512, host.apvts);
+        setParam (host.apvts, monolith::params::driveAmount, 0.55f);
+        setParam (host.apvts, monolith::params::tapeInstability, 0.45f);
+
+        const int varSizes[] = { 1, 3, 7, 17, 37, 64, 127, 512, 1024, 19, 5, 256 };
+        float p1L = 0, p2L = 0, p3L = 0, p1R = 0, p2R = 0, p3R = 0;
+        int idx = 0;
+        GlitchMetrics gm;
+
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 50, 0.85f), 0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 57, 0.85f), 0);
+
+        for (int iter = 0; iter < 180; ++iter)
+        {
+            const int n = varSizes[iter % 12];
+            juce::AudioBuffer<float> buf (2, n);
+            buf.clear();
+
+            if (iter == 30)  setParam (host.apvts, monolith::params::registerMode, 0.0f);
+            if (iter == 50)  setParam (host.apvts, monolith::params::registerMode, 3.0f);
+            if (iter == 70)  setParam (host.apvts, monolith::params::registerMode, 4.0f);
+            if (iter == 90)  midi.addEvent (juce::MidiMessage::controllerEvent (1, 120, 0), std::min (1, n - 1));
+            if (iter == 105)
+            {
+                setParam (host.apvts, monolith::params::legatoEnable, 1.0f);
+                midi.addEvent (juce::MidiMessage::noteOn (1, 55, 0.85f), 0);
+            }
+            if (iter == 120) midi.addEvent (juce::MidiMessage::noteOn (1, 64, 0.85f), std::min (2, n - 1));
+            if (iter == 135) midi.addEvent (juce::MidiMessage::noteOff (1, 64), 0);
+            if (iter == 140) midi.addEvent (juce::MidiMessage::noteOff (1, 55), 0);
+            if (iter == 145) midi.addEvent (juce::MidiMessage::noteOn (1, 60, 0.85f), 0); // Re-attack releasing legato voice
+
+            engine.processBlock (buf, midi, 120.0, telemetry);
+            midi.clear();
+            scanBuffer (buf, p1L, p2L, p3L, p1R, p2R, p3R, idx, gm);
+        }
+
+        std::cout << "  VarBlock/Reg/CC120/Leg  | maxDelta=" << gm.maxDelta
+                  << " | maxAccel=" << gm.maxAccel << " | maxJerk=" << gm.maxJerk << " | peak=" << gm.maxPeak
+                  << " @spl=" << gm.worstJerkSample << "\n";
+        if (gm.maxJerk > 0.20f)
+        {
+            std::cerr << "FAIL: Click/pop detected during variable-block / register / CC120 / legato test\n";
+            allOk = false;
+        }
+    }
+
+    if (! allOk)
+        return false;
+
+    std::cout << "  PASS: Zero click/pop discontinuities and healthy real-time CPU margin.\n";
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -516,7 +845,9 @@ int main()
         return 1;
     if (! testFreezeAndScrewAndLegatoAndMacros())
         return 1;
+    if (! testClickPopAndCpuAudit())
+        return 1;
 
-    std::cout << "[5/5] ALL AUDITS PASSED.\n";
+    std::cout << "[6/6] ALL AUDITS PASSED.\n";
     return 0;
 }

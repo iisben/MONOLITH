@@ -7,7 +7,6 @@ namespace monolith::dsp
 
 namespace
 {
-    // Mutually incommensurate delay lengths (ms) tuned to avoid vocal flutter/ringing
     constexpr std::array<float, BrutalistReverb::kNumFdnLines> kFdnDelaysMs {
         29.7f, 37.1f, 43.3f, 53.9f, 61.7f, 71.3f, 83.1f, 97.4f
     };
@@ -86,19 +85,17 @@ void BrutalistReverb::prepare (double sampleRate, int maxBlockSize)
     (void) maxBlockSize;
     sr = std::max (8000.0, sampleRate);
 
-    // Pre-delay up to 60 ms across 44.1-192 kHz
     preDelayL.prepare (static_cast<size_t> (sr * 0.065) + 32);
     preDelayR.prepare (static_cast<size_t> (sr * 0.065) + 32);
 
     for (size_t i = 0; i < static_cast<size_t> (kNumAllpass); ++i)
     {
-        earlyApL[i].allocate (static_cast<size_t> (sr * (kAllpassMsL[i] * 0.002f)) + 32);
-        earlyApR[i].allocate (static_cast<size_t> (sr * (kAllpassMsR[i] * 0.002f)) + 32);
+        earlyApL[i].prepare (static_cast<size_t> (sr * (kAllpassMsL[i] * 0.002f)) + 32);
+        earlyApR[i].prepare (static_cast<size_t> (sr * (kAllpassMsR[i] * 0.002f)) + 32);
     }
 
     for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
     {
-        // Max sizeScale 1.5 + modulation headroom
         const size_t cap = static_cast<size_t> (sr * (kFdnDelaysMs[i] * 0.001f * 1.65f)) + 128;
         fdnLines[i].prepare (cap);
         fdnDc[i].prepare (sr);
@@ -136,6 +133,7 @@ void BrutalistReverb::reset() noexcept
     currentTankRms        = 0.0f;
     freezeEnergyIndicator = 0.0f;
     wasFrozen             = false;
+    smoothersPrimed       = false;
 }
 
 void BrutalistReverb::processBlock (float* left,
@@ -157,96 +155,127 @@ void BrutalistReverb::processBlock (float* left,
     const float srF    = static_cast<float> (sr);
     const float invSrF = 1.0f / srF;
 
-    const float mix     = std::clamp (mix01, 0.0f, 1.0f);
-    const float decay   = std::clamp (decay01, 0.0f, 1.0f);
-    const float damp    = std::clamp (damp01, 0.0f, 1.0f);
-    const float shimmer = std::clamp (shimmer01, 0.0f, 1.0f);
+    const float targetMix     = std::clamp (mix01, 0.0f, 1.0f);
+    const float targetDecay   = std::clamp (decay01, 0.0f, 1.0f);
+    const float targetDamp    = std::clamp (damp01, 0.0f, 1.0f);
+    const float targetShimmer = std::clamp (shimmer01, 0.0f, 1.0f);
 
     if (freezeEnabled && ! wasFrozen)
-    {
-        // Lock current acoustic energy for infinite cloud sustain
         frozenTargetRms = std::max (currentTankRms, 0.0f);
-    }
     wasFrozen = freezeEnabled;
 
-    // 40 ms crossfade for Spectral Freeze engagement/disengagement
-    const float freezeCoeff = 1.0f - std::exp (-1.0f / (0.040f * srF));
+    const float freezeCoeff  = 1.0f - std::exp (-1.0f / (0.040f * srF));
     const float freezeTarget = freezeEnabled ? 1.0f : 0.0f;
 
-    // Pre-compute delay lengths and RT60 feedback gains per line
-    std::array<float, kNumFdnLines> baseDelaySamples {};
-    std::array<float, kNumFdnLines> lineFeedback {};
+    const float rt60Sec               = 0.38f * std::pow (42.0f, targetDecay) * prof.decayScale;
+    const float targetModDepthSamples = prof.modDepthMs * 0.001f * srF;
+    const float targetPreDelaySamples = std::max (2.0f, prof.preDelayMs * 0.001f * srF);
 
-    const float rt60Sec = 0.38f * std::pow (42.0f, decay) * prof.decayScale;
-    const float modDepthSamples = prof.modDepthMs * 0.001f * srF;
+    const float effectiveDamp = targetDamp * (1.0f - 0.90f * freezeBlend);
+    const float targetDampCutHz = std::clamp (16000.0f * std::pow (prof.dampFloorHz / 16000.0f, effectiveDamp),
+                                              320.0f,
+                                              0.43f * srF);
 
-    // Effective damping LP cutoff opens gently when frozen so clouds don't vanish into mud
-    const float effectiveDamp = damp * (1.0f - 0.90f * freezeBlend);
-    const float dampCutHz = std::clamp (16000.0f * std::pow (prof.dampFloorHz / 16000.0f, effectiveDamp),
-                                        320.0f,
-                                        0.43f * srF);
-
+    std::array<float, kNumFdnLines> targetFdnDelay {};
+    std::array<float, kNumFdnLines> targetFdnFeedback {};
     for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
     {
-        const float dSec = kFdnDelaysMs[i] * 0.001f * prof.sizeScale;
-        baseDelaySamples[i] = dSec * srF;
-        lineFeedback[i]     = std::clamp (std::pow (10.0f, -3.0f * dSec / std::max (rt60Sec, 0.15f)), 0.10f, 0.9990f);
-        fdnDampLp[i].setParameters (dampCutHz, 0.707f, srF);
+        const float dSec     = kFdnDelaysMs[i] * 0.001f * prof.sizeScale;
+        targetFdnDelay[i]    = dSec * srF;
+        targetFdnFeedback[i] = std::clamp (std::pow (10.0f, -3.0f * dSec / std::max (rt60Sec, 0.15f)), 0.10f, 0.9990f);
     }
 
-    const float preDelaySamples = std::max (2.0f, prof.preDelayMs * 0.001f * srF);
-
-    // Pre-compute early allpass sizes
-    std::array<size_t, kNumAllpass> apLenL {};
-    std::array<size_t, kNumAllpass> apLenR {};
+    std::array<float, kNumAllpass> targetApLenL {};
+    std::array<float, kNumAllpass> targetApLenR {};
     const float apScale = 0.55f + 0.45f * prof.sizeScale;
     for (size_t a = 0; a < static_cast<size_t> (kNumAllpass); ++a)
     {
-        apLenL[a] = std::max<size_t> (8, static_cast<size_t> (kAllpassMsL[a] * 0.001f * apScale * srF));
-        apLenR[a] = std::max<size_t> (8, static_cast<size_t> (kAllpassMsR[a] * 0.001f * apScale * srF));
+        targetApLenL[a] = std::max (8.0f, kAllpassMsL[a] * 0.001f * apScale * srF);
+        targetApLenR[a] = std::max (8.0f, kAllpassMsR[a] * 0.001f * apScale * srF);
     }
 
+    if (! smoothersPrimed)
+    {
+        smMix             = targetMix;
+        smShimmer         = targetShimmer;
+        smDampCutHz       = targetDampCutHz;
+        smPreDelaySamples = targetPreDelaySamples;
+        smEarlyBalance    = prof.earlyBalance;
+        smModDepthSamples = targetModDepthSamples;
+        smShimmerCap      = prof.shimmerCap;
+        smShimmerStL      = prof.shimmerStL;
+        smShimmerStR      = prof.shimmerStR;
+        smApLenL          = targetApLenL;
+        smApLenR          = targetApLenR;
+        smFdnDelay        = targetFdnDelay;
+        smFdnFeedback     = targetFdnFeedback;
+        for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
+            fdnDampLp[i].setParameters (smDampCutHz, 0.707f, srF);
+        smoothersPrimed   = true;
+    }
+
+    const float fastCoeff     = 1.0f - std::exp (-1.0f / (0.025f * srF));
+    const float geomCoeff     = 1.0f - std::exp (-1.0f / (0.060f * srF));
     const float rmsTrackAlpha = 1.0f - std::exp (-1.0f / (0.045f * srF));
+    const int   ctrlStep      = std::max (8, static_cast<int> (srF / 3000.0f));
 
     for (int n = 0; n < numSamples; ++n)
     {
-        freezeBlend += freezeCoeff * (freezeTarget - freezeBlend);
+        freezeBlend       += freezeCoeff * (freezeTarget - freezeBlend);
+        smMix             += fastCoeff * (targetMix - smMix);
+        smShimmer         += fastCoeff * (targetShimmer - smShimmer);
+        smDampCutHz       += fastCoeff * (targetDampCutHz - smDampCutHz);
+        smPreDelaySamples += geomCoeff * (targetPreDelaySamples - smPreDelaySamples);
+        smEarlyBalance    += fastCoeff * (prof.earlyBalance - smEarlyBalance);
+        smModDepthSamples += fastCoeff * (targetModDepthSamples - smModDepthSamples);
+        smShimmerCap      += fastCoeff * (prof.shimmerCap - smShimmerCap);
+        smShimmerStL      += geomCoeff * (prof.shimmerStL - smShimmerStL);
+        smShimmerStR      += geomCoeff * (prof.shimmerStR - smShimmerStR);
+
+        if ((n % ctrlStep) == 0)
+        {
+            for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
+                fdnDampLp[i].setParameters (smDampCutHz, 0.707f, srF);
+        }
 
         const float dryL = sanitize (left[n]);
         const float dryR = sanitize (right[n]);
 
-        // Pre-delay + 4-Stage Allpass Diffuser
+        // Pre-delay + Fractional 4-Stage Allpass Diffuser
         preDelayL.push (dryL);
         preDelayR.push (dryR);
 
-        float earlyL = preDelayL.readLinear (preDelaySamples);
-        float earlyR = preDelayR.readLinear (preDelaySamples * 1.07f);
+        float earlyL = preDelayL.readLinear (smPreDelaySamples);
+        float earlyR = preDelayR.readLinear (smPreDelaySamples * 1.07f);
 
         for (size_t a = 0; a < static_cast<size_t> (kNumAllpass); ++a)
         {
-            earlyL = earlyApL[a].process (earlyL, apLenL[a], 0.58f);
-            earlyR = earlyApR[a].process (earlyR, apLenR[a], 0.58f);
+            smApLenL[a] += geomCoeff * (targetApLenL[a] - smApLenL[a]);
+            smApLenR[a] += geomCoeff * (targetApLenR[a] - smApLenR[a]);
+            earlyL = earlyApL[a].process (earlyL, smApLenL[a], 0.58f);
+            earlyR = earlyApR[a].process (earlyR, smApLenR[a], 0.58f);
         }
 
-        // Mute new tank injection during Spectral Freeze (early reflections stay gentle over the pad)
         const float injectScale = 1.0f - freezeBlend;
         const float injectL = earlyL * injectScale;
         const float injectR = earlyR * injectScale;
 
-        // Read 8 modulated FDN lines
+        // Read 8 modulated FDN lines with smoothly morphed base delays
         std::array<float, kNumFdnLines> tap {};
         float energySumSq = 0.0f;
 
         for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
         {
+            smFdnDelay[i]    += geomCoeff * (targetFdnDelay[i] - smFdnDelay[i]);
+            smFdnFeedback[i] += fastCoeff * (targetFdnFeedback[i] - smFdnFeedback[i]);
+
             lfoPhases[i] += kTwoPi * lfoRates[i] * invSrF;
             if (lfoPhases[i] >= kTwoPi) lfoPhases[i] -= kTwoPi;
 
             const float modScale = 1.0f - 0.35f * freezeBlend;
-            const float d = baseDelaySamples[i] + modDepthSamples * modScale * std::sin (lfoPhases[i]);
+            const float d = smFdnDelay[i] + smModDepthSamples * modScale * std::sin (lfoPhases[i]);
             const float rawTap = fdnLines[i].readCubic (d);
 
-            // Apply damping LP and DC blocking inside loop
             const float damped = fdnDampLp[i].processLowpass (fdnDc[i].process (rawTap));
             tap[i] = damped;
             energySumSq += damped * damped;
@@ -259,11 +288,11 @@ void BrutalistReverb::processBlock (float* left,
         std::array<float, kNumFdnLines> mixed = tap;
         hadamard8 (mixed);
 
-        // Spectral Freeze slow RMS cloud stabilizer (zero runaway, zero decay)
+        // Spectral Freeze smooth RMS cloud stabilizer (tracks smooth currentTankRms -> zero AM flutter)
         float freezeLoopGain = 1.0f;
-        if (freezeBlend > 1.0e-3f && frozenTargetRms > 1.0e-5f && instRms > 1.0e-6f)
+        if (freezeBlend > 1.0e-3f && frozenTargetRms > 1.0e-5f && currentTankRms > 1.0e-6f)
         {
-            const float ratio = frozenTargetRms / instRms;
+            const float ratio = frozenTargetRms / currentTankRms;
             freezeLoopGain = std::clamp (1.0f + 0.008f * (ratio - 1.0f), 0.994f, 1.006f);
         }
 
@@ -271,31 +300,27 @@ void BrutalistReverb::processBlock (float* left,
         const float tankOutL = (tap[0] + tap[2] + tap[4] + tap[6]) * 0.25f;
         const float tankOutR = (tap[1] + tap[3] + tap[5] + tap[7]) * 0.25f;
 
-        const float shimL = shimmerL.process (tankOutL, prof.shimmerStL);
-        const float shimR = shimmerR.process (tankOutR, prof.shimmerStR);
+        const float shimL = shimmerL.process (tankOutL, smShimmerStL);
+        const float shimR = shimmerR.process (tankOutR, smShimmerStR);
 
-        // Keep shimmer clean inside freeze so energy stays strictly bounded
-        const float shimGain = shimmer * prof.shimmerCap * (1.0f - 0.85f * freezeBlend);
+        const float shimGain  = smShimmer * smShimmerCap * (1.0f - 0.85f * freezeBlend);
         const float fbInjectL = injectL * 0.34f + shimL * shimGain;
         const float fbInjectR = injectR * 0.34f + shimR * shimGain;
 
         for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
         {
-            const float normalGain = lineFeedback[i];
-            const float g = normalGain + freezeBlend * (freezeLoopGain - normalGain);
+            const float normalGain = smFdnFeedback[i];
+            const float g   = normalGain + freezeBlend * (freezeLoopGain - normalGain);
             const float inj = ((i & 1u) == 0u) ? fbInjectL : fbInjectR;
-            // Soft tank saturation guard prevents numerical runaway under extreme settings
             const float nextVal = fastTanh ((mixed[i] * g + inj) * 0.85f) * 1.17647f;
             fdnLines[i].push (nextVal);
         }
 
-        const float wetL = earlyL * prof.earlyBalance + tankOutL * (1.0f - 0.35f * prof.earlyBalance);
-        const float wetR = earlyR * prof.earlyBalance + tankOutR * (1.0f - 0.35f * prof.earlyBalance);
+        const float wetL = earlyL * smEarlyBalance + tankOutL * (1.0f - 0.35f * smEarlyBalance);
+        const float wetR = earlyR * smEarlyBalance + tankOutR * (1.0f - 0.35f * smEarlyBalance);
 
-        // Constant-power-inspired dry/wet blend; Space Mix = 100% yields pure 100% wet,
-        // while Spectral Freeze preserves dry melody clarity above the frozen cloud.
-        const float effMix = std::max (mix, freezeBlend * 0.55f);
-        const float dryGain = std::max (std::cos (mix * 0.5f * kPi), 0.78f * freezeBlend);
+        const float effMix  = std::max (smMix, freezeBlend * 0.55f);
+        const float dryGain = std::max (std::cos (smMix * 0.5f * kPi), 0.78f * freezeBlend);
         const float wetGain = std::sin (effMix * 0.5f * kPi) * 0.92f;
 
         left[n]  = sanitize (dryL * dryGain + wetL * wetGain);

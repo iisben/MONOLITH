@@ -15,6 +15,9 @@ public:
     void prepare (double sampleRate) noexcept;
     void reset() noexcept;
 
+    /** Updates filter coefficients at control rate (avoids per-sample trig during glide). */
+    void updateFilters (float f0Hz, float tension01) noexcept;
+
     /**
         Generates stereo output additions for Sub-Abyss (centered) and
         Spectral Crown (twin detuned stereo pair) for one sample.
@@ -22,14 +25,13 @@ public:
     void processSample (float f0Hz,
                         float subAmount01,
                         float crownAmount01,
-                        float tension01,
                         float expression01,
                         float& outL,
                         float& outR) noexcept;
 
 private:
-    double sr         = 48000.0;
-    float  subPhase   = 0.0f;
+    double sr          = 48000.0;
+    float  subPhase    = 0.0f;
     float  crownPhaseL = 0.0f;
     float  crownPhaseR = 0.37f;
 

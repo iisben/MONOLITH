@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DspMath.h"
+#include <array>
 #include <vector>
 
 namespace monolith::dsp
@@ -16,9 +17,10 @@ enum class SpaceType : int
 
 /**
     Custom choir-tuned Brutalist Architectural Reverb & Spectral Freeze engine.
-    Combines a 4-stage allpass early reflection diffuser, an 8x8 normalized
-    Hadamard modulated FDN, dual-grain Hann-windowed pitch-shifted dark shimmer,
-    and click-free infinite Spectral Freeze with RMS cloud energy stabilization.
+    Combines a fractional-interpolated 4-stage allpass early reflection diffuser,
+    an 8x8 normalized Hadamard modulated FDN, dual-grain Hann-windowed pitch-shifted
+    dark shimmer, and click-free infinite Spectral Freeze with RMS stabilization.
+    All continuous parameters and Space Model delay geometries morph smoothly per sample.
 */
 class BrutalistReverb
 {
@@ -44,33 +46,25 @@ public:
 private:
     double sr = 48000.0;
 
-    // Pre-delay & Allpass early diffuser
     CubicDelayLine preDelayL, preDelayR;
+
     struct AllpassStage
     {
-        std::vector<float> buf;
-        size_t idx  = 0;
-        size_t len  = 1;
-        float  gain = 0.62f;
+        CubicDelayLine line;
 
-        void allocate (size_t maxLen)
+        void prepare (size_t maxLen)
         {
-            buf.assign (maxLen + 4, 0.0f);
-            idx = 0;
+            line.prepare (maxLen + 8);
         }
         void clear() noexcept
         {
-            std::fill (buf.begin(), buf.end(), 0.0f);
-            idx = 0;
+            line.reset();
         }
-        inline float process (float x, size_t delayLen, float g) noexcept
+        inline float process (float x, float delaySamples, float g) noexcept
         {
-            const size_t d = std::min (delayLen, buf.size() - 1);
-            const size_t readIdx = (idx + buf.size() - d) % buf.size();
-            const float delayed = buf[readIdx];
+            const float delayed = line.readLinear (delaySamples);
             const float v = sanitize (x + g * delayed);
-            buf[idx] = v;
-            idx = (idx + 1) % buf.size();
+            line.push (v);
             return delayed - g * v;
         }
     };
@@ -111,7 +105,6 @@ private:
         {
             ring.push (input);
             const float ratio = semitonesToRatio (pitchSemitones);
-            // Delay rate = (1 - ratio) / grainSizeSamples
             const float delta = (1.0f - ratio) / std::max (grainSizeSamples, 64.0f);
 
             phaseA += delta;
@@ -140,6 +133,22 @@ private:
     float currentTankRms        = 0.0f;
     float freezeEnergyIndicator = 0.0f;
     bool  wasFrozen             = false;
+
+    // Smoothed controls & room geometry (eliminates clicks on Space switch & knob drag)
+    bool  smoothersPrimed       = false;
+    float smMix                 = 0.46f;
+    float smShimmer             = 0.22f;
+    float smDampCutHz           = 6000.0f;
+    float smPreDelaySamples     = 1152.0f;
+    float smEarlyBalance        = 0.25f;
+    float smModDepthSamples     = 25.0f;
+    float smShimmerCap          = 0.28f;
+    float smShimmerStL          = 12.0f;
+    float smShimmerStR          = 12.0f;
+    std::array<float, kNumAllpass>  smApLenL {};
+    std::array<float, kNumAllpass>  smApLenR {};
+    std::array<float, kNumFdnLines> smFdnDelay {};
+    std::array<float, kNumFdnLines> smFdnFeedback {};
 };
 
 } // namespace monolith::dsp

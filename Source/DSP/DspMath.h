@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -17,10 +18,14 @@ inline constexpr float kTwoPi = 6.28318530717958647692f;
     return std::isfinite (x) ? x : 0.0f;
 }
 
+/**
+    C1-continuous Padé [3/2] tanh approximation.
+    Exact 0 slope and value +/-1.0 at x = +/-3.0 (zero overshoot, zero clamp discontinuity).
+*/
 [[nodiscard]] inline float fastTanh (float x) noexcept
 {
-    if (x > 4.5f)  return 1.0f;
-    if (x < -4.5f) return -1.0f;
+    if (x >= 3.0f)  return 1.0f;
+    if (x <= -3.0f) return -1.0f;
     const float x2 = x * x;
     return x * (27.0f + x2) / (27.0f + 9.0f * x2);
 }
@@ -48,6 +53,26 @@ inline constexpr float kTwoPi = 6.28318530717958647692f;
 [[nodiscard]] inline float semitonesToRatio (float semitones) noexcept
 {
     return std::exp2 (semitones / 12.0f);
+}
+
+/** Fast, smooth pitch-ratio polynomial for small detune/vibrato offsets in cents. */
+[[nodiscard]] inline float fastCentsToRatio (float cents) noexcept
+{
+    if (std::abs (cents) > 150.0f)
+        return std::exp2 (cents / 1200.0f);
+
+    const float x = cents * 5.776226504666211e-4f; // ln(2) / 1200
+    return 1.0f + x * (1.0f + x * (0.5f + x * 0.16666667f));
+}
+
+/** C0-continuous IEEE-754 fast log2 for positive normal floats (zero branch, exact at 2^k). */
+[[nodiscard]] inline float fastLog2 (float x) noexcept
+{
+    const float safe = std::max (x, 1.0e-12f);
+    const uint32_t bits = std::bit_cast<uint32_t> (safe);
+    const float expPart = static_cast<float> (static_cast<int32_t> ((bits >> 23) & 0xFFu) - 127);
+    const float mant    = std::bit_cast<float> ((bits & 0x007FFFFFu) | 0x3F800000u) - 1.0f;
+    return expPart + mant * (1.44269504f - 0.44269504f * mant);
 }
 
 // ============================================================================
@@ -105,7 +130,6 @@ public:
         x ^= x >> 17;
         x ^= x << 5;
         state = x;
-        // Map unsigned 32-bit integer to [-1, 1]
         return static_cast<float> (static_cast<int32_t> (x)) * 4.656612873e-10f;
     }
 
@@ -243,7 +267,6 @@ public:
         const size_t intDelay = static_cast<size_t> (d);
         const float  frac     = d - static_cast<float> (intDelay);
 
-        // writePos points to next write slot; most recent sample is at writePos - 1
         const size_t idx0 = (writePos - 1 - intDelay + 1) & mask;
         const size_t idx1 = (writePos - 1 - intDelay)     & mask;
         const size_t idx2 = (writePos - 1 - intDelay - 1) & mask;
@@ -254,7 +277,6 @@ public:
         const float y2 = buffer[idx2];
         const float y3 = buffer[idx3];
 
-        // Catmull-Rom spline coefficients
         const float c0 = y1;
         const float c1 = 0.5f * (y2 - y0);
         const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
@@ -284,7 +306,8 @@ private:
 /**
     Shared, read-only, band-limited Liljencrants-Fant (LF) glottal flow
     derivative wavetable bank. Precomputed across 8 Tension/Effort slices and
-    10 mip-map harmonic tiers for alias-free synthesis from 44.1 kHz to 192 kHz.
+    10 mip-map harmonic tiers with continuous trilinear interpolation across
+    phase, tension, and mip level (zero aliasing AND zero mip-switch clicks).
 */
 class LfGlottalTables
 {
@@ -299,22 +322,20 @@ public:
         return singleton;
     }
 
-    /** Sample band-limited LF glottal waveform with bilinear mip/tension/phase interpolation. */
+    /** Sample band-limited LF glottal waveform with click-free trilinear interpolation. */
     [[nodiscard]] inline float sample (float phase01, float tension01,
                                        float freqHz, float sampleRate) const noexcept
     {
         const float clampedFreq = std::max (freqHz, 12.0f);
-        const float maxAllowedHarmonic = (0.45f * sampleRate) / clampedFreq;
-
-        int mip = kNumMipLevels - 1;
-        for (int m = 0; m < kNumMipLevels; ++m)
-        {
-            if (static_cast<float> (kMipMaxHarmonic[static_cast<size_t> (m)]) <= maxAllowedHarmonic)
-            {
-                mip = m;
-                break;
-            }
-        }
+        // baseH = 0.23 * sr / freq guarantees even the brighter mip0 stays < 0.46 * sr (alias-free)
+        // while crossfading continuously across octave tiers (zero vibrato/glide clicks).
+        const float baseH = (0.23f * sampleRate) / clampedFreq;
+        const float mipFloat = std::clamp (8.0f - fastLog2 (std::max (baseH, 1.0f)),
+                                           0.0f,
+                                           static_cast<float> (kNumMipLevels - 2));
+        const int   m0    = static_cast<int> (mipFloat);
+        const int   m1    = m0 + 1;
+        const float mFrac = mipFloat - static_cast<float> (m0);
 
         const float tScaled = std::clamp (tension01, 0.0f, 1.0f)
                             * static_cast<float> (kNumTensionSlices - 1);
@@ -329,14 +350,19 @@ public:
         const int   i0   = static_cast<int> (pos) & (kTableSize - 1);
         const float frac = pos - std::floor (pos);
 
-        const auto& row0 = tables[static_cast<size_t> (t0)][static_cast<size_t> (mip)];
-        const auto& row1 = tables[static_cast<size_t> (t1)][static_cast<size_t> (mip)];
+        const auto& r00 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m0)];
+        const auto& r01 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m1)];
+        const auto& r10 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m0)];
+        const auto& r11 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m1)];
 
-        const float s0 = row0[static_cast<size_t> (i0)]
-                       + frac * (row0[static_cast<size_t> (i0 + 1)] - row0[static_cast<size_t> (i0)]);
-        const float s1 = row1[static_cast<size_t> (i0)]
-                       + frac * (row1[static_cast<size_t> (i0 + 1)] - row1[static_cast<size_t> (i0)]);
+        const size_t ui0 = static_cast<size_t> (i0);
+        const float s00 = r00[ui0] + frac * (r00[ui0 + 1] - r00[ui0]);
+        const float s01 = r01[ui0] + frac * (r01[ui0 + 1] - r01[ui0]);
+        const float s10 = r10[ui0] + frac * (r10[ui0 + 1] - r10[ui0]);
+        const float s11 = r11[ui0] + frac * (r11[ui0 + 1] - r11[ui0]);
 
+        const float s0 = s00 + mFrac * (s01 - s00);
+        const float s1 = s10 + mFrac * (s11 - s10);
         return s0 + tFrac * (s1 - s0);
     }
 
@@ -344,12 +370,13 @@ public:
     [[nodiscard]] inline float glottalOpenGate (float phase01, float tension01) const noexcept
     {
         const float t  = std::clamp (tension01, 0.0f, 1.0f);
-        const float te = 0.72f - 0.30f * t; // Open quotient shrinks as vocal tension rises
+        const float te = 0.72f - 0.30f * t;
         if (phase01 >= te || phase01 < 0.0f)
             return 0.08f;
 
         const float norm = phase01 / std::max (te, 0.05f);
-        return 0.08f + 0.92f * std::sin (kPi * norm);
+        // Smooth raised parabolic pulse matching sin(pi * norm) with zero trig overhead
+        return 0.08f + 0.92f * (4.0f * norm * (1.0f - norm));
     }
 
 private:
@@ -371,13 +398,11 @@ private:
         {
             const double tension = static_cast<double> (slice) / static_cast<double> (kNumTensionSlices - 1);
 
-            // Continuous LF glottal derivative parameters morphing from airy falsetto (0) to fortissimo (1)
-            const double te = 0.72 - 0.30 * tension; // Glottal closure instant
-            const double tp = 0.44 - 0.16 * tension; // Peak flow instant
-            const double ta = 0.065 - 0.056 * tension; // Return phase time constant (sharpness)
-            const double alpha = 1.2 + 3.4 * tension;  // Growth exponent during open phase
+            const double te = 0.72 - 0.30 * tension;
+            const double tp = 0.44 - 0.16 * tension;
+            const double ta = 0.065 - 0.056 * tension;
+            const double alpha = 1.2 + 3.4 * tension;
 
-            // Generate raw continuous LF flow derivative waveform
             double mean = 0.0;
             for (int n = 0; n < kRawN; ++n)
             {
@@ -385,13 +410,11 @@ private:
                 double val = 0.0;
                 if (t < te)
                 {
-                    // Exponentially growing half-sine opening -> steep negative closure spike
                     val = std::exp (alpha * (t - te)) * std::sin (3.14159265358979323846 * t / tp);
                 }
                 else
                 {
-                    // Exponential return from negative excitation peak E_e back toward zero
-                    const double eAtTe = std::exp (0.0) * std::sin (3.14159265358979323846 * te / tp);
+                    const double eAtTe = std::sin (3.14159265358979323846 * te / tp);
                     const double dt = t - te;
                     const double rem = std::max (1.0 - te, 1.0e-4);
                     const double decay = std::exp (-dt / std::max (ta, 1.0e-4));
@@ -403,7 +426,6 @@ private:
             }
             mean /= static_cast<double> (kRawN);
 
-            // Enforce exact zero DC mean
             double rms = 0.0;
             for (int n = 0; n < kRawN; ++n)
             {
@@ -415,7 +437,6 @@ private:
             for (int n = 0; n < kRawN; ++n)
                 raw[static_cast<size_t> (n)] *= normScale;
 
-            // Compute DFT harmonic coefficients (1..256)
             for (int h = 1; h <= 256; ++h)
             {
                 double c = 0.0;
@@ -431,7 +452,6 @@ private:
                 sinCoeff[static_cast<size_t> (h)] = (2.0 / static_cast<double> (kRawN)) * s;
             }
 
-            // Reconstruct each mip level using band-limited additive synthesis
             for (int mip = 0; mip < kNumMipLevels; ++mip)
             {
                 const int maxH = kMipMaxHarmonic[static_cast<size_t> (mip)];
@@ -443,7 +463,6 @@ private:
                     double acc = 0.0;
                     for (int h = 1; h <= maxH; ++h)
                     {
-                        // Gentle raised-cosine rolloff on top 2 harmonics to prevent Gibbs ringing
                         double window = 1.0;
                         if (maxH >= 4 && h > maxH - 2)
                         {
@@ -456,7 +475,7 @@ private:
                     }
                     out[static_cast<size_t> (i)] = static_cast<float> (acc);
                 }
-                out[kTableSize] = out[0]; // Guard sample for branchless linear interpolation
+                out[kTableSize] = out[0];
             }
         }
     }

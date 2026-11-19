@@ -15,15 +15,17 @@ namespace monolith::dsp
 
 /**
     Top-level 12-voice / 24-virtual-singer choral swarm engine.
-    Manages voice allocation, dynamic singer budgeting, legato note stacking,
-    4 Master Macros, expression smoothing, architectural reverb, and lock-free
+    Provides sample-accurate MIDI sub-block dispatch, 64-sample smooth control
+    sub-blocking across all continuous parameters, dynamic 24-singer budgeting,
+    4 curved Master Macros, legato stacking, architectural reverb, and lock-free
     UI telemetry output.
 */
 class SwarmEngine
 {
 public:
-    static constexpr int kMaxVoices      = 12;
-    static constexpr int kMaxHeldNotes   = 16;
+    static constexpr int kMaxVoices          = 12;
+    static constexpr int kMaxHeldNotes       = 16;
+    static constexpr int kControlSubBlockMax = 64;
 
     void prepare (double sampleRate, int maxBlockSize, const juce::AudioProcessorValueTreeState& apvts);
     void reset() noexcept;
@@ -31,8 +33,8 @@ public:
     [[nodiscard]] int getLatencySamples() const noexcept;
 
     /**
-        100% real-time-safe block processor. Automatically splits blocks larger
-        than preparedMaxBlockSize into safe internal chunks.
+        100% real-time-safe block processor with sample-accurate MIDI timing
+        and automatic sub-block chunking <= min(preparedMaxBlockSize, 64).
     */
     void processBlock (juce::AudioBuffer<float>& buffer,
                        juce::MidiBuffer& midiMessages,
@@ -110,15 +112,15 @@ private:
     [[nodiscard]] int allocateVoiceIndex() noexcept;
 
     CachedParamPtrs ptrs;
-    double sr               = 48000.0;
-    int    preparedMaxBlock = 512;
-    uint64_t sampleCounter  = 0;
+    double   sr               = 48000.0;
+    int      preparedMaxBlock = 512;
+    uint64_t sampleCounter    = 0;
+    uint64_t noteTriggerSeq   = 0;
 
     std::array<SwarmVoice, kMaxVoices> voices;
     OrganicOrbitEngine orbitEngine;
     BrutalistReverb reverb;
 
-    // Pre-allocated stereo mixing bus
     std::vector<float> busL;
     std::vector<float> busR;
 
@@ -128,22 +130,42 @@ private:
     float channelAftertouch   = 0.0f;
     bool  sustainPedalDown    = false;
     bool  cc64FreezeActive    = false;
-    bool  lastMidiFreezeState = false;
     std::array<bool, 128> sustainedNotes {};
 
     // Legato held-note stack (zero allocation)
     std::array<int, kMaxHeldNotes> heldNotes {};
     std::array<float, kMaxHeldNotes> heldVelocities {};
-    int heldCount = 0;
+    int heldCount         = 0;
     int lastTriggeredNote = -1;
 
-    // Smoothed controls
-    juce::SmoothedValue<float> smoothExpr;
+    // Smoothers (all continuous controls smoothed across sub-blocks; masterGain per-sample)
+    bool  smoothersPrimed     = false;
+    float smPhX               = params::defaults::phonemeX;
+    float smPhY               = params::defaults::phonemeY;
+    float smEnsSize           = params::defaults::ensembleSize;
+    float smSpread            = params::defaults::ensembleSpread;
+    float smVibrato           = params::defaults::vibratoDepth;
+    float smTension           = params::defaults::glottalTension;
+    float smBreath            = params::defaults::breathAmount;
+    float smThroat            = params::defaults::throatShift;
+    float smFocus             = params::defaults::formantFocus;
+    float smSub               = params::defaults::subAbyss;
+    float smCrown             = params::defaults::spectralCrown;
+    float smDrive             = params::defaults::driveAmount;
+    float smTape              = params::defaults::tapeInstability;
+    float smOxide             = params::defaults::oxideDamping;
+    float smScrewPitch        = params::defaults::screwPitch;
+    float smScrewDepth        = params::defaults::screwDepth;
+    float smPitchBend         = 0.0f;
+    float smAftertouch        = 0.0f;
+    float smExpr              = params::defaults::expressionLevel;
+    float smSingersPerVoice   = 6.0f;
+    float smColossus          = 0.0f;
+    float smSpecter           = 0.0f;
+    float smRot               = 0.0f;
+    float smAbyss             = 0.0f;
+
     juce::SmoothedValue<float> smoothMasterGain;
-    juce::SmoothedValue<float> smoothColossus;
-    juce::SmoothedValue<float> smoothSpecter;
-    juce::SmoothedValue<float> smoothRot;
-    juce::SmoothedValue<float> smoothAbyss;
 
     std::atomic<bool>  panicRequested { false };
     std::atomic<bool>  uiExprTouched  { false };
