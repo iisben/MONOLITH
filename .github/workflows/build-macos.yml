@@ -1,0 +1,67 @@
+name: Build macOS (AU / VST3 / Standalone)
+
+on:
+  push:
+    branches: [ main, master, 'claude/**' ]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Configure (universal arm64 + x86_64)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build
+        run: cmake --build build --parallel --target MONOLITH_AU MONOLITH_VST3 MONOLITH_Standalone MonolithDspAudit
+
+      - name: DSP audit (gain staging, clipping, squeal, runaway, clicks)
+        run: ./build/MonolithDspAudit_artefacts/Release/MonolithDspAudit
+
+      - name: Validate Audio Unit
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R build/MONOLITH_artefacts/Release/AU/MONOLITH.component ~/Library/Audio/Plug-Ins/Components/
+          codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/Components/MONOLITH.component
+          killall -9 AudioComponentRegistrar || true
+          sleep 3
+          auval -v aumu Mnch Mnlt
+
+      - name: Package
+        run: |
+          ART=build/MONOLITH_artefacts/Release
+          mkdir -p dist/MONOLITH
+          cp -R "$ART/AU/MONOLITH.component" dist/MONOLITH/
+          cp -R "$ART/VST3/MONOLITH.vst3" dist/MONOLITH/
+          cp -R "$ART/Standalone/MONOLITH.app" dist/MONOLITH/
+          for b in dist/MONOLITH/*; do codesign --force --deep --sign - "$b"; done
+          cat > dist/MONOLITH/Install\ MONOLITH.command <<'EOF'
+          #!/bin/bash
+          # Copies MONOLITH into your plug-in folders and clears the download quarantine.
+          cd "$(dirname "$0")"
+          AU="$HOME/Library/Audio/Plug-Ins/Components"; VST3="$HOME/Library/Audio/Plug-Ins/VST3"
+          mkdir -p "$AU" "$VST3"
+          rm -rf "$AU/MONOLITH.component" "$VST3/MONOLITH.vst3" "/Applications/MONOLITH.app"
+          cp -R MONOLITH.component "$AU/" && cp -R MONOLITH.vst3 "$VST3/" && cp -R MONOLITH.app /Applications/
+          xattr -dr com.apple.quarantine "$AU/MONOLITH.component" "$VST3/MONOLITH.vst3" /Applications/MONOLITH.app 2>/dev/null
+          killall -9 AudioComponentRegistrar 2>/dev/null
+          echo; echo "MONOLITH installed (AU, VST3, Standalone). Restart your DAW."
+          EOF
+          chmod +x "dist/MONOLITH/Install MONOLITH.command"
+          cd dist && ditto -c -k --keepParent MONOLITH MONOLITH-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MONOLITH-macOS
+          path: dist/MONOLITH-macOS.zip
+          retention-days: 30
