@@ -206,7 +206,9 @@ FormantTarget PhonemeField::evaluate (float x, float y,
     const float bwFocusScale = (focus <= 0.5f)
                              ? (1.55f - 1.10f * focus)
                              : (1.00f - 0.84f * (focus - 0.5f));
-    const float focusGainComp = 1.0f / std::sqrt (std::max (bwFocusScale, 0.35f));
+    // Partial energy compensation only: full 1/sqrt(bw) make-up on narrow formants turns
+    // high Focus settings into ringing, whistling resonances.
+    const float focusGainComp = std::clamp (1.0f / std::sqrt (std::max (bwFocusScale, 0.35f)), 0.85f, 1.10f);
 
     FormantTarget target;
     for (size_t f = 0; f < 5; ++f)

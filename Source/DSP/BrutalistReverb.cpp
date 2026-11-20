@@ -47,6 +47,17 @@ namespace
         { 1.32f, 28.0f, 0.28f, 1.25f, 1550.0f, 1.10f,  11.86f,  12.14f, 0.32f }
     }};
 
+    /** Transparent in-loop safety: exactly linear below 1.0, smooth asymptote to 1.5 above.
+        Never engages in normal operation (loop gain is kept < 1), only guards pathological input. */
+    [[nodiscard]] inline float loopSafety (float x) noexcept
+    {
+        const float ax = std::abs (x);
+        if (ax <= 1.0f)
+            return x;
+        const float shaped = 1.0f + 0.5f * fastTanh ((ax - 1.0f) * 2.0f);
+        return (x >= 0.0f) ? shaped : -shaped;
+    }
+
     /** Orthonormal 8x8 Fast Walsh-Hadamard mixing matrix (1 / sqrt(8) = 0.35355339f). */
     inline void hadamard8 (std::array<float, 8>& v) noexcept
     {
@@ -127,6 +138,11 @@ void BrutalistReverb::reset() noexcept
 
     shimmerL.reset();
     shimmerR.reset();
+    for (auto* f : { &sendHpL, &sendHpR, &sendLpL, &sendLpR, &shimHpL, &shimHpR, &shimLpL, &shimLpR })
+    {
+        f->reset();
+        f->invalidateCache();
+    }
 
     freezeBlend           = 0.0f;
     frozenTargetRms       = 0.0f;
@@ -214,6 +230,17 @@ void BrutalistReverb::processBlock (float* left,
         smoothersPrimed   = true;
     }
 
+    // Pro send EQ: 2nd-order low-cut ~110 Hz and gentle high-cut ~10.5 kHz into the tank,
+    // shimmer path band-limited so repeated octave-up regeneration cannot accumulate fizz/whistle.
+    sendHpL.setParameters (110.0f, 0.707f, srF);
+    sendHpR.setParameters (110.0f, 0.707f, srF);
+    sendLpL.setParameters (10500.0f, 0.707f, srF);
+    sendLpR.setParameters (10500.0f, 0.707f, srF);
+    shimHpL.setParameters (180.0f, 0.707f, srF);
+    shimHpR.setParameters (180.0f, 0.707f, srF);
+    shimLpL.setParameters (6800.0f, 0.707f, srF);
+    shimLpR.setParameters (6800.0f, 0.707f, srF);
+
     const float fastCoeff     = 1.0f - std::exp (-1.0f / (0.025f * srF));
     const float geomCoeff     = 1.0f - std::exp (-1.0f / (0.060f * srF));
     const float rmsTrackAlpha = 1.0f - std::exp (-1.0f / (0.045f * srF));
@@ -242,8 +269,8 @@ void BrutalistReverb::processBlock (float* left,
         const float dryR = sanitize (right[n]);
 
         // Pre-delay + Fractional 4-Stage Allpass Diffuser
-        preDelayL.push (dryL);
-        preDelayR.push (dryR);
+        preDelayL.push (sendLpL.processLowpass (sendHpL.processHighpass (dryL)));
+        preDelayR.push (sendLpR.processLowpass (sendHpR.processHighpass (dryR)));
 
         float earlyL = preDelayL.readLinear (smPreDelaySamples);
         float earlyR = preDelayR.readLinear (smPreDelaySamples * 1.07f);
@@ -272,12 +299,17 @@ void BrutalistReverb::processBlock (float* left,
             lfoPhases[i] += kTwoPi * lfoRates[i] * invSrF;
             if (lfoPhases[i] >= kTwoPi) lfoPhases[i] -= kTwoPi;
 
-            const float modScale = 1.0f - 0.35f * freezeBlend;
-            const float d = smFdnDelay[i] + smModDepthSamples * modScale * std::sin (lfoPhases[i]);
-            const float rawTap = fdnLines[i].readCubic (d);
-
-            const float damped = fdnDampLp[i].processLowpass (fdnDc[i].process (rawTap));
-            tap[i] = damped;
+            // Freeze: modulation (interpolation HF loss) and damping are faded out so the frozen tank
+            // is truly lossless and needs no make-up gain (make-up gain over a lossy loop is what
+            // makes frozen pads slowly build resonant, ringing modes).
+            // Delays glide onto whole samples while frozen: integer reads are bit-exact (no interpolation
+            // HF loss), so the frozen loop is lossless at unity gain and needs no make-up gain.
+            const float modScale = 1.0f - freezeBlend;
+            const float dBase = smFdnDelay[i] + freezeBlend * (std::round (smFdnDelay[i]) - smFdnDelay[i]);
+            const float d = dBase + smModDepthSamples * modScale * std::sin (lfoPhases[i]);
+            const float rawTap = fdnDc[i].process (fdnLines[i].readCubic (d));
+            const float damped = fdnDampLp[i].processLowpass (rawTap);
+            tap[i] = damped + freezeBlend * (rawTap - damped);
             energySumSq += damped * damped;
         }
 
@@ -293,26 +325,31 @@ void BrutalistReverb::processBlock (float* left,
         if (freezeBlend > 1.0e-3f && frozenTargetRms > 1.0e-5f && currentTankRms > 1.0e-6f)
         {
             const float ratio = frozenTargetRms / currentTankRms;
-            freezeLoopGain = std::clamp (1.0f + 0.008f * (ratio - 1.0f), 0.994f, 1.006f);
+            freezeLoopGain = std::clamp (1.0f + 0.002f * (ratio - 1.0f), 0.9990f, 1.0008f);
         }
 
         // Extract stereo tank sum for output and pitch-shimmer feedback
         const float tankOutL = (tap[0] + tap[2] + tap[4] + tap[6]) * 0.25f;
         const float tankOutR = (tap[1] + tap[3] + tap[5] + tap[7]) * 0.25f;
 
-        const float shimL = shimmerL.process (tankOutL, smShimmerStL);
-        const float shimR = shimmerR.process (tankOutR, smShimmerStR);
+        const float shimL = shimLpL.processLowpass (shimHpL.processHighpass (shimmerL.process (tankOutL, smShimmerStL)));
+        const float shimR = shimLpR.processLowpass (shimHpR.processHighpass (shimmerR.process (tankOutR, smShimmerStR)));
 
-        const float shimGain  = smShimmer * smShimmerCap * (1.0f - 0.85f * freezeBlend);
+        const float shimGain  = smShimmer * smShimmerCap * (1.0f - freezeBlend);
+        // Energy-conserving shimmer: the shimmer path is a second feedback loop, so the direct tank
+        // feedback is reduced by the energy the shimmer re-injects. Total loop gain stays < 1 at any
+        // Decay/Shimmer setting (no runaway, no squeal), while the perceived RT60 is preserved.
+        const float shimLoopEnergy = 0.30f * shimGain * shimGain;
         const float fbInjectL = injectL * 0.34f + shimL * shimGain;
         const float fbInjectR = injectR * 0.34f + shimR * shimGain;
 
         for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
         {
-            const float normalGain = smFdnFeedback[i];
+            const float fb         = smFdnFeedback[i];
+            const float normalGain = std::sqrt (std::max (fb * fb - shimLoopEnergy, 0.0f));
             const float g   = normalGain + freezeBlend * (freezeLoopGain - normalGain);
             const float inj = ((i & 1u) == 0u) ? fbInjectL : fbInjectR;
-            const float nextVal = fastTanh ((mixed[i] * g + inj) * 0.85f) * 1.17647f;
+            const float nextVal = loopSafety (mixed[i] * g + inj);
             fdnLines[i].push (nextVal);
         }
 

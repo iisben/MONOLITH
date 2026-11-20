@@ -85,6 +85,7 @@ void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::Audi
 
     orbitEngine.prepare (sr);
     reverb.prepare (sr, preparedMaxBlock);
+    masterBus.prepare (sr);
 
     busL.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
     busR.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
@@ -108,6 +109,7 @@ void SwarmEngine::reset() noexcept
 
     orbitEngine.reset();
     reverb.reset();
+    masterBus.reset();
 
     std::fill (busL.begin(), busL.end(), 0.0f);
     std::fill (busR.begin(), busR.end(), 0.0f);
@@ -130,7 +132,7 @@ void SwarmEngine::reset() noexcept
 int SwarmEngine::getLatencySamples() const noexcept
 {
     const bool hq4x = loadParam (ptrs.oversampleHq, 0.0f) >= 0.5f;
-    return voices[0].getLatencySamples (hq4x);
+    return voices[0].getLatencySamples (hq4x) + masterBus.getLatencySamples();
 }
 
 void SwarmEngine::panicImmediate() noexcept
@@ -644,8 +646,11 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
             for (int i = 0; i < chunk; ++i)
             {
                 const float g = smoothMasterGain.getNextValue();
-                const float l = softSafetyLimit (busL[static_cast<size_t> (i)] * g);
-                const float r = softSafetyLimit (busR[static_cast<size_t> (i)] * g);
+                float l = busL[static_cast<size_t> (i)] * g;
+                float r = busR[static_cast<size_t> (i)] * g;
+                diagPreLimiterPeak = std::max (diagPreLimiterPeak, std::max (std::abs (l), std::abs (r)));
+                masterBus.process (l, r);
+                diagMaxGrDb = std::max (diagMaxGrDb, -20.0f * std::log10 (std::max (masterBus.getLimiterGain(), 1.0e-6f)));
 
                 if (outR != nullptr)
                 {

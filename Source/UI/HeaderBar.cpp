@@ -9,7 +9,7 @@ HeaderBar::HeaderBar (MonolithAudioProcessor& proc)
       masterGainDial (proc.getAPVTS(),
                       params::masterGain,
                       "OUT",
-                      "Master Output Trim (-18 to +6 dB) before transparent soft safety limiter.",
+                      "Master Output Trim (-18 to +6 dB) into the glue compressor and -1 dBFS lookahead brickwall limiter.",
                       " dB",
                       1,
                       false,
@@ -27,7 +27,7 @@ HeaderBar::HeaderBar (MonolithAudioProcessor& proc)
     categoryBox.onChange = [this] { repopulatePresetBox(); };
     addAndMakeVisible (categoryBox);
 
-    presetBox.setTooltip ("Select one of the 30 calibrated factory presets.");
+    presetBox.setTooltip ("Select one of the 38 calibrated factory presets.");
     presetBox.onChange = [this]
     {
         const int sel = presetBox.getSelectedItemIndex();

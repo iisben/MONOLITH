@@ -10,7 +10,8 @@
 - **Sub-Abyss & Spectral Crown (`Source/DSP/HarmonicLayers.*`):** Phase-coherent chest-resonant sub-octave layer and detuned stereo upper-octave harmonic sheen.
 - **Per-Voice Entropy & Witch-House Engine (`Source/DSP/EntropyStage.*`):** Constant-latency 2x/4x polyphase IIR oversampled asymmetric tape/tube drive applied **per voice prior to stereo bus summing**, followed by cubic-interpolated tape wow/flutter, oxide damping, and formant-detached `Screw Pitch` / `Screw Shadow`.
 - **Brutalist Architectural Space + Spectral Freeze (`Source/DSP/BrutalistReverb.*`):** 4-stage allpass diffuser + 8×8 Hadamard modulated FDN + dual-grain Hann-windowed shimmer across *Cathedral*, *Concrete Silo*, *Obsidian Abyss*, and *Ghost Void*, with click-free Spectral Freeze and RMS energy stabilization.
-- **30 Calibrated Factory Presets (`Source/Presets/FactoryPresets.cpp`):** Across *Epic Cinematic*, *Lorn & Dystopia*, *Witch House & Darkwave*, *Organic Acoustic*, and *Evolving & Horror Soundscapes*, plus A/B compare.
+- **Mastering-Grade Output Stage (`Source/DSP/MasterBus.h`):** 18 Hz subsonic filter, soft-knee 1.6:1 glue compressor, and a 1.5 ms lookahead brickwall limiter (-1 dBFS ceiling, zero overshoot, no waveshaping) so full-velocity 12-voice chords never clip or distort.
+- **38 Calibrated Factory Presets (`Source/Presets/FactoryPresets.cpp`):** Across *Epic Cinematic*, *Lorn & Dystopia*, *Witch House & Darkwave*, *Organic Acoustic*, *Evolving & Horror Soundscapes*, and the trailer-scale *Cinematic Colossal* bank, plus A/B compare. All presets are loudness-matched (sustained triad ~ -17 dBFS RMS) and stress-tested with full-velocity 8-note chords.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete signal-flow and real-time threading specification.
 
@@ -35,4 +36,4 @@ cmake --build build --target MONOLITH_VST3 MONOLITH_AU MONOLITH_Standalone Monol
 ```bash
 ./build/MonolithDspAudit_artefacts/Release/MonolithDspAudit
 ```
-Verifies all 41 APVTS parameters, 30 factory presets (`-18.51` to `-13.43 dBFS` RMS, zero clipping), sample-rate stability (`44.1 / 48 / 96 / 192 kHz` at `2x` and `4x` oversampling), Spectral Freeze sustain, Screw Pitch octave tracking, Legato, CC1 Expression, and all 4 Master Macros (`COLOSSUS`, `SPECTER`, `ROT`, `ABYSS`).
+Verifies all 41 APVTS parameters, 38 factory presets (loudness-matched, zero clipping), a pro stress pass (full-velocity 8-note chords, soprano extremes and worst-case knob settings checked for overload, reverb runaway and non-harmonic squeal), sample-rate stability (`44.1 / 48 / 96 / 192 kHz` at `2x` and `4x` oversampling), Spectral Freeze sustain, Screw Pitch octave tracking, Legato, CC1 Expression, and all 4 Master Macros (`COLOSSUS`, `SPECTER`, `ROT`, `ABYSS`).

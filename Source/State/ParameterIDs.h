@@ -84,7 +84,7 @@ namespace defaults
     inline constexpr float formantFocus    = 0.60f;
     inline constexpr float subAbyss        = 0.42f;
     inline constexpr float spectralCrown   = 0.36f;
-    inline constexpr float masterGain      = 0.0f;
+    inline constexpr float masterGain      = -0.5f;
 
     inline constexpr float driveAmount     = 0.24f;
     inline constexpr float tapeInstability = 0.14f;

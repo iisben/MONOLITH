@@ -127,6 +127,10 @@ private:
     };
     GrainShifter shimmerL, shimmerR;
 
+    // Send-path & shimmer-path tone shaping (keeps 20 s tails free of sub mud and fizz build-up)
+    ZdfSvf sendHpL, sendHpR, sendLpL, sendLpR;
+    ZdfSvf shimHpL, shimHpR, shimLpL, shimLpR;
+
     // Spectral Freeze state
     float freezeBlend           = 0.0f;
     float frozenTargetRms       = 0.0f;

@@ -67,7 +67,7 @@ void HarmonicLayers::processSample (float f0Hz,
 
         const float sat = fastTanh (1.65f * rawSub + 0.16f) - 0.1586f;
         const float sculpted = subLp.processLowpass (subHp.processHighpass (sat));
-        const float subGain = subAmt * subAmt * 0.25f * (0.45f + 0.55f * expression01);
+        const float subGain = subAmt * subAmt * 0.25f * (0.25f + 0.75f * expression01);
         addL += sculpted * subGain;
         addR += sculpted * subGain;
     }
@@ -94,7 +94,10 @@ void HarmonicLayers::processSample (float f0Hz,
                            + 0.24f * std::sin (kTwoPi * 2.0f * crownPhaseR);
 
             const float swell = 0.25f + 0.75f * (expression01 * expression01);
-            const float crownGain = crownAmt * 0.48f * swell * nyquistFade;
+            // The crown is a near-sine sheen at 2*f0. On high notes it lands squarely inside the
+            // 2-4 kHz presence band and reads as a whistle, so fade it out as 2*f0 rises.
+            const float pitchFade = std::clamp ((3200.0f - crownBaseFreq) / 2000.0f, 0.18f, 1.0f);
+            const float crownGain = crownAmt * 0.48f * swell * nyquistFade * pitchFade;
 
             addL += crownBpL.processBandpass (wL) * crownGain;
             addR += crownBpR.processBandpass (wR) * crownGain;

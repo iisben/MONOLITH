@@ -45,7 +45,7 @@ MIDI Note / CC1 / CC64 / PitchBend / Aftertouch
   └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
-  Master Gain Trim -> Soft Safety Limiter -> NaN Sanitize -> Output
+  Master Gain Trim -> MasterBus [18 Hz subsonic HPF -> 1.6:1 soft-knee glue comp -> 1.5 ms lookahead brickwall limiter @ -1 dBFS] -> Output
         │
         └──► TelemetrySnapshot (100% lock-free relaxed atomics @ 60 Hz UI)
 ```
@@ -58,7 +58,7 @@ MIDI Note / CC1 / CC64 / PitchBend / Aftertouch
   - **Zero locks/mutexes** and zero UI/file/String/ValueTree operations.
   - All 41 APVTS parameters are read via cached `std::atomic<float>*` pointers (`memory_order_relaxed`).
   - Host buffers larger than `preparedMaxBlockSize` are automatically processed in safe chunks `<= preparedMaxBlockSize`.
-  - `juce::ScopedNoDenormals` wraps every block; DC blockers follow non-linear saturation and reverb feedback; every output sample is sanitized against `NaN`/`Inf` and passed through a soft transparent safety limiter (`0.75` linear knee -> `0.985` ceiling).
+  - `juce::ScopedNoDenormals` wraps every block; DC blockers follow non-linear saturation and reverb feedback; every output sample is sanitized against `NaN`/`Inf` and passed through a lookahead brickwall limiter (peak-hold + box-filtered gain ramp, mathematically overshoot-free, no waveshaping distortion). The reverb tank keeps total loop gain < 1 at every Decay/Shimmer setting (energy-conserving shimmer), and Spectral Freeze runs a lossless unity-gain loop (integer delays, damping bypassed) instead of make-up gain, so neither can run away or build resonant squeal.
 - **UI Thread (`PluginEditor` @ 60 Hz)**:
   - Polls `TelemetrySnapshot` (`std::atomic` relaxed loads) to animate the 2D Phoneme Field halo, formant energy rings, swarm motes, expression meter, voice badge, and stereo RMS/Peak meters.
   - Preset switching and A/B compare occur exclusively on the message thread via `PresetManager`.
@@ -76,4 +76,4 @@ MIDI Note / CC1 / CC64 / PitchBend / Aftertouch
 ## 5. Gain Staging & Calibration
 - Voice summing uses `1 / sqrt(activeWeightSum)` perceptual normalization.
 - LF glottal tables are RMS-normalized across all 8 tension slices so Effort sweeps harmonic density smoothly without volume jumps.
-- All 30 factory presets are calibrated to render a sustained triad (velocity `0.78`) within **-18 to -8 dBFS RMS** (targeting **-14 to -10 LUFS** nominal playing level) with headroom below `0 dBFS`.
+- All 38 factory presets are loudness-matched so a sustained triad (velocity `0.78`) renders at roughly **-17 dBFS RMS**, and a full-velocity 8-note chord needs at most a few dB of limiting. The `MonolithDspAudit stress` pass enforces this.

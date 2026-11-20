@@ -21,7 +21,7 @@ struct FactoryPreset
 };
 
 /**
-    Manages the 30 calibrated factory presets, category filtering,
+    Manages the 38 calibrated factory presets, category filtering,
     and A/B compare snapshots on the message thread.
 */
 class PresetManager

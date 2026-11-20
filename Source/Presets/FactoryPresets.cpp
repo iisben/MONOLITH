@@ -60,7 +60,7 @@ namespace
     std::vector<FactoryPreset> createAllFactoryPresets()
     {
         std::vector<FactoryPreset> list;
-        list.reserve (30);
+        list.reserve (38);
 
         // ====================================================================
         // CATEGORY 1: Epic Cinematic — Bigger Than Life (8)
@@ -76,7 +76,7 @@ namespace
                 { glottalTension, 0.68f }, { breathAmount, 0.20f }, { throatShift, 0.0f }, { formantFocus, 0.60f },
                 { subAbyss, 0.42f }, { spectralCrown, 0.36f }, { driveAmount, 0.24f }, { tapeInstability, 0.14f },
                 { oxideDamping, 0.12f }, { spaceType, 0.0f }, { spaceMix, 0.46f }, { spaceDecay, 0.68f },
-                { spaceDamp, 0.34f }, { spaceShimmer, 0.22f }, { expressionLevel, 0.78f }, { masterGain, 0.0f }
+                { spaceDamp, 0.34f }, { spaceShimmer, 0.22f }, { expressionLevel, 0.78f }, { masterGain, -0.5f }
             }
         });
 
@@ -92,7 +92,7 @@ namespace
                 { subAbyss, 0.76f }, { spectralCrown, 0.52f }, { driveAmount, 0.34f }, { tapeInstability, 0.12f },
                 { oxideDamping, 0.16f }, { spaceType, 0.0f }, { spaceMix, 0.52f }, { spaceDecay, 0.78f },
                 { spaceDamp, 0.38f }, { spaceShimmer, 0.36f }, { macroColossus, 0.35f }, { expressionLevel, 0.84f },
-                { masterGain, -3.5f }
+                { masterGain, -4.5f }
             }
         });
 
@@ -107,7 +107,7 @@ namespace
                 { glottalTension, 0.94f }, { breathAmount, 0.12f }, { throatShift, -1.2f }, { formantFocus, 0.78f },
                 { subAbyss, 0.54f }, { spectralCrown, 0.48f }, { driveAmount, 0.44f }, { tapeInstability, 0.08f },
                 { oxideDamping, 0.08f }, { spaceType, 0.0f }, { spaceMix, 0.44f }, { spaceDecay, 0.62f },
-                { spaceDamp, 0.28f }, { spaceShimmer, 0.20f }, { expressionLevel, 0.92f }, { masterGain, -4.5f }
+                { spaceDamp, 0.28f }, { spaceShimmer, 0.20f }, { expressionLevel, 0.92f }, { masterGain, -6.0f }
             }
         });
 
@@ -122,7 +122,7 @@ namespace
                 { glottalTension, 0.58f }, { breathAmount, 0.24f }, { throatShift, -1.5f }, { formantFocus, 0.58f },
                 { subAbyss, 0.62f }, { spectralCrown, 0.28f }, { driveAmount, 0.20f }, { tapeInstability, 0.18f },
                 { oxideDamping, 0.22f }, { spaceType, 2.0f }, { spaceMix, 0.58f }, { spaceDecay, 0.82f },
-                { spaceDamp, 0.46f }, { spaceShimmer, 0.28f }, { expressionLevel, 0.76f }, { masterGain, -2.0f }
+                { spaceDamp, 0.46f }, { spaceShimmer, 0.28f }, { expressionLevel, 0.76f }, { masterGain, -3.0f }
             }
         });
 
@@ -137,7 +137,7 @@ namespace
                 { glottalTension, 0.72f }, { breathAmount, 0.28f }, { throatShift, 1.8f }, { formantFocus, 0.66f },
                 { subAbyss, 0.18f }, { spectralCrown, 0.88f }, { driveAmount, 0.14f }, { tapeInstability, 0.10f },
                 { oxideDamping, 0.04f }, { spaceType, 0.0f }, { spaceMix, 0.60f }, { spaceDecay, 0.86f },
-                { spaceDamp, 0.18f }, { spaceShimmer, 0.72f }, { expressionLevel, 0.84f }, { masterGain, 1.5f }
+                { spaceDamp, 0.18f }, { spaceShimmer, 0.72f }, { expressionLevel, 0.84f }, { masterGain, -0.5f }
             }
         });
 
@@ -153,7 +153,7 @@ namespace
                 { subAbyss, 0.52f }, { spectralCrown, 0.22f }, { driveAmount, 0.56f }, { tapeInstability, 0.10f },
                 { oxideDamping, 0.14f }, { oversampleHq, 1.0f }, { spaceType, 1.0f }, { spaceMix, 0.36f },
                 { spaceDecay, 0.52f }, { spaceDamp, 0.36f }, { spaceShimmer, 0.10f }, { expressionLevel, 0.88f },
-                { masterGain, -4.5f }
+                { masterGain, -6.5f }
             }
         });
 
@@ -169,7 +169,7 @@ namespace
                 { subAbyss, 0.34f }, { spectralCrown, 0.44f }, { driveAmount, 0.18f }, { tapeInstability, 0.16f },
                 { oxideDamping, 0.15f }, { spaceType, 0.0f }, { spaceMix, 0.54f }, { spaceDecay, 0.74f },
                 { spaceDamp, 0.32f }, { spaceShimmer, 0.34f }, { legatoEnable, 1.0f }, { glideTime, 0.22f },
-                { expressionLevel, 0.68f }, { masterGain, 0.5f }
+                { expressionLevel, 0.68f }, { masterGain, 2.0f }
             }
         });
 
@@ -185,7 +185,7 @@ namespace
                 { subAbyss, 0.48f }, { spectralCrown, 0.58f }, { driveAmount, 0.22f }, { tapeInstability, 0.09f },
                 { oxideDamping, 0.08f }, { spaceType, 0.0f }, { spaceMix, 0.64f }, { spaceDecay, 0.88f },
                 { spaceDamp, 0.24f }, { spaceShimmer, 0.48f }, { macroColossus, 0.28f }, { macroAbyss, 0.24f },
-                { expressionLevel, 0.82f }, { masterGain, -1.5f }
+                { expressionLevel, 0.82f }, { masterGain, 0.0f }
             }
         });
 
@@ -203,7 +203,7 @@ namespace
                 { glottalTension, 0.62f }, { breathAmount, 0.22f }, { throatShift, -3.5f }, { formantFocus, 0.56f },
                 { subAbyss, 0.68f }, { spectralCrown, 0.08f }, { driveAmount, 0.52f }, { tapeInstability, 0.54f },
                 { oxideDamping, 0.44f }, { spaceType, 1.0f }, { spaceMix, 0.50f }, { spaceDecay, 0.64f },
-                { spaceDamp, 0.58f }, { spaceShimmer, 0.24f }, { expressionLevel, 0.78f }, { masterGain, -6.0f }
+                { spaceDamp, 0.58f }, { spaceShimmer, 0.24f }, { expressionLevel, 0.78f }, { masterGain, -5.5f }
             }
         });
 
@@ -218,7 +218,7 @@ namespace
                 { glottalTension, 0.74f }, { breathAmount, 0.08f }, { throatShift, -4.8f }, { formantFocus, 0.66f },
                 { subAbyss, 0.92f }, { spectralCrown, 0.00f }, { driveAmount, 0.60f }, { tapeInstability, 0.32f },
                 { oxideDamping, 0.52f }, { spaceType, 1.0f }, { spaceMix, 0.38f }, { spaceDecay, 0.58f },
-                { spaceDamp, 0.64f }, { spaceShimmer, 0.15f }, { expressionLevel, 0.82f }, { masterGain, -6.5f }
+                { spaceDamp, 0.64f }, { spaceShimmer, 0.15f }, { expressionLevel, 0.82f }, { masterGain, -7.5f }
             }
         });
 
@@ -234,7 +234,7 @@ namespace
                 { subAbyss, 0.38f }, { spectralCrown, 0.22f }, { driveAmount, 0.46f }, { tapeInstability, 0.86f },
                 { oxideDamping, 0.66f }, { spaceType, 2.0f }, { spaceMix, 0.52f }, { spaceDecay, 0.70f },
                 { spaceDamp, 0.62f }, { spaceShimmer, 0.30f }, { macroRot, 0.25f }, { expressionLevel, 0.74f },
-                { masterGain, -1.0f }
+                { masterGain, 1.0f }
             }
         });
 
@@ -250,7 +250,7 @@ namespace
                 { subAbyss, 0.60f }, { spectralCrown, 0.12f }, { driveAmount, 0.68f }, { tapeInstability, 0.20f },
                 { oxideDamping, 0.30f }, { oversampleHq, 1.0f }, { spaceType, 1.0f }, { spaceMix, 0.34f },
                 { spaceDecay, 0.32f }, { spaceDamp, 0.42f }, { spaceShimmer, 0.05f }, { expressionLevel, 0.85f },
-                { masterGain, -3.5f }
+                { masterGain, -5.0f }
             }
         });
 
@@ -265,7 +265,7 @@ namespace
                 { glottalTension, 0.70f }, { breathAmount, 0.18f }, { throatShift, -6.2f }, { formantFocus, 0.62f },
                 { subAbyss, 0.82f }, { spectralCrown, 0.04f }, { driveAmount, 0.58f }, { tapeInstability, 0.42f },
                 { oxideDamping, 0.48f }, { spaceType, 2.0f }, { spaceMix, 0.48f }, { spaceDecay, 0.74f },
-                { spaceDamp, 0.66f }, { spaceShimmer, 0.22f }, { expressionLevel, 0.80f }, { masterGain, -5.0f }
+                { spaceDamp, 0.66f }, { spaceShimmer, 0.22f }, { expressionLevel, 0.80f }, { masterGain, -4.5f }
             }
         });
 
@@ -295,7 +295,7 @@ namespace
                 { glottalTension, 0.50f }, { breathAmount, 0.34f }, { throatShift, -2.0f }, { formantFocus, 0.44f },
                 { subAbyss, 0.50f }, { spectralCrown, 0.10f }, { driveAmount, 0.44f }, { tapeInstability, 0.74f },
                 { oxideDamping, 0.74f }, { spaceType, 1.0f }, { spaceMix, 0.54f }, { spaceDecay, 0.72f },
-                { spaceDamp, 0.70f }, { spaceShimmer, 0.18f }, { expressionLevel, 0.74f }, { masterGain, -5.5f }
+                { spaceDamp, 0.70f }, { spaceShimmer, 0.18f }, { expressionLevel, 0.74f }, { masterGain, -3.0f }
             }
         });
 
@@ -314,7 +314,7 @@ namespace
                 { subAbyss, 0.68f }, { spectralCrown, 0.24f }, { driveAmount, 0.48f }, { tapeInstability, 0.44f },
                 { oxideDamping, 0.36f }, { screwPitch, -5.0f }, { screwDepth, 0.68f },
                 { spaceType, 3.0f }, { spaceMix, 0.54f }, { spaceDecay, 0.74f }, { spaceDamp, 0.44f },
-                { spaceShimmer, 0.42f }, { expressionLevel, 0.80f }, { masterGain, -5.5f }
+                { spaceShimmer, 0.42f }, { expressionLevel, 0.80f }, { masterGain, -6.5f }
             }
         });
 
@@ -330,7 +330,7 @@ namespace
                 { subAbyss, 0.56f }, { spectralCrown, 0.40f }, { driveAmount, 0.32f }, { tapeInstability, 0.38f },
                 { oxideDamping, 0.28f }, { screwPitch, 0.0f }, { screwDepth, 0.36f },
                 { spaceType, 2.0f }, { spaceMix, 0.62f }, { spaceDecay, 0.82f }, { spaceDamp, 0.48f },
-                { spaceShimmer, 0.54f }, { expressionLevel, 0.78f }, { masterGain, -6.0f }
+                { spaceShimmer, 0.54f }, { expressionLevel, 0.78f }, { masterGain, -6.5f }
             }
         });
 
@@ -346,7 +346,7 @@ namespace
                 { subAbyss, 0.22f }, { spectralCrown, 0.48f }, { driveAmount, 0.28f }, { tapeInstability, 0.36f },
                 { oxideDamping, 0.22f }, { screwPitch, -2.0f }, { screwDepth, 0.28f },
                 { spaceType, 3.0f }, { spaceMix, 0.66f }, { spaceDecay, 0.90f }, { spaceDamp, 0.30f },
-                { spaceShimmer, 0.66f }, { macroSpecter, 0.35f }, { expressionLevel, 0.84f }, { masterGain, 2.5f }
+                { spaceShimmer, 0.66f }, { macroSpecter, 0.35f }, { expressionLevel, 0.84f }, { masterGain, 5.0f }
             }
         });
 
@@ -379,7 +379,7 @@ namespace
                 { oxideDamping, 0.56f }, { screwPitch, -4.0f }, { screwDepth, 0.52f },
                 { spaceType, 2.0f }, { spaceMix, 0.64f }, { spaceDecay, 0.86f }, { spaceDamp, 0.60f },
                 { spaceShimmer, 0.38f }, { macroRot, 0.30f }, { macroAbyss, 0.25f }, { expressionLevel, 0.82f },
-                { masterGain, -5.0f }
+                { masterGain, -1.0f }
             }
         });
 
@@ -395,7 +395,7 @@ namespace
                 { subAbyss, 0.78f }, { spectralCrown, 0.26f }, { driveAmount, 0.44f }, { tapeInstability, 0.34f },
                 { oxideDamping, 0.32f }, { screwPitch, -3.0f }, { screwDepth, 0.40f },
                 { spaceType, 3.0f }, { spaceMix, 0.52f }, { spaceDecay, 0.74f }, { spaceDamp, 0.42f },
-                { spaceShimmer, 0.44f }, { expressionLevel, 0.80f }, { masterGain, -5.0f }
+                { spaceShimmer, 0.44f }, { expressionLevel, 0.80f }, { masterGain, -6.0f }
             }
         });
 
@@ -411,7 +411,7 @@ namespace
                 { subAbyss, 0.58f }, { spectralCrown, 0.74f }, { driveAmount, 0.48f }, { tapeInstability, 0.52f },
                 { oxideDamping, 0.34f }, { screwDepth, 0.32f },
                 { spaceType, 3.0f }, { spaceMix, 0.60f }, { spaceDecay, 0.82f }, { spaceDamp, 0.38f },
-                { spaceShimmer, 0.74f }, { expressionLevel, 0.80f }, { masterGain, -5.0f }
+                { spaceShimmer, 0.74f }, { expressionLevel, 0.80f }, { masterGain, -4.0f }
             }
         });
 
@@ -429,7 +429,7 @@ namespace
                 { glottalTension, 0.52f }, { breathAmount, 0.18f }, { throatShift, 0.0f }, { formantFocus, 0.64f },
                 { subAbyss, 0.00f }, { spectralCrown, 0.10f }, { driveAmount, 0.04f }, { tapeInstability, 0.02f },
                 { oxideDamping, 0.04f }, { spaceType, 0.0f }, { spaceMix, 0.34f }, { spaceDecay, 0.52f },
-                { spaceDamp, 0.38f }, { spaceShimmer, 0.04f }, { expressionLevel, 0.76f }, { masterGain, 4.5f }
+                { spaceDamp, 0.38f }, { spaceShimmer, 0.04f }, { expressionLevel, 0.76f }, { masterGain, 1.0f }
             }
         });
 
@@ -444,7 +444,7 @@ namespace
                 { glottalTension, 0.34f }, { breathAmount, 0.38f }, { throatShift, 0.4f }, { formantFocus, 0.54f },
                 { subAbyss, 0.00f }, { spectralCrown, 0.08f }, { driveAmount, 0.02f }, { tapeInstability, 0.03f },
                 { oxideDamping, 0.10f }, { spaceType, 0.0f }, { spaceMix, 0.42f }, { spaceDecay, 0.60f },
-                { spaceDamp, 0.44f }, { spaceShimmer, 0.05f }, { expressionLevel, 0.72f }, { masterGain, 2.0f }
+                { spaceDamp, 0.44f }, { spaceShimmer, 0.05f }, { expressionLevel, 0.72f }, { masterGain, -1.0f }
             }
         });
 
@@ -460,7 +460,7 @@ namespace
                 { subAbyss, 0.16f }, { spectralCrown, 0.00f }, { driveAmount, 0.08f }, { tapeInstability, 0.02f },
                 { oxideDamping, 0.08f }, { spaceType, 1.0f }, { spaceMix, 0.32f }, { spaceDecay, 0.46f },
                 { spaceDamp, 0.42f }, { spaceShimmer, 0.00f }, { legatoEnable, 1.0f }, { glideTime, 0.14f },
-                { expressionLevel, 0.82f }, { masterGain, -6.5f }
+                { expressionLevel, 0.82f }, { masterGain, -9.5f }
             }
         });
 
@@ -494,7 +494,7 @@ namespace
                 { glottalTension, 0.54f }, { breathAmount, 0.36f }, { throatShift, -3.5f }, { formantFocus, 0.58f },
                 { subAbyss, 0.66f }, { spectralCrown, 0.34f }, { driveAmount, 0.34f }, { tapeInstability, 0.44f },
                 { oxideDamping, 0.32f }, { spaceType, 2.0f }, { spaceMix, 0.68f }, { spaceDecay, 0.90f },
-                { spaceDamp, 0.48f }, { spaceShimmer, 0.48f }, { expressionLevel, 0.78f }, { masterGain, -3.5f }
+                { spaceDamp, 0.48f }, { spaceShimmer, 0.48f }, { expressionLevel, 0.78f }, { masterGain, -2.5f }
             }
         });
 
@@ -509,7 +509,7 @@ namespace
                 { glottalTension, 0.30f }, { breathAmount, 0.92f }, { throatShift, -6.5f }, { formantFocus, 0.62f },
                 { subAbyss, 0.74f }, { spectralCrown, 0.22f }, { driveAmount, 0.42f }, { tapeInstability, 0.50f },
                 { oxideDamping, 0.44f }, { spaceType, 2.0f }, { spaceMix, 0.64f }, { spaceDecay, 0.84f },
-                { spaceDamp, 0.50f }, { spaceShimmer, 0.38f }, { expressionLevel, 0.86f }, { masterGain, -5.5f }
+                { spaceDamp, 0.50f }, { spaceShimmer, 0.38f }, { expressionLevel, 0.86f }, { masterGain, -4.0f }
             }
         });
 
@@ -524,7 +524,7 @@ namespace
                 { glottalTension, 0.44f }, { breathAmount, 0.46f }, { throatShift, 4.5f }, { formantFocus, 0.82f },
                 { subAbyss, 0.12f }, { spectralCrown, 0.84f }, { driveAmount, 0.20f }, { tapeInstability, 0.68f },
                 { oxideDamping, 0.12f }, { spaceType, 3.0f }, { spaceMix, 0.72f }, { spaceDecay, 0.94f },
-                { spaceDamp, 0.18f }, { spaceShimmer, 0.84f }, { expressionLevel, 0.80f }, { masterGain, 0.5f }
+                { spaceDamp, 0.18f }, { spaceShimmer, 0.84f }, { expressionLevel, 0.80f }, { masterGain, 0.0f }
             }
         });
 
@@ -541,7 +541,140 @@ namespace
                 { oxideDamping, 0.24f }, { screwPitch, -2.0f }, { screwDepth, 0.35f },
                 { spaceType, 2.0f }, { spaceMix, 0.56f }, { spaceDecay, 0.80f }, { spaceDamp, 0.40f },
                 { spaceShimmer, 0.44f }, { macroColossus, 0.52f }, { macroSpecter, 0.32f },
-                { macroRot, 0.28f }, { macroAbyss, 0.58f }, { expressionLevel, 0.84f }, { masterGain, -4.0f }
+                { macroRot, 0.28f }, { macroAbyss, 0.58f }, { expressionLevel, 0.84f }, { masterGain, -0.5f }
+            }
+        });
+
+        // ====================================================================
+        // CATEGORY 6: Cinematic Colossal — Trailer-Scale Walls of Voices (8)
+        // Calibrated for zero-tweak use in film/trailer/game production: wide,
+        // deep, glued and loud, with headroom managed by the master stage.
+        // ====================================================================
+        list.push_back ({
+            "31. Colossus Rising",
+            "Cinematic Colossal",
+            "Full 24-singer SATB 'Ah' wall with chest-deep sub and towering cathedral bloom.",
+            {
+                { phonemeX, 0.50f }, { phonemeY, 0.88f }, { registerMode, 4.0f },
+                { ensembleSize, 24.0f }, { ensembleSpread, 0.90f }, { vibratoDepth, 0.34f },
+                { attackTime, 0.90f }, { releaseTime, 3.20f }, { onsetMode, 0.0f }, { onsetAmount, 0.30f },
+                { glottalTension, 0.74f }, { breathAmount, 0.14f }, { throatShift, -0.5f }, { formantFocus, 0.62f },
+                { subAbyss, 0.58f }, { spectralCrown, 0.40f }, { driveAmount, 0.20f }, { tapeInstability, 0.06f },
+                { oxideDamping, 0.10f }, { spaceType, 0.0f }, { spaceMix, 0.48f }, { spaceDecay, 0.80f },
+                { spaceDamp, 0.36f }, { spaceShimmer, 0.26f }, { macroColossus, 0.60f }, { expressionLevel, 0.86f },
+                { masterGain, -1.0f }
+            }
+        });
+
+        list.push_back ({
+            "32. Hall of the Ancients",
+            "Cinematic Colossal",
+            "Liturgical 'Oh' of a thousand monks resonating through an endless obsidian nave.",
+            {
+                { phonemeX, 0.20f }, { phonemeY, 0.70f }, { registerMode, 4.0f },
+                { ensembleSize, 24.0f }, { ensembleSpread, 0.82f }, { vibratoDepth, 0.24f },
+                { attackTime, 1.20f }, { releaseTime, 4.00f }, { onsetMode, 1.0f }, { onsetAmount, 0.30f },
+                { glottalTension, 0.62f }, { breathAmount, 0.12f }, { throatShift, -2.0f }, { formantFocus, 0.58f },
+                { subAbyss, 0.78f }, { spectralCrown, 0.22f }, { driveAmount, 0.16f }, { tapeInstability, 0.06f },
+                { oxideDamping, 0.18f }, { spaceType, 2.0f }, { spaceMix, 0.52f }, { spaceDecay, 0.86f },
+                { spaceDamp, 0.50f }, { spaceShimmer, 0.18f }, { macroColossus, 0.45f }, { macroAbyss, 0.45f },
+                { expressionLevel, 0.82f }, { masterGain, -3.0f }
+            }
+        });
+
+        list.push_back ({
+            "33. Titanfall Overture",
+            "Cinematic Colossal",
+            "Aggressive, forte 'Eh' trailer choir with hummed bite - built for hits and ostinatos.",
+            {
+                { phonemeX, 0.74f }, { phonemeY, 0.76f }, { registerMode, 4.0f },
+                { ensembleSize, 24.0f }, { ensembleSpread, 0.80f }, { vibratoDepth, 0.22f },
+                { attackTime, 0.10f }, { releaseTime, 1.60f }, { onsetMode, 1.0f }, { onsetAmount, 0.55f },
+                { glottalTension, 0.86f }, { breathAmount, 0.10f }, { throatShift, 0.0f }, { formantFocus, 0.66f },
+                { subAbyss, 0.52f }, { spectralCrown, 0.44f }, { driveAmount, 0.36f }, { tapeInstability, 0.04f },
+                { oxideDamping, 0.10f }, { spaceType, 0.0f }, { spaceMix, 0.40f }, { spaceDecay, 0.70f },
+                { spaceDamp, 0.40f }, { spaceShimmer, 0.12f }, { macroColossus, 0.75f }, { expressionLevel, 0.92f },
+                { masterGain, -2.5f }
+            }
+        });
+
+        list.push_back ({
+            "34. Celestial Expanse",
+            "Cinematic Colossal",
+            "Weightless soprano halo drifting between 'Oo' and 'Ah' with an infinite shimmering sky.",
+            {
+                { phonemeX, 0.30f }, { phonemeY, 0.62f }, { orbitEnable, 1.0f }, { orbitRate, 0.06f }, { orbitDepth, 0.30f },
+                { registerMode, 3.0f }, { ensembleSize, 22.0f }, { ensembleSpread, 0.92f }, { vibratoDepth, 0.40f },
+                { attackTime, 1.60f }, { releaseTime, 5.00f }, { onsetMode, 0.0f }, { onsetAmount, 0.24f },
+                { glottalTension, 0.48f }, { breathAmount, 0.26f }, { throatShift, 0.5f }, { formantFocus, 0.56f },
+                { subAbyss, 0.20f }, { spectralCrown, 0.48f }, { driveAmount, 0.06f }, { tapeInstability, 0.04f },
+                { oxideDamping, 0.08f }, { spaceType, 3.0f }, { spaceMix, 0.58f }, { spaceDecay, 0.84f },
+                { spaceDamp, 0.30f }, { spaceShimmer, 0.55f }, { macroSpecter, 0.22f }, { expressionLevel, 0.80f },
+                { masterGain, -0.5f }
+            }
+        });
+
+        list.push_back ({
+            "35. Leviathan Chant",
+            "Cinematic Colossal",
+            "Basso profundo throat chant - subterranean, tectonic weight for dark epic scores.",
+            {
+                { phonemeX, 0.24f }, { phonemeY, 0.40f }, { registerMode, 0.0f },
+                { ensembleSize, 20.0f }, { ensembleSpread, 0.70f }, { vibratoDepth, 0.14f },
+                { attackTime, 0.70f }, { releaseTime, 2.80f }, { onsetMode, 1.0f }, { onsetAmount, 0.42f },
+                { glottalTension, 0.76f }, { breathAmount, 0.08f }, { throatShift, -4.5f }, { formantFocus, 0.62f },
+                { subAbyss, 0.92f }, { spectralCrown, 0.10f }, { driveAmount, 0.30f }, { tapeInstability, 0.06f },
+                { oxideDamping, 0.30f }, { spaceType, 2.0f }, { spaceMix, 0.44f }, { spaceDecay, 0.80f },
+                { spaceDamp, 0.56f }, { spaceShimmer, 0.14f }, { macroColossus, 0.50f }, { macroAbyss, 0.35f },
+                { expressionLevel, 0.84f }, { masterGain, -7.0f }
+            }
+        });
+
+        list.push_back ({
+            "36. Empire of Dust",
+            "Cinematic Colossal",
+            "Slowly breathing vowel orbit across a vast warm choir - evolving, regal, endless.",
+            {
+                { phonemeX, 0.40f }, { phonemeY, 0.80f }, { orbitEnable, 1.0f }, { orbitRate, 0.05f }, { orbitDepth, 0.38f },
+                { registerMode, 4.0f }, { ensembleSize, 24.0f }, { ensembleSpread, 1.00f }, { vibratoDepth, 0.32f },
+                { attackTime, 1.40f }, { releaseTime, 5.00f }, { onsetMode, 0.0f }, { onsetAmount, 0.26f },
+                { glottalTension, 0.64f }, { breathAmount, 0.18f }, { throatShift, -1.0f }, { formantFocus, 0.58f },
+                { subAbyss, 0.56f }, { spectralCrown, 0.34f }, { driveAmount, 0.18f }, { tapeInstability, 0.18f },
+                { oxideDamping, 0.20f }, { spaceType, 0.0f }, { spaceMix, 0.54f }, { spaceDecay, 0.84f },
+                { spaceDamp, 0.42f }, { spaceShimmer, 0.24f }, { macroColossus, 0.50f }, { macroAbyss, 0.35f },
+                { expressionLevel, 0.80f }, { masterGain, 0.0f }
+            }
+        });
+
+        list.push_back ({
+            "37. Final Ascension",
+            "Cinematic Colossal",
+            "Slow-swelling SATB crescendo with octave shimmer - ride the Mod Wheel for the climax.",
+            {
+                { phonemeX, 0.52f }, { phonemeY, 0.86f }, { registerMode, 4.0f },
+                { ensembleSize, 24.0f }, { ensembleSpread, 0.86f }, { vibratoDepth, 0.38f },
+                { attackTime, 2.50f }, { releaseTime, 6.00f }, { onsetMode, 0.0f }, { onsetAmount, 0.20f },
+                { glottalTension, 0.70f }, { breathAmount, 0.16f }, { throatShift, 0.0f }, { formantFocus, 0.62f },
+                { subAbyss, 0.50f }, { spectralCrown, 0.54f }, { driveAmount, 0.14f }, { tapeInstability, 0.05f },
+                { oxideDamping, 0.08f }, { spaceType, 0.0f }, { spaceMix, 0.56f }, { spaceDecay, 0.88f },
+                { spaceDamp, 0.32f }, { spaceShimmer, 0.40f }, { macroColossus, 0.55f }, { macroSpecter, 0.12f },
+                { expressionLevel, 0.90f }, { masterGain, 0.0f }
+            }
+        });
+
+        list.push_back ({
+            "38. Abyssal Monument",
+            "Cinematic Colossal",
+            "The darkest, largest room in the instrument: hummed sub choir in an obsidian void.",
+            {
+                { phonemeX, 0.22f }, { phonemeY, 0.30f }, { registerMode, 4.0f },
+                { ensembleSize, 24.0f }, { ensembleSpread, 0.88f }, { vibratoDepth, 0.18f },
+                { attackTime, 1.80f }, { releaseTime, 6.00f }, { onsetMode, 1.0f }, { onsetAmount, 0.34f },
+                { glottalTension, 0.60f }, { breathAmount, 0.14f }, { throatShift, -3.0f }, { formantFocus, 0.56f },
+                { subAbyss, 1.00f }, { spectralCrown, 0.16f }, { driveAmount, 0.22f }, { tapeInstability, 0.10f },
+                { oxideDamping, 0.32f }, { spaceType, 2.0f }, { spaceMix, 0.60f }, { spaceDecay, 0.92f },
+                { spaceDamp, 0.52f }, { spaceShimmer, 0.30f }, { macroColossus, 0.60f }, { macroAbyss, 0.70f },
+                { expressionLevel, 0.84f }, { masterGain, 0.0f }
             }
         });
 
