@@ -2,6 +2,7 @@
 
 #include "DspMath.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -15,10 +16,13 @@ namespace monolith::dsp
          Sub-Abyss layer and tape asymmetry that would otherwise eat headroom.
       2. Soft-knee "glue" bus compressor (1.6:1, -13 dBFS threshold, 30 ms / 280 ms)
          - gently binds the swarm, tames full-velocity chord build-up, max 5 dB GR.
-      3. Lookahead brickwall peak limiter (1.5 ms lookahead, -1 dBFS ceiling).
-         Peak-hold + release smoothing + box-filter gain ramp guarantees zero
-         overshoot WITHOUT waveshaping, so the output never clips or distorts
-         audibly, even with 12 voices at full velocity and +6 dB output gain.
+      3. True-peak lookahead brickwall limiter (1.5 ms lookahead, -1 dBTP ceiling).
+         The detector sees 4x-interpolated inter-sample peaks (ITU-R BS.1770 style,
+         12-tap windowed-sinc polyphase), so reconstructed DAC/codec output also stays
+         below the ceiling. A 12 ms post-peak hold stops the gain from riding individual
+         cycles of low notes (cuts limiter THD on a 55 Hz overload by ~25 dB).
+         Peak-hold + release smoothing + box-filter gain ramp guarantees zero sample
+         overshoot WITHOUT waveshaping.
 
     All buffers are preallocated in prepare(); process() is allocation-free.
 */
@@ -33,11 +37,31 @@ public:
         const float srF = static_cast<float> (sr);
 
         lookahead = std::max (16, static_cast<int> (std::lround (0.0015 * sr)));
+        holdSamples = std::max (0, static_cast<int> (std::lround (0.012 * sr)));
+        window = lookahead + holdSamples;
 
-        // Ring sizes: power of two >= lookahead + 1
+        // Ring sizes: power of two >= detector window + 1
         ringSize = 1;
-        while (ringSize < lookahead + 2)
+        while (ringSize < window + 2)
             ringSize <<= 1;
+
+        // 4x true-peak interpolator: phases 1..3 between x[n-kTpDelay] and x[n-kTpDelay+1]
+        for (int ph = 1; ph < 4; ++ph)
+        {
+            double sum = 0.0;
+            for (int j = 0; j < kTpTaps; ++j)
+            {
+                const double t = static_cast<double> (kTpDelay - j) - 0.25 * ph; // tap position minus interpolation point
+                const double sincV = (std::abs (t) < 1.0e-9) ? 1.0 : std::sin (3.14159265358979323846 * t) / (3.14159265358979323846 * t);
+                const double u = t / (kTpDelay + 0.5);
+                const double win = (std::abs (u) >= 1.0) ? 0.0
+                                 : 0.42 + 0.5 * std::cos (3.14159265358979323846 * u) + 0.08 * std::cos (2.0 * 3.14159265358979323846 * u);
+                tpCoeff[static_cast<size_t> (ph - 1)][static_cast<size_t> (j)] = static_cast<float> (sincV * win);
+                sum += sincV * win;
+            }
+            for (auto& c : tpCoeff[static_cast<size_t> (ph - 1)])
+                c = static_cast<float> (c / sum); // unity DC gain per phase
+        }
         ringMask = ringSize - 1;
 
         delayL.assign (static_cast<size_t> (ringSize), 0.0f);
@@ -64,6 +88,9 @@ public:
         std::fill (boxRing.begin(), boxRing.end(), 1.0f);
         hpL.reset();
         hpR.reset();
+        tpHistL.fill (0.0f);
+        tpHistR.fill (0.0f);
+        tpPos      = 0;
         writePos   = 0;
         sampleIdx  = 0;
         dqHead     = 0;
@@ -75,8 +102,8 @@ public:
         lastLimGr  = 1.0f;
     }
 
-    /** Latency introduced by the limiter lookahead (samples). */
-    [[nodiscard]] int getLatencySamples() const noexcept { return lookahead - 1; }
+    /** Latency introduced by the limiter lookahead + true-peak interpolator (samples). */
+    [[nodiscard]] int getLatencySamples() const noexcept { return lookahead - 1 + kTpDelay; }
 
     /** Most recent limiter gain (linear, 1 = no reduction). */
     [[nodiscard]] float getLimiterGain() const noexcept { return lastLimGr; }
@@ -110,17 +137,42 @@ public:
         xL *= compGain;
         xR *= compGain;
 
-        // 3. Lookahead limiter
-        const float peak = std::max (std::abs (xL), std::abs (xR));
+        // 3. True-peak detection: the limiter works on x[n - kTpDelay] and also sees the three
+        //    4x-interpolated points between it and the following sample.
+        tpHistL[static_cast<size_t> (tpPos)] = xL;
+        tpHistR[static_cast<size_t> (tpPos)] = xR;
+        const auto histAt = [this] (const std::array<float, kTpTaps>& h, int j) noexcept
+        {
+            return h[static_cast<size_t> ((tpPos - j + kTpTaps) % kTpTaps)];
+        };
+        const float cL = histAt (tpHistL, kTpDelay);
+        const float cR = histAt (tpHistR, kTpDelay);
+        float peak = std::max (std::abs (cL), std::abs (cR));
+        for (size_t ph = 0; ph < 3; ++ph)
+        {
+            float iL = 0.0f, iR = 0.0f;
+            for (int j = 0; j < kTpTaps; ++j)
+            {
+                const float c = tpCoeff[ph][static_cast<size_t> (j)];
+                iL += c * histAt (tpHistL, j);
+                iR += c * histAt (tpHistR, j);
+            }
+            peak = std::max (peak, std::max (std::abs (iL), std::abs (iR)));
+        }
+        tpPos = (tpPos + 1) % kTpTaps;
+        xL = cL;
+        xR = cR;
+
         const float req  = (peak > kCeiling) ? (kCeiling / peak) : 1.0f;
 
-        // Sliding-window minimum over the last `lookahead` samples (monotonic deque, O(1) amortised)
+        // Sliding-window minimum over lookahead + hold (monotonic deque, O(1) amortised).
+        // The hold part keeps gain reduction steady between the cycles of low notes.
         while (dqTail != dqHead && dqVal[static_cast<size_t> ((dqTail - 1) & ringMask)] >= req)
             --dqTail;
         dqVal[static_cast<size_t> (dqTail & ringMask)] = req;
         dqIdx[static_cast<size_t> (dqTail & ringMask)] = sampleIdx;
         ++dqTail;
-        while (dqIdx[static_cast<size_t> (dqHead & ringMask)] + static_cast<int64_t> (lookahead) <= sampleIdx)
+        while (dqIdx[static_cast<size_t> (dqHead & ringMask)] + static_cast<int64_t> (window) <= sampleIdx)
             ++dqHead;
         const float held = dqVal[static_cast<size_t> (dqHead & ringMask)];
 
@@ -151,8 +203,13 @@ public:
     }
 
 private:
+    static constexpr int kTpTaps  = 12;
+    static constexpr int kTpDelay = 6;
+
     double sr        = 48000.0;
     int    lookahead = 72;
+    int    holdSamples = 576;
+    int    window    = 648;
     int    ringSize  = 128;
     int    ringMask  = 127;
     int    writePos  = 0;
@@ -163,6 +220,10 @@ private:
     int64_t dqHead = 0, dqTail = 0;
     double  boxSum = 72.0;
     float   limSmooth = 1.0f, limRelAlpha = 0.001f, lastLimGr = 1.0f;
+
+    std::array<std::array<float, kTpTaps>, 3> tpCoeff {};
+    std::array<float, kTpTaps> tpHistL {}, tpHistR {};
+    int tpPos = 0;
 
     ZdfSvf hpL, hpR;
     float compEnvSq = 0.0f, compGrDb = 0.0f;

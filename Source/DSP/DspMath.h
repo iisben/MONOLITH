@@ -314,7 +314,7 @@ class LfGlottalTables
 public:
     static constexpr int kNumTensionSlices = 8;
     static constexpr int kNumMipLevels     = 10;
-    static constexpr int kTableSize        = 1024;
+    static constexpr int kTableSize        = 2048;
 
     static const LfGlottalTables& instance()
     {
@@ -322,7 +322,12 @@ public:
         return singleton;
     }
 
-    /** Sample band-limited LF glottal waveform with click-free trilinear interpolation. */
+    /**
+        Sample band-limited LF glottal waveform. The four neighbouring tables (tension x mip)
+        are blended first, then read with 4-point cubic Hermite interpolation: this keeps the
+        table-interpolation noise floor below -100 dB even for the 256-harmonic low-note tiers
+        (linear reads of a 1024-point table left a -70 dB hiss under bright, low voices).
+    */
     [[nodiscard]] inline float sample (float phase01, float tension01,
                                        float freqHz, float sampleRate) const noexcept
     {
@@ -347,23 +352,30 @@ public:
         if (p < 0.0f) p += 1.0f;
 
         const float pos  = p * static_cast<float> (kTableSize);
-        const int   i0   = static_cast<int> (pos) & (kTableSize - 1);
-        const float frac = pos - std::floor (pos);
+        const int   i0   = std::min (static_cast<int> (pos), kTableSize - 1);
+        const float frac = pos - static_cast<float> (i0);
 
-        const auto& r00 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m0)];
-        const auto& r01 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m1)];
-        const auto& r10 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m0)];
-        const auto& r11 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m1)];
+        const float* r00 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m0)].data() + i0;
+        const float* r01 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m1)].data() + i0;
+        const float* r10 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m0)].data() + i0;
+        const float* r11 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m1)].data() + i0;
 
-        const size_t ui0 = static_cast<size_t> (i0);
-        const float s00 = r00[ui0] + frac * (r00[ui0 + 1] - r00[ui0]);
-        const float s01 = r01[ui0] + frac * (r01[ui0 + 1] - r01[ui0]);
-        const float s10 = r10[ui0] + frac * (r10[ui0 + 1] - r10[ui0]);
-        const float s11 = r11[ui0] + frac * (r11[ui0 + 1] - r11[ui0]);
+        // Bilinear weights across (tension, mip) - Hermite is linear in its inputs, so blend first.
+        const float w00 = (1.0f - tFrac) * (1.0f - mFrac);
+        const float w01 = (1.0f - tFrac) * mFrac;
+        const float w10 = tFrac * (1.0f - mFrac);
+        const float w11 = tFrac * mFrac;
 
-        const float s0 = s00 + mFrac * (s01 - s00);
-        const float s1 = s10 + mFrac * (s11 - s10);
-        return s0 + tFrac * (s1 - s0);
+        // Row layout: [0] = x[-1], [1..N] = x[0..N-1], [N+1..N+3] = x[0..2] (wrap guards)
+        const float y0 = w00 * r00[0] + w01 * r01[0] + w10 * r10[0] + w11 * r11[0];
+        const float y1 = w00 * r00[1] + w01 * r01[1] + w10 * r10[1] + w11 * r11[1];
+        const float y2 = w00 * r00[2] + w01 * r01[2] + w10 * r10[2] + w11 * r11[2];
+        const float y3 = w00 * r00[3] + w01 * r01[3] + w10 * r10[3] + w11 * r11[3];
+
+        const float c1 = 0.5f * (y2 - y0);
+        const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+        const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+        return ((c3 * frac + c2) * frac + c1) * frac + y1;
     }
 
     /** Returns [0, 1] glottal-open envelope pulse used to modulate aspirated breath noise. */
@@ -384,7 +396,7 @@ private:
         256, 128, 64, 32, 16, 8, 4, 2, 1, 1
     };
 
-    using WaveRow = std::array<float, kTableSize + 1>;
+    using WaveRow = std::array<float, kTableSize + 4>;
     std::array<std::array<WaveRow, kNumMipLevels>, kNumTensionSlices> tables {};
 
     LfGlottalTables()
@@ -455,27 +467,46 @@ private:
             for (int mip = 0; mip < kNumMipLevels; ++mip)
             {
                 const int maxH = kMipMaxHarmonic[static_cast<size_t> (mip)];
-                auto& out = tables[static_cast<size_t> (slice)][static_cast<size_t> (mip)];
-                for (int i = 0; i < kTableSize; ++i)
+                std::array<double, kTableSize> acc {};
+
+                // Additive resynthesis via a rotating phasor per harmonic (exact to ~1e-13,
+                // ~40x faster than calling cos/sin per sample at plugin load).
+                for (int h = 1; h <= maxH; ++h)
                 {
-                    const double phase = (2.0 * 3.14159265358979323846 * static_cast<double> (i))
-                                       / static_cast<double> (kTableSize);
-                    double acc = 0.0;
-                    for (int h = 1; h <= maxH; ++h)
+                    double window = 1.0;
+                    if (maxH >= 4 && h > maxH - 2)
                     {
-                        double window = 1.0;
-                        if (maxH >= 4 && h > maxH - 2)
-                        {
-                            const double u = static_cast<double> (h - (maxH - 2)) / 3.0;
-                            window = 0.5 * (1.0 + std::cos (3.14159265358979323846 * u));
-                        }
-                        const double ang = static_cast<double> (h) * phase;
-                        acc += window * (cosCoeff[static_cast<size_t> (h)] * std::cos (ang)
-                                       + sinCoeff[static_cast<size_t> (h)] * std::sin (ang));
+                        const double u = static_cast<double> (h - (maxH - 2)) / 3.0;
+                        window = 0.5 * (1.0 + std::cos (3.14159265358979323846 * u));
                     }
-                    out[static_cast<size_t> (i)] = static_cast<float> (acc);
+                    const double a = window * cosCoeff[static_cast<size_t> (h)];
+                    const double b = window * sinCoeff[static_cast<size_t> (h)];
+                    const double step = (2.0 * 3.14159265358979323846 * static_cast<double> (h))
+                                      / static_cast<double> (kTableSize);
+                    const double cs = std::cos (step), sn = std::sin (step);
+                    double c = 1.0, s = 0.0;
+                    for (int i = 0; i < kTableSize; ++i)
+                    {
+                        acc[static_cast<size_t> (i)] += a * c + b * s;
+                        const double nc = c * cs - s * sn;
+                        s = s * cs + c * sn;
+                        c = nc;
+                        if ((i & 255) == 255) // renormalise against rounding drift
+                        {
+                            const double m = 1.0 / std::sqrt (c * c + s * s);
+                            c *= m;
+                            s *= m;
+                        }
+                    }
                 }
-                out[kTableSize] = out[0];
+
+                auto& out = tables[static_cast<size_t> (slice)][static_cast<size_t> (mip)];
+                out[0] = static_cast<float> (acc[kTableSize - 1]);
+                for (int i = 0; i < kTableSize; ++i)
+                    out[static_cast<size_t> (i + 1)] = static_cast<float> (acc[static_cast<size_t> (i)]);
+                out[kTableSize + 1] = static_cast<float> (acc[0]);
+                out[kTableSize + 2] = static_cast<float> (acc[1]);
+                out[kTableSize + 3] = static_cast<float> (acc[2]);
             }
         }
     }

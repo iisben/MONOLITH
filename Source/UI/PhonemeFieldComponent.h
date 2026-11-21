@@ -11,9 +11,10 @@ namespace monolith::ui
 {
 
 /**
-    60 FPS lock-free Interactive 2D Phoneme & Acoustic Field hero display.
-    Allows dragging/clicking across the 7 curated vocal anchors while rendering
-    5 concentric vocal-tract formant rings, breath mist, and orbiting swarm motes.
+    60 FPS lock-free interactive 2D vowel field, drawn as an architectural plan:
+    the vowel space is the floor plan, the 7 curated phonemes are column bases,
+    the ensemble sits in choir stalls around the sounding point, construction
+    lines locate it on the rulers, and F1-F5 energy rises in five organ pipes.
 */
 class PhonemeFieldComponent final : public juce::Component,
                                     public juce::SettableTooltipClient
@@ -34,6 +35,7 @@ private:
     juce::Point<float> normToScreen (float nx, float ny) const noexcept;
     void setFromPoint (juce::Point<float> pt, bool isInitialClick);
 
+    ConcreteSurface surface;
     std::unique_ptr<juce::ParameterAttachment> xAttach;
     std::unique_ptr<juce::ParameterAttachment> yAttach;
 

@@ -183,7 +183,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { screwDepth, 1 }, "Screw Shadow", normRange (0.0f, 1.0f), defaults::screwDepth));
     layout.add (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { oversampleHq, 1 }, "Drive 4x OS", defaults::oversampleHq));
+        juce::ParameterID { oversampleHq, 1 }, "Drive 8x OS", defaults::oversampleHq));
 
     // Architectural Space + Freeze
     layout.add (std::make_unique<juce::AudioParameterChoice> (

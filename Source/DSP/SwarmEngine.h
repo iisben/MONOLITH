@@ -134,6 +134,8 @@ private:
     // MIDI & expression state
     float pitchBendSemitones  = 0.0f;
     float midiModWheel        = 0.78f;
+    float midiCc11            = 1.0f;   // CC11 expression fader (volume, pre-reverb)
+    float cc11Gain            = 1.0f;   // per-sample smoothed CC11 gain
     float channelAftertouch   = 0.0f;
     bool  sustainPedalDown    = false;
     bool  cc64FreezeActive    = false;

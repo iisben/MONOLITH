@@ -33,9 +33,11 @@ MonolithDial::MonolithDial (juce::AudioProcessorValueTreeState& apvts,
       numDecimals (decimals),
       percentMode (isPercent),
       macroMode (isMacro),
-      accentColour (accentName == "cyan" ? palette::paleCyan : palette::moltenAmber)
+      accentColour (accentFromName (accentName))
 {
-    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    // Macros are standing stones (vertical, relative drag); everything else is a turned dial.
+    slider.setSliderStyle (isMacro ? juce::Slider::LinearVertical : juce::Slider::RotaryHorizontalVerticalDrag);
+    slider.setSliderSnapsToMousePosition (false);
     slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     slider.setMouseDragSensitivity (isMacro ? 190 : 165);
     slider.setPopupDisplayEnabled (false, false, nullptr);
@@ -70,49 +72,63 @@ juce::String MonolithDial::formatCurrentValue() const
 void MonolithDial::paint (juce::Graphics& g)
 {
     const auto b = getLocalBounds().toFloat();
-    const bool hoverOrDrag = slider.isMouseOverOrDragging();
+    const bool live = slider.isMouseOverOrDragging();
 
     if (macroMode)
     {
-        // Macro caption above + value & micro-subtitle below
-        g.setColour (hoverOrDrag ? palette::boneWhite : palette::boneWhite.withAlpha (0.90f));
-        g.setFont (makeFont (11.5f, true, false));
-        g.drawText (title, b.withHeight (16.0f), juce::Justification::centred, false);
+        // Stone on the left; name, reading and its three effects inscribed beside it
+        auto text = b.withTrimmedLeft ((float) slider.getRight() + 6.0f).reduced (0.0f, 4.0f);
+        g.setColour (live ? palette::boneWhite : palette::boneWhite.withAlpha (0.92f));
+        g.setFont (makeRoleFont (FontRole::Inscription, 15.0f, true));
+        drawTracked (g, title, text.removeFromTop (22.0f), juce::Justification::centredLeft, 0.16f);
 
-        const float bottomY = b.getBottom() - 26.0f;
-        g.setColour (hoverOrDrag ? accentColour : palette::boneWhite);
-        g.setFont (makeFont (11.5f, true, true));
-        g.drawText (formatCurrentValue(), juce::Rectangle<float> (b.getX(), bottomY, b.getWidth(), 13.0f),
-                    juce::Justification::centred, false);
+        drawIncisedHorizontal (g, text.getY() + 3.0f, text.getX(), text.getRight() - 10.0f);
+        text.removeFromTop (10.0f);
+
+        g.setColour (live ? accentColour : palette::boneWhite);
+        g.setFont (makeRoleFont (FontRole::Numeric, 22.0f, false));
+        g.drawText (formatCurrentValue(), text.removeFromTop (28.0f), juce::Justification::centredLeft, false);
 
         if (subCaption.isNotEmpty())
         {
-            g.setColour (palette::dimAsh);
-            g.setFont (makeFont (8.5f, true, false));
-            g.drawText (subCaption, juce::Rectangle<float> (b.getX(), bottomY + 13.0f, b.getWidth(), 11.0f),
-                        juce::Justification::centred, false);
+            g.setColour (palette::mutedLimestone);
+            g.setFont (makeFont (8.0f, true, false));
+            drawTracked (g, subCaption, text.removeFromTop (14.0f).withRight (b.getRight()), juce::Justification::centredLeft, 0.02f);
         }
         return;
     }
 
-    // Standard panel dial: label top, live readout bottom
-    g.setColour (hoverOrDrag ? palette::boneWhite : palette::mutedLimestone);
-    g.setFont (makeFont (9.5f, true, false));
-    g.drawText (title, b.withHeight (13.0f), juce::Justification::centred, false);
+    if (isCompact())
+    {
+        auto text = b.withTrimmedLeft ((float) slider.getRight() + 4.0f);
+        g.setColour (live ? palette::boneWhite : palette::mutedLimestone);
+        g.setFont (makeFont (8.5f, true, false));
+        drawTracked (g, title, text.removeFromTop (b.getHeight() * 0.5f), juce::Justification::bottomLeft, 0.16f);
+        g.setColour (live ? accentColour : palette::boneWhite.withAlpha (0.85f));
+        g.setFont (makeRoleFont (FontRole::Numeric, 10.0f, live));
+        g.drawText (formatCurrentValue(), text, juce::Justification::topLeft, false);
+        return;
+    }
 
-    g.setColour (hoverOrDrag ? accentColour : palette::boneWhite.withAlpha (0.88f));
-    g.setFont (makeFont (9.5f, hoverOrDrag, true));
-    g.drawText (formatCurrentValue(),
-                b.withTop (b.getBottom() - 13.0f),
-                juce::Justification::centred,
-                false);
+    g.setColour (live ? palette::boneWhite : palette::mutedLimestone);
+    g.setFont (makeFont (9.0f, true, false));
+    drawTracked (g, title, b.withHeight (13.0f), juce::Justification::centred, 0.16f);
+
+    g.setColour (live ? accentColour : palette::boneWhite.withAlpha (0.85f));
+    g.setFont (makeRoleFont (FontRole::Numeric, 9.5f, live));
+    g.drawText (formatCurrentValue(), b.withTop (b.getBottom() - 13.0f), juce::Justification::centred, false);
 }
 
 void MonolithDial::resized()
 {
     auto b = getLocalBounds();
     if (macroMode)
-        slider.setBounds (b.withTrimmedTop (15).withTrimmedBottom (26));
+    {
+        const int slabH = b.getHeight() - 8;
+        slider.setBounds (b.getX(), b.getY() + 4, slabH * 4 / 9 + 26, slabH);
+    }
+    else if (isCompact())
+        slider.setBounds (b.removeFromLeft (b.getHeight()));
     else
         slider.setBounds (b.withTrimmedTop (13).withTrimmedBottom (13));
 }
@@ -153,34 +169,31 @@ void StereoLevelMeter::update (float rmsL, float rmsR, float peakL, float peakR)
 
 void StereoLevelMeter::paint (juce::Graphics& g)
 {
-    const auto b = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (palette::obsidianBg);
-    g.fillRoundedRectangle (b, 2.0f);
-    g.setColour (palette::gridHairline);
-    g.drawRoundedRectangle (b, 2.0f, 1.0f);
+    const auto b = getLocalBounds().toFloat();
+    drawRecess (g, b);
 
-    const auto inner = b.reduced (4.0f, 5.0f);
+    const auto inner = b.reduced (4.0f, 4.0f);
     const float barH = (inner.getHeight() - 3.0f) * 0.5f;
+    constexpr int kSegments = 36;
 
     auto drawBar = [&g] (juce::Rectangle<float> rect, float val, float hold)
     {
-        g.setColour (palette::panelElevated);
-        g.fillRect (rect);
-
-        const float fillW = rect.getWidth() * std::clamp (val, 0.0f, 1.0f);
-        if (fillW > 0.5f)
+        // Segmented like coursed stone: limestone, gilt over -9 dB, oxide in the last segment
+        const float segW = rect.getWidth() / (float) kSegments;
+        const int lit = (int) std::floor (std::clamp (val, 0.0f, 1.0f) * (float) kSegments + 0.0001f);
+        for (int i = 0; i < kSegments; ++i)
         {
-            juce::ColourGradient grad (palette::paleCyan, rect.getX(), rect.getY(),
-                                       palette::moltenAmber, rect.getRight(), rect.getY(), false);
-            g.setGradientFill (grad);
-            g.fillRect (rect.withWidth (fillW));
+            const auto seg = juce::Rectangle<float> (rect.getX() + (float) i * segW, rect.getY(), segW - 1.0f, rect.getHeight());
+            const float pos = (float) (i + 1) / (float) kSegments;
+            juce::Colour on = pos > 0.97f ? palette::crimsonAlert : (pos > 0.83f ? palette::moltenAmber : palette::mutedLimestone);
+            g.setColour (i < lit ? on : palette::panelElevated.withAlpha (0.65f));
+            g.fillRect (seg);
         }
-
         if (hold > 0.01f)
         {
             const float hx = rect.getX() + rect.getWidth() * std::clamp (hold, 0.0f, 1.0f);
-            g.setColour (hold > 0.94f ? palette::crimsonAlert : palette::boneWhite);
-            g.fillRect (hx - 1.0f, rect.getY(), 2.0f, rect.getHeight());
+            g.setColour (hold > 0.97f ? palette::crimsonAlert : palette::boneWhite);
+            g.fillRect (hx - 1.5f, rect.getY() - 1.0f, 1.5f, rect.getHeight() + 2.0f);
         }
     };
 
@@ -270,41 +283,39 @@ void ExpressionBar::mouseDoubleClick (const juce::MouseEvent& e)
 
 void ExpressionBar::paint (juce::Graphics& g)
 {
-    const auto b = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (palette::obsidianBg);
-    g.fillRoundedRectangle (b, 2.5f);
-    g.setColour (isMouseOverOrDragging() ? palette::borderBright : palette::gridHairline);
-    g.drawRoundedRectangle (b, 2.5f, 1.0f);
+    const auto b = getLocalBounds().toFloat();
+    const bool live = isMouseOverOrDragging();
 
-    const auto track = b.reduced (6.0f, 18.0f).translated (0.0f, 4.0f);
-    g.setColour (palette::panelElevated);
-    g.fillRect (track);
+    g.setColour (live ? palette::boneWhite : palette::mutedLimestone);
+    g.setFont (makeFont (9.0f, true, false));
+    drawTracked (g, juce::String::fromUTF8 ("EXPRESSION  \u00B7  CC1"), b.withHeight (13.0f), juce::Justification::centredLeft, 0.18f);
 
     const float val = liveVal;
-    const float fillW = track.getWidth() * std::clamp (val, 0.0f, 1.0f);
+    g.setColour (palette::boneWhite);
+    g.setFont (makeRoleFont (FontRole::Numeric, 10.0f, true));
+    g.drawText (juce::String (static_cast<int> (std::lround (val * 100.0f))) + "%",
+                b.withHeight (13.0f), juce::Justification::centredRight, false);
+
+    // A channel cut into the stone, filled with gilt to the current dynamic
+    const auto track = juce::Rectangle<float> (b.getX(), b.getY() + 20.0f, b.getWidth(), 12.0f);
+    drawRecess (g, track);
+    const auto inner = track.reduced (3.0f, 3.0f);
+    const float fillW = inner.getWidth() * std::clamp (val, 0.0f, 1.0f);
     if (fillW > 0.5f)
     {
-        juce::ColourGradient grad (palette::paleCyan.withAlpha (0.75f), track.getX(), track.getY(),
-                                   palette::moltenAmber, track.getRight(), track.getY(), false);
-        g.setGradientFill (grad);
-        g.fillRect (track.withWidth (fillW));
+        g.setColour (palette::moltenAmber.withAlpha (live ? 0.95f : 0.8f));
+        g.fillRect (inner.withWidth (fillW));
     }
 
-    // Precision fader thumb line
-    const float tx = track.getX() + fillW;
-    g.setColour (palette::boneWhite);
-    g.fillRect (tx - 1.0f, track.getY() - 3.0f, 2.0f, track.getHeight() + 6.0f);
+    // Quarter graduations cut below the channel
+    g.setColour (palette::dimAsh);
+    for (int i = 1; i < 4; ++i)
+        g.fillRect (inner.getX() + inner.getWidth() * 0.25f * (float) i, track.getBottom() + 1.0f, 1.0f, 3.0f);
 
-    g.setColour (palette::mutedLimestone);
-    g.setFont (makeFont (9.5f, true, false));
-    g.drawText ("EXPRESSION  /  CC1", b.reduced (7.0f, 4.0f).withHeight (13.0f), juce::Justification::centredLeft, false);
-
+    // Fader edge
+    const float tx = inner.getX() + fillW;
     g.setColour (palette::boneWhite);
-    g.setFont (makeFont (10.0f, true, true));
-    g.drawText (juce::String (static_cast<int> (std::lround (val * 100.0f))) + "%",
-                b.reduced (7.0f, 4.0f).withHeight (13.0f),
-                juce::Justification::centredRight,
-                false);
+    g.fillRect (tx - 1.0f, track.getY() - 2.0f, 2.0f, track.getHeight() + 4.0f);
 }
 
 // ============================================================================
@@ -320,21 +331,28 @@ void VoiceBadge::update (int voices, int singers) noexcept
 
 void VoiceBadge::paint (juce::Graphics& g)
 {
-    const auto b = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (palette::obsidianBg);
-    g.fillRoundedRectangle (b, 2.5f);
-    g.setColour (palette::gridHairline);
-    g.drawRoundedRectangle (b, 2.5f, 1.0f);
+    const auto b = getLocalBounds().toFloat();
+    drawRecess (g, b);
 
     const bool active = voiceCount > 0;
-    g.setColour (active ? palette::paleCyan : palette::dimAsh);
-    g.fillEllipse (b.getX() + 7.0f, b.getCentreY() - 2.5f, 5.0f, 5.0f);
+    g.setColour (active ? palette::moltenAmber : palette::dimAsh);
+    g.fillRect (b.getX() + 8.0f, b.getCentreY() - 3.0f, 6.0f, 6.0f);
 
-    g.setColour (active ? palette::boneWhite : palette::mutedLimestone);
-    g.setFont (makeFont (9.8f, true, true));
-    const juce::String txt = "VOICES " + juce::String (voiceCount).paddedLeft ('0', 2)
-                           + "  |  SINGERS " + juce::String (singerCount).paddedLeft ('0', 2);
-    g.drawText (txt, b.withTrimmedLeft (15.0f).withTrimmedRight (4.0f), juce::Justification::centred, false);
+    auto area = b.withTrimmedLeft (22.0f).withTrimmedRight (8.0f);
+    auto half = area.removeFromLeft (area.getWidth() * 0.5f);
+
+    auto drawStat = [&g, active] (juce::Rectangle<float> r, const char* label, int value)
+    {
+        g.setColour (palette::mutedLimestone);
+        g.setFont (makeFont (8.5f, true, false));
+        drawTracked (g, label, r, juce::Justification::centredLeft, 0.18f);
+        g.setColour (active ? palette::boneWhite : palette::mutedLimestone);
+        g.setFont (makeRoleFont (FontRole::Numeric, 11.0f, true));
+        g.drawText (juce::String (value).paddedLeft ('0', 2), r, juce::Justification::centredRight, false);
+    };
+    drawStat (half.withTrimmedRight (8.0f), "VOICES", voiceCount);
+    drawStat (area.withTrimmedLeft (4.0f), "SINGERS", singerCount);
+    drawIncisedVertical (g, half.getRight() - 1.0f, b.getY() + 6.0f, b.getBottom() - 6.0f);
 }
 
 } // namespace monolith::ui

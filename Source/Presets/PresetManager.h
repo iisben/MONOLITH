@@ -21,7 +21,9 @@ struct FactoryPreset
 };
 
 /**
-    Manages the 38 calibrated factory presets, category filtering,
+    Manages the 38 calibrated factory presets (grouped by purpose: Epic & Trailer,
+    Chamber & Sacred, Solo & Legato, Low & Ancient, Pads & Atmospheres,
+    Tension & Horror, Dystopian & Lo-Fi, Witch House & Darkwave), category filtering,
     and A/B compare snapshots on the message thread.
 */
 class PresetManager
@@ -33,7 +35,10 @@ public:
     [[nodiscard]] int getNumPresets() const noexcept { return static_cast<int> (presets.size()); }
     [[nodiscard]] const FactoryPreset& getPreset (int index) const;
 
+    /** "All" followed by the purpose categories in browser order. */
     [[nodiscard]] juce::StringArray getCategories() const;
+    [[nodiscard]] juce::String getCategoryBlurb (const juce::String& category) const;
+    [[nodiscard]] int findPresetByName (const juce::String& name) const noexcept;
     [[nodiscard]] std::vector<int> getPresetIndicesForCategory (const juce::String& category) const;
 
     [[nodiscard]] int getCurrentPresetIndex() const noexcept { return currentIndex; }

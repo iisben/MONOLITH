@@ -57,6 +57,92 @@ namespace
         };
     }
 
+    // ------------------------------------------------------------------------
+    // Browser organisation: grouped by what a composer reaches for, in scoring order.
+    // Sounds are untouched; only grouping, order and display names change.
+    // ------------------------------------------------------------------------
+    struct CategoryInfo
+    {
+        const char* name;
+        const char* blurb;
+    };
+
+    constexpr std::array<CategoryInfo, 8> kCategories {{
+        { "Epic & Trailer",         "Full-ensemble walls, hits and climaxes" },
+        { "Chamber & Sacred",       "Realistic choirs, liturgy, cathedral space" },
+        { "Solo & Legato",          "Exposed lines, melodies, glide leads" },
+        { "Low & Ancient",          "Basso profundo, throat chant, sub drones" },
+        { "Pads & Atmospheres",     "Shimmering beds, evolving harmony" },
+        { "Tension & Horror",       "Dread, breath, unstable textures" },
+        { "Dystopian & Lo-Fi",      "Tape-worn, concrete, broken machines" },
+        { "Witch House & Darkwave", "Screwed, smeared, nocturnal" }
+    }};
+
+    struct Assignment
+    {
+        const char* preset;
+        int category;
+    };
+
+    constexpr std::array<Assignment, 38> kAssignments {{
+        { "Monolith Awakening", 0 }, { "Arrakis Horizon", 0 }, { "Throne of Ash", 0 }, { "Iron Liturgy", 0 },
+        { "Colossus Rising", 0 }, { "Titanfall Overture", 0 }, { "Final Ascension", 0 },
+
+        { "Pure Chamber Choir", 1 }, { "Candlelit Vespers", 1 }, { "Hall of the Ancients", 1 },
+        { "Godhead Cathedral", 1 }, { "Titan Requiem", 1 },
+
+        { "Frozen Soprano", 2 }, { "Solo Baritone Shadow", 2 }, { "Last Light of Earth", 2 }, { "Neon Mausoleum", 2 },
+
+        { "Leviathan Chant", 3 }, { "Subterranean Hum", 3 }, { "Rust & Marrow", 3 }, { "Abyssal Monument", 3 },
+
+        { "Celestial Expanse", 4 }, { "Solaris Ascent", 4 }, { "Empire of Dust", 4 }, { "Bleeding Halo", 4 },
+
+        { "The Sunken Nave", 5 }, { "Event Horizon", 5 }, { "Lung of the Void", 5 }, { "Glass Ossuary", 5 },
+        { "Hex Whisper", 5 }, { "Anvil Ghost", 5 },
+
+        { "Acid Rain Vault", 6 }, { "Broken Cassette Angel", 6 }, { "Brutalist Concrete", 6 }, { "Static Horizon", 6 },
+
+        { "Screwed Coven", 7 }, { "Velvet Crypt", 7 }, { "Black Fog Swell", 7 }, { "Midnight Ritual", 7 }
+    }};
+
+    /** Strips the legacy "NN. " numbering, assigns purpose categories and orders the bank by them. */
+    void organiseByPurpose (std::vector<FactoryPreset>& list)
+    {
+        std::vector<std::pair<int, FactoryPreset>> keyed;
+        keyed.reserve (list.size());
+
+        for (auto& p : list)
+        {
+            auto name = p.name;
+            if (name.length() > 4 && juce::CharacterFunctions::isDigit (name[0])
+                && juce::CharacterFunctions::isDigit (name[1]) && name.substring (2, 4) == ". ")
+                name = name.substring (4);
+
+            int order = static_cast<int> (kAssignments.size()); // unknown presets sink to the end
+            int cat   = static_cast<int> (kCategories.size()) - 1;
+            for (size_t a = 0; a < kAssignments.size(); ++a)
+            {
+                if (name == kAssignments[a].preset)
+                {
+                    order = static_cast<int> (a);
+                    cat   = kAssignments[a].category;
+                    break;
+                }
+            }
+
+            p.name     = name;
+            p.category = kCategories[static_cast<size_t> (cat)].name;
+            keyed.emplace_back (order, std::move (p));
+        }
+
+        std::stable_sort (keyed.begin(), keyed.end(),
+                          [] (const auto& a, const auto& b) { return a.first < b.first; });
+
+        list.clear();
+        for (auto& kv : keyed)
+            list.push_back (std::move (kv.second));
+    }
+
     std::vector<FactoryPreset> createAllFactoryPresets()
     {
         std::vector<FactoryPreset> list;
@@ -678,6 +764,7 @@ namespace
             }
         });
 
+        organiseByPurpose (list);
         return list;
     }
 } // namespace
@@ -697,12 +784,25 @@ juce::StringArray PresetManager::getCategories() const
 {
     juce::StringArray cats;
     cats.add ("All");
-    for (const auto& p : presets)
-    {
-        if (! cats.contains (p.category))
-            cats.add (p.category);
-    }
+    for (const auto& c : kCategories)
+        cats.add (c.name);
     return cats;
+}
+
+juce::String PresetManager::getCategoryBlurb (const juce::String& category) const
+{
+    for (const auto& c : kCategories)
+        if (category == c.name)
+            return c.blurb;
+    return "All 38 presets, grouped by purpose";
+}
+
+int PresetManager::findPresetByName (const juce::String& name) const noexcept
+{
+    for (int i = 0; i < static_cast<int> (presets.size()); ++i)
+        if (presets[static_cast<size_t> (i)].name == name)
+            return i;
+    return -1;
 }
 
 std::vector<int> PresetManager::getPresetIndicesForCategory (const juce::String& category) const
@@ -781,6 +881,7 @@ void PresetManager::copyActiveToInactive (juce::AudioProcessorValueTreeState& ap
 void PresetManager::saveStateToXml (juce::XmlElement& parent) const
 {
     parent.setAttribute ("currentPresetIndex", currentIndex);
+    parent.setAttribute ("currentPresetName", getPreset (currentIndex).name);
     parent.setAttribute ("activeSlotIsB", activeIsB);
 
     if (slotA.isValid())
@@ -803,9 +904,13 @@ void PresetManager::saveStateToXml (juce::XmlElement& parent) const
 
 void PresetManager::loadStateFromXml (const juce::XmlElement& parent)
 {
-    currentIndex = std::clamp (parent.getIntAttribute ("currentPresetIndex", 0),
-                               0,
-                               static_cast<int> (presets.size()) - 1);
+    // Resolve by name first: sessions saved before the bank was regrouped stored only an index.
+    const auto savedName = parent.getStringAttribute ("currentPresetName");
+    const int byName = savedName.isNotEmpty() ? findPresetByName (savedName) : -1;
+    currentIndex = (byName >= 0) ? byName
+                                 : std::clamp (parent.getIntAttribute ("currentPresetIndex", 0),
+                                               0,
+                                               static_cast<int> (presets.size()) - 1);
     activeIsB = parent.getBoolAttribute ("activeSlotIsB", false);
 
     if (auto* wrapperA = parent.getChildByName ("SlotA"))

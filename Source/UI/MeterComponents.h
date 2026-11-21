@@ -42,6 +42,9 @@ private:
     juce::String suffix;
     juce::String subCaption;
     int numDecimals   = 2;
+    /** Short, wide bounds (e.g. the header trim): knob left, name and reading beside it. */
+    [[nodiscard]] bool isCompact() const noexcept { return ! macroMode && getHeight() < 56 && getWidth() > getHeight() + 30; }
+
     bool percentMode  = false;
     bool macroMode    = false;
     juce::Colour accentColour;
