@@ -39,6 +39,7 @@ MonolithAudioProcessorEditor::MonolithAudioProcessorEditor (MonolithAudioProcess
     spacePanel.setBounds      (830, 316, 340, 238);
     performanceDock.setBounds (10, 562, 1160, 148);
 
+    // Resizable from the bottom-right corner as before; the LookAndFeel draws no grip graphic.
     setResizable (true, true);
     if (auto* constrainer = getConstrainer())
     {
@@ -59,7 +60,8 @@ MonolithAudioProcessorEditor::~MonolithAudioProcessorEditor()
 
 void MonolithAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (ui::palette::obsidianBg);
+    // Poured concrete ground between the slabs (shadow gaps read as joints)
+    groundSurface.draw (g, getLocalBounds(), 3u, ui::palette::obsidianBg);
 }
 
 void MonolithAudioProcessorEditor::resized()

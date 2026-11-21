@@ -19,6 +19,7 @@ public:
     void resized() override;
 
 private:
+    ConcreteSurface surface;
     juce::ComboBox registerBox;
     juce::ComboBox onsetBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> registerAttach;
@@ -37,6 +38,7 @@ public:
     void resized() override;
 
 private:
+    ConcreteSurface surface;
     MonolithDial tensionDial, breathDial, throatDial;
     MonolithDial focusDial, subAbyssDial, crownDial;
 };
@@ -50,6 +52,7 @@ public:
     void resized() override;
 
 private:
+    ConcreteSurface surface;
     juce::ToggleButton orbitBtn { "ORBIT" };
     juce::ToggleButton syncBtn  { "BPM SYNC" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> orbitAttach;
@@ -67,7 +70,8 @@ public:
     void resized() override;
 
 private:
-    juce::ToggleButton os4xBtn { "4X OS" };
+    ConcreteSurface surface;
+    juce::ToggleButton os4xBtn { "8X OS" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> os4xAttach;
 
     MonolithDial driveDial, tapeDial, oxideDial;
@@ -84,6 +88,7 @@ public:
     void resized() override;
 
 private:
+    ConcreteSurface surface;
     juce::ComboBox spaceBox;
     juce::ToggleButton cc64FreezeBtn { "CC64 -> FRZ" };
     juce::ToggleButton freezeBtn { "SPECTRAL FREEZE" };
@@ -106,6 +111,7 @@ public:
     void resized() override;
 
 private:
+    ConcreteSurface surface;
     MonolithDial colossusDial, specterDial, rotDial, abyssDial;
     ExpressionBar exprBar;
     juce::ToggleButton legatoBtn { "LEGATO" };

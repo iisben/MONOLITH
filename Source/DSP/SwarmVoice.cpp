@@ -409,8 +409,12 @@ void SwarmVoice::renderBlock (float* outL,
                 for (size_t f = 0; f < 5; ++f)
                 {
                     const float fc = smFormantFreq[f] * jitter;
-                    const float bw = smFormantBw[f];
-                    const float q  = std::clamp (fc / std::max (bw, 20.0f), 0.5f, 20.0f);
+                    // Physiological bandwidth floor: formant bandwidths widen with f0 (glottal
+                    // loss + fewer harmonics per resonance). Without it, high notes park a single
+                    // harmonic inside a razor-thin resonance and every vibrato cycle "whistles".
+                    const float bwFloor = 45.0f + 0.14f * baseF0 + 0.018f * fc;
+                    const float bw = std::max (smFormantBw[f], bwFloor);
+                    const float q  = std::clamp (fc / bw, 0.5f, 11.0f);
                     sg.formants[f].setParameters (fc, q, srF);
                 }
 
@@ -466,6 +470,10 @@ void SwarmVoice::renderBlock (float* outL,
                     for (auto& svf : sg.formants)
                         svf.reset();
                 }
+                // A parked singer slot must NOT keep a frozen envelope: if the singer budget
+                // re-opens later (e.g. other chord notes finish during release) the slot would
+                // otherwise re-enter at full level and produce a loud burst in the tail.
+                sg.envLevel = 0.0f;
                 continue;
             }
 
@@ -534,9 +542,10 @@ void SwarmVoice::renderBlock (float* outL,
                 }
             }
 
-            const float exprScale = 0.28f + 0.72f * smExpr;
+            // Wide, musical dynamics curve (~16 dB from CC1=15 to CC1=127) for real choir swells
+            const float exprScale = 0.10f + 0.90f * smExpr * std::sqrt (smExpr);
             const float voicedExc = glottal * smVoicedMix * exprScale;
-            const float breathExc = breathSig * (0.35f + 0.65f * smExpr);
+            const float breathExc = breathSig * (0.22f + 0.78f * smExpr);
             const float totalExc  = voicedExc + breathExc + onsetAdd;
 
             breathAcc += std::abs (breathExc) * sg.activeGain * sg.envLevel;

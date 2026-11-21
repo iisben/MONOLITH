@@ -9,7 +9,7 @@ HeaderBar::HeaderBar (MonolithAudioProcessor& proc)
       masterGainDial (proc.getAPVTS(),
                       params::masterGain,
                       "OUT",
-                      "Master Output Trim (-18 to +6 dB) before transparent soft safety limiter.",
+                      "Master Output Trim (-18 to +6 dB) into the glue compressor and -1 dBFS lookahead brickwall limiter.",
                       " dB",
                       1,
                       false,
@@ -23,14 +23,14 @@ HeaderBar::HeaderBar (MonolithAudioProcessor& proc)
     for (int i = 0; i < categories.size(); ++i)
         categoryBox.addItem (categories[i], i + 1);
     categoryBox.setSelectedId (1, juce::dontSendNotification);
-    categoryBox.setTooltip ("Filter factory presets by genre / acoustic category.");
-    categoryBox.onChange = [this] { repopulatePresetBox(); };
+    categoryBox.setTooltip ("Filter factory presets by purpose: epic, sacred, solo, low, pads, tension, lo-fi, darkwave.");
+    categoryBox.onChange = [this] { repopulatePresetBox(); repaint(); };
     addAndMakeVisible (categoryBox);
 
-    presetBox.setTooltip ("Select one of the 30 calibrated factory presets.");
+    presetBox.setTooltip ("Select one of the 38 calibrated factory presets.");
     presetBox.onChange = [this]
     {
-        const int sel = presetBox.getSelectedItemIndex();
+        const int sel = presetBox.getSelectedId() - 1;
         if (sel >= 0 && sel < static_cast<int> (filteredIndices.size()))
         {
             processor.applyFactoryPreset (filteredIndices[static_cast<size_t> (sel)]);
@@ -81,10 +81,18 @@ void HeaderBar::repopulatePresetBox()
     const int currentGlobalIdx = pm.getCurrentPresetIndex();
     int itemToSelect = 1;
 
+    const bool showHeadings = selectedCat.isEmpty() || selectedCat == "All";
+    juce::String lastCategory;
     for (size_t i = 0; i < filteredIndices.size(); ++i)
     {
         const int globalIdx = filteredIndices[i];
-        presetBox.addItem (pm.getPreset (globalIdx).name, static_cast<int> (i) + 1);
+        const auto& preset = pm.getPreset (globalIdx);
+        if (showHeadings && preset.category != lastCategory)
+        {
+            presetBox.addSectionHeading (preset.category.toUpperCase());
+            lastCategory = preset.category;
+        }
+        presetBox.addItem (preset.name, static_cast<int> (i) + 1);
         if (globalIdx == currentGlobalIdx)
             itemToSelect = static_cast<int> (i) + 1;
     }
@@ -141,36 +149,47 @@ void HeaderBar::updateFromTelemetry (const TelemetrySnapshot& telemetry) noexcep
 
 void HeaderBar::paint (juce::Graphics& g)
 {
-    const auto b = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (palette::panelSlate);
-    g.fillRoundedRectangle (b, 3.0f);
-    g.setColour (palette::gridHairline);
-    g.drawRoundedRectangle (b, 3.0f, 1.0f);
+    surface.draw (g, getLocalBounds(), 5u, palette::panelSlate);
+    const auto b = getLocalBounds().toFloat();
+    g.setColour (juce::Colours::black.withAlpha (0.75f));
+    g.drawRect (b, 1.0f);
+    g.setColour (palette::edgeLight.withAlpha (0.8f));
+    g.fillRect (b.getX() + 1.0f, b.getY() + 1.0f, b.getWidth() - 2.0f, 1.0f);
 
-    // Brutalist Monolith emblem (3 staggered vertical stone slabs)
-    const float sx = b.getX() + 14.0f;
-    const float sy = b.getY() + 12.0f;
+    // Emblem: one black slab in the proportions 1 : 4 : 9, its top edge gilded
+    const auto slab = juce::Rectangle<float> (b.getX() + 16.0f, b.getY() + 9.0f, 16.0f, 36.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.fillRect (slab.translated (2.0f, 2.0f));
+    g.setColour (juce::Colour (0xFF050505));
+    g.fillRect (slab);
     g.setColour (palette::moltenAmber);
-    g.fillRect (sx, sy + 6.0f, 4.0f, 22.0f);
-    g.setColour (palette::boneWhite);
-    g.fillRect (sx + 6.0f, sy, 6.0f, 28.0f);
-    g.setColour (palette::paleCyan.withAlpha (0.85f));
-    g.fillRect (sx + 14.0f, sy + 9.0f, 4.0f, 19.0f);
+    g.fillRect (slab.withHeight (1.5f));
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
+    g.fillRect (slab.withWidth (1.0f).translated (1.0f, 0.0f));
 
-    // MONOLITH Wordmark
+    // Wordmark, cut like an inscription
     g.setColour (palette::boneWhite);
-    g.setFont (makeFont (17.5f, true, false));
-    g.drawText ("MONOLITH", static_cast<int> (sx + 26.0f), 9, 138, 22, juce::Justification::centredLeft, false);
+    g.setFont (makeRoleFont (FontRole::Inscription, 21.0f, true));
+    drawTracked (g, "MONOLITH", juce::Rectangle<float> (b.getX() + 42.0f, b.getY() + 7.0f, 160.0f, 24.0f),
+                 juce::Justification::centredLeft, 0.30f);
 
     g.setColour (palette::mutedLimestone);
-    g.setFont (makeFont (8.8f, true, false));
-    g.drawText ("PHYSICAL CHORAL SWARM", static_cast<int> (sx + 27.0f), 30, 146, 13, juce::Justification::centredLeft, false);
+    g.setFont (makeFont (8.0f, true, false));
+    drawTracked (g, "PHYSICAL CHORAL SWARM", juce::Rectangle<float> (b.getX() + 43.0f, b.getY() + 31.0f, 160.0f, 12.0f),
+                 juce::Justification::centredLeft, 0.26f);
+
+    // Category blurb under the browser
+    g.setColour (palette::dimAsh.brighter (0.25f));
+    g.setFont (makeFont (8.5f, false, false));
+    g.drawText (processor.getPresetManager().getCategoryBlurb (categoryBox.getText().isEmpty() ? "All" : categoryBox.getText()),
+                categoryBox.getBounds().toFloat().translated (0.0f, 22.0f).withHeight (11.0f).withWidth (360.0f),
+                juce::Justification::centredLeft, false);
 }
 
 void HeaderBar::resized()
 {
-    auto area = getLocalBounds().reduced (10, 8);
-    area.removeFromLeft (188); // Wordmark & emblem
+    auto area = getLocalBounds().reduced (10, 8).withTrimmedBottom (12).translated (0, -2);
+    area.removeFromLeft (200); // Wordmark & emblem
 
     const int gap = 5;
     categoryBox.setBounds (area.removeFromLeft (142).reduced (0, 5));
@@ -190,9 +209,9 @@ void HeaderBar::resized()
     // Right-aligned status & panic cluster
     panicBtn.setBounds (area.removeFromRight (58).reduced (0, 5));
     area.removeFromRight (gap);
-    masterGainDial.setBounds (area.removeFromRight (54).expanded (0, 6));
+    masterGainDial.setBounds (area.removeFromRight (86).withSizeKeepingCentre (86, 34));
     area.removeFromRight (gap);
-    outputMeter.setBounds (area.removeFromRight (104).reduced (0, 5));
+    outputMeter.setBounds (area.removeFromRight (100).reduced (0, 3));
     area.removeFromRight (gap);
     voiceBadge.setBounds (area.removeFromRight (156).reduced (0, 6));
 }

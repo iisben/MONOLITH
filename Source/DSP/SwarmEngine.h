@@ -3,6 +3,7 @@
 #include "../State/ParameterIDs.h"
 #include "../State/TelemetrySnapshot.h"
 #include "BrutalistReverb.h"
+#include "MasterBus.h"
 #include "PhonemeField.h"
 #include "SwarmVoice.h"
 #include <array>
@@ -40,6 +41,11 @@ public:
                        juce::MidiBuffer& midiMessages,
                        double hostBpm,
                        TelemetrySnapshot& telemetry) noexcept;
+
+    /** Diagnostics (audio thread only, used by the offline audit suite). */
+    [[nodiscard]] float getPreLimiterPeak() const noexcept { return diagPreLimiterPeak; }
+    [[nodiscard]] float getMaxGainReductionDb() const noexcept { return diagMaxGrDb; }
+    void resetDiagnostics() noexcept { diagPreLimiterPeak = 0.0f; diagMaxGrDb = 0.0f; }
 
     /** Thread-safe panic trigger (sets atomic consumed on audio thread). */
     void requestPanic() noexcept { panicRequested.store (true, std::memory_order_release); }
@@ -120,6 +126,7 @@ private:
     std::array<SwarmVoice, kMaxVoices> voices;
     OrganicOrbitEngine orbitEngine;
     BrutalistReverb reverb;
+    MasterBus masterBus;
 
     std::vector<float> busL;
     std::vector<float> busR;
@@ -127,6 +134,8 @@ private:
     // MIDI & expression state
     float pitchBendSemitones  = 0.0f;
     float midiModWheel        = 0.78f;
+    float midiCc11            = 1.0f;   // CC11 expression fader (volume, pre-reverb)
+    float cc11Gain            = 1.0f;   // per-sample smoothed CC11 gain
     float channelAftertouch   = 0.0f;
     bool  sustainPedalDown    = false;
     bool  cc64FreezeActive    = false;
@@ -166,6 +175,9 @@ private:
     float smAbyss             = 0.0f;
 
     juce::SmoothedValue<float> smoothMasterGain;
+
+    float diagPreLimiterPeak = 0.0f;
+    float diagMaxGrDb        = 0.0f;
 
     std::atomic<bool>  panicRequested { false };
     std::atomic<bool>  uiExprTouched  { false };

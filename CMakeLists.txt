@@ -130,3 +130,38 @@ if(MSVC)
 else()
     target_compile_options(MonolithDspAudit PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# ── Offscreen UI snapshot tool (design review: renders the editor to PNG) ─────
+option(MONOLITH_BUILD_UI_SNAPSHOT "Build the MonolithUiSnapshot design-review tool" ON)
+if(MONOLITH_BUILD_UI_SNAPSHOT)
+    juce_add_console_app(MonolithUiSnapshot
+        PRODUCT_NAME "MonolithUiSnapshot"
+    )
+    target_sources(MonolithUiSnapshot
+        PRIVATE
+            Tools/UiSnapshot.cpp
+            ${MONOLITH_DSP_AND_PRESET_SOURCES}
+            Source/PluginProcessor.cpp
+            Source/PluginEditor.cpp
+            Source/UI/MonolithLookAndFeel.cpp
+            Source/UI/MeterComponents.cpp
+            Source/UI/PhonemeFieldComponent.cpp
+            Source/UI/HeaderBar.cpp
+            Source/UI/SectionPanels.cpp
+    )
+    target_include_directories(MonolithUiSnapshot PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+    target_compile_definitions(MonolithUiSnapshot
+        PRIVATE
+            JucePlugin_Name="MONOLITH"
+            JUCE_MODAL_LOOPS_PERMITTED=1
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+    )
+    target_link_libraries(MonolithUiSnapshot
+        PRIVATE
+            juce::juce_audio_utils
+            juce::juce_dsp
+        PUBLIC
+            juce::juce_recommended_config_flags
+    )
+endif()

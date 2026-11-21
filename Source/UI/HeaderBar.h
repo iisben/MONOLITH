@@ -26,6 +26,7 @@ private:
     void stepPreset (int delta);
 
     MonolithAudioProcessor& processor;
+    ConcreteSurface surface;
 
     juce::ComboBox categoryBox;
     juce::ComboBox presetBox;

@@ -85,6 +85,7 @@ void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::Audi
 
     orbitEngine.prepare (sr);
     reverb.prepare (sr, preparedMaxBlock);
+    masterBus.prepare (sr);
 
     busL.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
     busR.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
@@ -108,12 +109,15 @@ void SwarmEngine::reset() noexcept
 
     orbitEngine.reset();
     reverb.reset();
+    masterBus.reset();
 
     std::fill (busL.begin(), busL.end(), 0.0f);
     std::fill (busR.begin(), busR.end(), 0.0f);
 
     pitchBendSemitones = 0.0f;
     channelAftertouch  = 0.0f;
+    midiCc11           = 1.0f;
+    cc11Gain           = 1.0f;
     sustainPedalDown   = false;
     cc64FreezeActive   = false;
     sustainedNotes.fill (false);
@@ -130,7 +134,7 @@ void SwarmEngine::reset() noexcept
 int SwarmEngine::getLatencySamples() const noexcept
 {
     const bool hq4x = loadParam (ptrs.oversampleHq, 0.0f) >= 0.5f;
-    return voices[0].getLatencySamples (hq4x);
+    return voices[0].getLatencySamples (hq4x) + masterBus.getLatencySamples();
 }
 
 void SwarmEngine::panicImmediate() noexcept
@@ -337,6 +341,20 @@ void SwarmEngine::handleMidiMessage (const juce::MidiMessage& msg,
         {
             midiModWheel = static_cast<float> (val) / 127.0f;
             midiCc1Received = true;
+        }
+        else if (cc == 11)
+        {
+            // Expression fader as used in film-scoring templates: CC1 shapes the timbre/dynamics,
+            // CC11 rides the level. Squared law ~ -12 dB at 64, silence at 0.
+            const float v = static_cast<float> (val) / 127.0f;
+            midiCc11 = v * v;
+        }
+        else if (cc == 121)
+        {
+            // Reset All Controllers
+            midiCc11 = 1.0f;
+            pitchBendSemitones = 0.0f;
+            channelAftertouch = 0.0f;
         }
         else if (cc == 64)
         {
@@ -628,6 +646,18 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
                     v.renderBlock (busL.data(), busR.data(), chunk, vParams, formantAcc, breathAcc);
             }
 
+            // CC11 expression: per-sample 15 ms smoothing, applied before the room so tails stay natural
+            if (std::abs (cc11Gain - midiCc11) > 1.0e-6f || cc11Gain < 0.999999f)
+            {
+                const float cc11Coeff = 1.0f - std::exp (-1.0f / (0.015f * static_cast<float> (sr)));
+                for (int i = 0; i < chunk; ++i)
+                {
+                    cc11Gain += cc11Coeff * (midiCc11 - cc11Gain);
+                    busL[static_cast<size_t> (i)] *= cc11Gain;
+                    busR[static_cast<size_t> (i)] *= cc11Gain;
+                }
+            }
+
             reverb.processBlock (busL.data(),
                                  busR.data(),
                                  chunk,
@@ -644,8 +674,11 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
             for (int i = 0; i < chunk; ++i)
             {
                 const float g = smoothMasterGain.getNextValue();
-                const float l = softSafetyLimit (busL[static_cast<size_t> (i)] * g);
-                const float r = softSafetyLimit (busR[static_cast<size_t> (i)] * g);
+                float l = busL[static_cast<size_t> (i)] * g;
+                float r = busR[static_cast<size_t> (i)] * g;
+                diagPreLimiterPeak = std::max (diagPreLimiterPeak, std::max (std::abs (l), std::abs (r)));
+                masterBus.process (l, r);
+                diagMaxGrDb = std::max (diagMaxGrDb, -20.0f * std::log10 (std::max (masterBus.getLimiterGain(), 1.0e-6f)));
 
                 if (outR != nullptr)
                 {

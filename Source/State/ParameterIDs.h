@@ -84,7 +84,7 @@ namespace defaults
     inline constexpr float formantFocus    = 0.60f;
     inline constexpr float subAbyss        = 0.42f;
     inline constexpr float spectralCrown   = 0.36f;
-    inline constexpr float masterGain      = 0.0f;
+    inline constexpr float masterGain      = -0.5f;
 
     inline constexpr float driveAmount     = 0.24f;
     inline constexpr float tapeInstability = 0.14f;
@@ -183,7 +183,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { screwDepth, 1 }, "Screw Shadow", normRange (0.0f, 1.0f), defaults::screwDepth));
     layout.add (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { oversampleHq, 1 }, "Drive 4x OS", defaults::oversampleHq));
+        juce::ParameterID { oversampleHq, 1 }, "Drive 8x OS", defaults::oversampleHq));
 
     // Architectural Space + Freeze
     layout.add (std::make_unique<juce::AudioParameterChoice> (

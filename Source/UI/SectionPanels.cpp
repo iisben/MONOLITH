@@ -6,30 +6,11 @@ namespace monolith::ui
 
 namespace
 {
-    void drawPanelChrome (juce::Graphics& g,
-                          juce::Rectangle<int> bounds,
-                          const juce::String& title,
+    void drawPanelChrome (juce::Graphics& g, ConcreteSurface& surface, juce::Rectangle<int> bounds, uint32_t seed,
+                          const juce::String& numeral, const juce::String& title,
                           juce::Colour accent = palette::moltenAmber)
     {
-        const auto b = bounds.toFloat().reduced (0.5f);
-        g.setColour (palette::panelSlate);
-        g.fillRoundedRectangle (b, 3.0f);
-        g.setColour (palette::gridHairline);
-        g.drawRoundedRectangle (b, 3.0f, 1.0f);
-
-        // Architectural header hairline + left accent notch
-        g.setColour (accent.withAlpha (0.85f));
-        g.fillRect (b.getX() + 10.0f, b.getY() + 9.0f, 3.0f, 11.0f);
-
-        g.setColour (palette::boneWhite.withAlpha (0.86f));
-        g.setFont (makeFont (10.5f, true, false));
-        g.drawText (title,
-                    b.reduced (18.0f, 7.0f).withHeight (15.0f),
-                    juce::Justification::centredLeft,
-                    false);
-
-        g.setColour (palette::gridHairline);
-        g.drawHorizontalLine (static_cast<int> (b.getY() + 26.0f), b.getX() + 10.0f, b.getRight() - 10.0f);
+        drawSlabPanel (g, surface, bounds, seed, numeral, title, accent);
     }
 
     void layoutDialGrid3x2 (juce::Rectangle<int> area,
@@ -96,7 +77,7 @@ EnsemblePanel::EnsemblePanel (juce::AudioProcessorValueTreeState& apvts)
 
 void EnsemblePanel::paint (juce::Graphics& g)
 {
-    drawPanelChrome (g, getLocalBounds(), "ENSEMBLE & REGISTER", palette::moltenAmber);
+    drawPanelChrome (g, surface, getLocalBounds(), 11u, "I", "ENSEMBLE & REGISTER", palette::moltenAmber);
 }
 
 void EnsemblePanel::resized()
@@ -145,7 +126,7 @@ ToneLayersPanel::ToneLayersPanel (juce::AudioProcessorValueTreeState& apvts)
 
 void ToneLayersPanel::paint (juce::Graphics& g)
 {
-    drawPanelChrome (g, getLocalBounds(), "TONE, FORMANT & LAYERS", palette::moltenAmber);
+    drawPanelChrome (g, surface, getLocalBounds(), 23u, "II", "VOICE & FORMANT", palette::moltenAmber);
 }
 
 void ToneLayersPanel::resized()
@@ -186,7 +167,7 @@ OrbitPanel::OrbitPanel (juce::AudioProcessorValueTreeState& apvts)
 
 void OrbitPanel::paint (juce::Graphics& g)
 {
-    drawPanelChrome (g, getLocalBounds(), "ORGANIC ORBIT ENGINE", palette::paleCyan);
+    drawPanelChrome (g, surface, getLocalBounds(), 37u, "IV", "ORBIT", palette::paleCyan);
 }
 
 void OrbitPanel::resized()
@@ -227,7 +208,7 @@ EntropyPanel::EntropyPanel (juce::AudioProcessorValueTreeState& apvts)
                       "", 0, true, false, "cyan")
 {
     os4xBtn.getProperties().set (MonolithLookAndFeel::accentPropertyId, "amber");
-    os4xBtn.setTooltip ("Switch per-voice pre-sum saturation oversampling between 2x (low CPU) and 4x (HQ).");
+    os4xBtn.setTooltip ("Switch per-voice pre-sum saturation oversampling between 4x (standard, alias-suppressed) and 8x (HQ).");
     addAndMakeVisible (os4xBtn);
     os4xAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         apvts, params::oversampleHq, os4xBtn);
@@ -238,12 +219,15 @@ EntropyPanel::EntropyPanel (juce::AudioProcessorValueTreeState& apvts)
 
 void EntropyPanel::paint (juce::Graphics& g)
 {
-    drawPanelChrome (g, getLocalBounds(), "ENTROPY & WITCH-HOUSE", palette::moltenAmber);
+    drawPanelChrome (g, surface, getLocalBounds(), 41u, "V", "ENTROPY", palette::moltenAmber);
 
-    // Subtle divider framing the Witch-House Screw duo
+    // Incised divider framing the witch-house Screw pair
     const auto b = getLocalBounds().toFloat();
-    g.setColour (palette::gridHairline.withAlpha (0.7f));
-    g.drawHorizontalLine (static_cast<int> (b.getY() + 126.0f), b.getX() + 14.0f, b.getRight() - 14.0f);
+    drawIncisedHorizontal (g, b.getY() + 126.0f, b.getX() + 24.0f, b.getRight() - 24.0f);
+    g.setColour (palette::dimAsh);
+    g.setFont (makeFont (8.5f, true, false));
+    drawTracked (g, "SCREW", juce::Rectangle<float> (b.getX() + 24.0f, b.getY() + 130.0f, 80.0f, 11.0f),
+                 juce::Justification::centredLeft, 0.25f);
 }
 
 void EntropyPanel::resized()
@@ -318,12 +302,14 @@ void SpacePanel::updateFreezeGlow (float freezeEnergy) noexcept
 
 void SpacePanel::paint (juce::Graphics& g)
 {
-    drawPanelChrome (g, getLocalBounds(), "ARCHITECTURAL SPACE", palette::paleCyan);
+    drawPanelChrome (g, surface, getLocalBounds(), 53u, "VI", "SPACE", palette::paleCyan);
     if (freezeEnergyGlow > 0.02f)
     {
-        const auto fb = freezeBtn.getBounds().toFloat().expanded (2.0f);
-        g.setColour (palette::paleCyan.withAlpha (0.20f * freezeEnergyGlow));
-        g.fillRoundedRectangle (fb, 4.0f);
+        // Frozen cloud energy shown as a verdigris inlay beneath the freeze slab (no glow)
+        const auto fb = freezeBtn.getBounds().toFloat();
+        const float w = fb.getWidth() * std::clamp (freezeEnergyGlow, 0.0f, 1.0f);
+        g.setColour (palette::paleCyan);
+        g.fillRect (fb.getX(), fb.getBottom() + 2.0f, w, 2.0f);
     }
 }
 
@@ -354,16 +340,16 @@ void SpacePanel::resized()
 PerformanceDock::PerformanceDock (MonolithAudioProcessor& proc)
     : colossusDial (proc.getAPVTS(), params::macroColossus, "COLOSSUS",
                     "Scales ensemble size, sub-abyss, stereo spread, and cathedral grandeur.",
-                    "", 0, true, true, "amber", "SCALE · SUB · WIDTH"),
+                    "", 0, true, true, "amber", juce::String::fromUTF8 ("SCALE · SUB · WIDTH")),
       specterDial (proc.getAPVTS(), params::macroSpecter, "SPECTER",
                    "Morphs toward whispered breath, hollow formants, and ghost shimmer.",
-                   "", 0, true, true, "cyan", "BREATH · HOLLOW · GHOST"),
+                   "", 0, true, true, "cyan", juce::String::fromUTF8 ("BREATH · HOLLOW · GHOST")),
       rotDial (proc.getAPVTS(), params::macroRot, "ROT",
                "Engages cassette wow/flutter, pre-sum drive, and oxide decay.",
-               "", 0, true, true, "amber", "TAPE · GRIT · DECAY"),
+               "", 0, true, true, "amber", juce::String::fromUTF8 ("TAPE · GRIT · DECAY")),
       abyssDial (proc.getAPVTS(), params::macroAbyss, "ABYSS",
                  "Expands architectural decay, darkens damping, and swells the void.",
-                 "", 0, true, true, "cyan", "SPACE · DARK · VOID"),
+                 "", 0, true, true, "cyan", juce::String::fromUTF8 ("SPACE · DARK · VOID")),
       exprBar (proc.getAPVTS(), params::expressionLevel,
                [&proc] (float v) { proc.setUiExpression (v); }),
       glideDial (proc.getAPVTS(), params::glideTime, "GLIDE",
@@ -391,15 +377,25 @@ void PerformanceDock::updateFromTelemetry (const TelemetrySnapshot& telemetry) n
 
 void PerformanceDock::paint (juce::Graphics& g)
 {
-    const auto b = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (palette::panelSlate);
-    g.fillRoundedRectangle (b, 3.0f);
-    g.setColour (palette::gridHairline);
-    g.drawRoundedRectangle (b, 3.0f, 1.0f);
+    surface.draw (g, getLocalBounds(), 71u, palette::panelSlate);
+    const auto b = getLocalBounds().toFloat();
+    g.setColour (juce::Colours::black.withAlpha (0.75f));
+    g.drawRect (b, 1.0f);
+    g.setColour (palette::edgeLight.withAlpha (0.8f));
+    g.fillRect (b.getX() + 1.0f, b.getY() + 1.0f, b.getWidth() - 2.0f, 1.0f);
 
-    // Subtle vertical divider separating the 4 Master Macros from Expression & Legato
-    const int divX = getWidth() - 378;
-    g.drawVerticalLine (divX, 10.0f, static_cast<float> (getHeight() - 10));
+    const float inset = 8.5f;
+    for (auto pt : { juce::Point<float> (b.getX() + inset, b.getY() + inset),
+                     juce::Point<float> (b.getX() + inset, b.getBottom() - inset),
+                     juce::Point<float> (b.getRight() - inset, b.getY() + inset),
+                     juce::Point<float> (b.getRight() - inset, b.getBottom() - inset) })
+        drawFormTie (g, pt, 2.6f);
+
+    // The plinth all four stones stand on
+    const auto plinthY = (float) colossusDial.getBottom() - 29.0f;
+    drawIncisedHorizontal (g, plinthY, b.getX() + 22.0f, (float) abyssDial.getRight());
+
+    drawIncisedVertical (g, (float) (getWidth() - 378), 14.0f, (float) getHeight() - 14.0f);
 }
 
 void PerformanceDock::resized()

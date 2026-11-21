@@ -2,6 +2,8 @@
 #include "../Source/Presets/PresetManager.h"
 #include "../Source/State/ParameterIDs.h"
 #include "../Source/State/TelemetrySnapshot.h"
+#include "QualityLab.h"
+#include <juce_dsp/juce_dsp.h>
 
 #include <chrono>
 #include <cmath>
@@ -70,13 +72,13 @@ bool checkFinite (const juce::AudioBuffer<float>& buf, float& outPeak)
 
 bool testPresetsAndParameters()
 {
-    std::cout << "[1/5] Auditing APVTS parameter layout & 30 factory presets...\n";
+    std::cout << "[1/8] Auditing APVTS parameter layout & 38 factory presets...\n";
     AuditHostProcessor host;
     monolith::PresetManager pm;
 
-    if (pm.getNumPresets() != 30)
+    if (pm.getNumPresets() != 38)
     {
-        std::cerr << "FAIL: Expected 30 presets, got " << pm.getNumPresets() << "\n";
+        std::cerr << "FAIL: Expected 38 presets, got " << pm.getNumPresets() << "\n";
         return false;
     }
 
@@ -108,13 +110,48 @@ bool testPresetsAndParameters()
         }
     }
 
-    std::cout << "  PASS: All 30 presets and 41 APVTS parameters verified.\n";
+    // Purpose-based browser: every preset sits in a declared category, none left in a catch-all,
+    // the bank is contiguous per category and every category holds at least 3 presets.
+    const auto cats = pm.getCategories();
+    juce::String prevCat;
+    std::set<juce::String> closed;
+    for (int i = 0; i < pm.getNumPresets(); ++i)
+    {
+        const auto& p = pm.getPreset (i);
+        if (! cats.contains (p.category) || p.category == "All" || juce::CharacterFunctions::isDigit (p.name[0]))
+        {
+            std::cerr << "FAIL: preset '" << p.name << "' has unknown category or legacy numbering\n";
+            return false;
+        }
+        if (p.category != prevCat)
+        {
+            if (closed.count (p.category) != 0)
+            {
+                std::cerr << "FAIL: category '" << p.category << "' is not contiguous in the bank\n";
+                return false;
+            }
+            if (prevCat.isNotEmpty()) closed.insert (prevCat);
+            prevCat = p.category;
+        }
+    }
+    for (int c = 1; c < cats.size(); ++c)
+    {
+        const auto n = pm.getPresetIndicesForCategory (cats[c]).size();
+        std::cout << "    " << std::left << std::setw (24) << cats[c] << n << " presets\n";
+        if (n < 3)
+        {
+            std::cerr << "FAIL: category '" << cats[c] << "' holds fewer than 3 presets\n";
+            return false;
+        }
+    }
+
+    std::cout << "  PASS: All 38 presets and 41 APVTS parameters verified.\n";
     return true;
 }
 
 bool testMultiSampleRateStability()
 {
-    std::cout << "[2/5] Auditing sample rates (44.1 / 48 / 96 / 192 kHz, 2x & 4x OS, oversized chunking)...\n";
+    std::cout << "[2/8] Auditing sample rates (44.1 / 48 / 96 / 192 kHz, 4x & 8x OS, oversized chunking)...\n";
     const double rates[] = { 44100.0, 48000.0, 96000.0, 192000.0 };
 
     for (double sr : rates)
@@ -191,13 +228,13 @@ bool testMultiSampleRateStability()
         }
     }
 
-    std::cout << "  PASS: All sample rates (44.1-192 kHz) and 2x/4x OS stable with zero NaNs.\n";
+    std::cout << "  PASS: All sample rates (44.1-192 kHz) and 4x/8x OS stable with zero NaNs.\n";
     return true;
 }
 
 bool testAll30PresetsGainStaging()
 {
-    std::cout << "[3/5] Auditing gain staging across all 30 factory presets (48 kHz)...\n";
+    std::cout << "[3/8] Auditing gain staging across all 38 factory presets (48 kHz)...\n";
     const double sr   = 48000.0;
     const int block   = 512;
     const int totalSamples = static_cast<int> (2.8 * sr);
@@ -267,13 +304,13 @@ bool testAll30PresetsGainStaging()
     }
 
     if (allPassed)
-        std::cout << "  PASS: All 30 presets calibrated and clipping-free.\n";
+        std::cout << "  PASS: All 38 presets calibrated and clipping-free.\n";
     return allPassed;
 }
 
 bool testFreezeAndScrewAndLegatoAndMacros()
 {
-    std::cout << "[4/5] Auditing Spectral Freeze, Screw Pitch, Legato, CC1 Expression, and Macros...\n";
+    std::cout << "[4/8] Auditing Spectral Freeze, Screw Pitch, Legato, CC1 Expression, and Macros...\n";
     const double sr = 48000.0;
     const int block = 512;
 
@@ -505,7 +542,7 @@ bool testFreezeAndScrewAndLegatoAndMacros()
 
 bool testClickPopAndCpuAudit()
 {
-    std::cout << "[5/6] Forensic Click, Pop, Discontinuity & Real-Time CPU Stress Audit...\n";
+    std::cout << "[5/8] Forensic Click, Pop, Discontinuity & Real-Time CPU Stress Audit...\n";
 
     struct GlitchMetrics
     {
@@ -735,6 +772,7 @@ bool testClickPopAndCpuAudit()
         setParam (host.apvts, monolith::params::oxideDamping, 0.45f);
         setParam (host.apvts, monolith::params::spaceMix, 0.55f);
         setParam (host.apvts, monolith::params::spaceShimmer, 0.50f);
+        if (std::getenv ("MONO_HQ") != nullptr) setParam (host.apvts, monolith::params::oversampleHq, 1.0f);
 
         juce::AudioBuffer<float> buf (2, block);
         juce::MidiBuffer midi;
@@ -831,11 +869,264 @@ bool testClickPopAndCpuAudit()
     return true;
 }
 
+// ============================================================================
+// Pro stress audit: full-velocity wide chords, top-of-range soprano notes,
+// worst-case knob settings. Detects bus overload (limiter abuse), reverb
+// runaway (tail energy growth) and narrowband squeal (tonal prominence in tail).
+struct StressResult
+{
+    float preLimPeakDb = -140.0f;
+    float outPeakDb    = -140.0f;
+    float maxGrDb      = 0.0f;
+    float sustainRmsDb = -140.0f;
+    float tailGrowthDb = -99.0f;   // max increase between consecutive 0.5 s tail windows
+    float squealDb     = 0.0f;     // max tonal prominence (2-12 kHz) in tail
+    bool  finite       = true;
+};
+
+float tonalProminenceDb (const std::vector<float>& x, double sr, const std::vector<int>& notes)
+{
+    constexpr int order = 13, size = 1 << order;
+    if (static_cast<int> (x.size()) < size) return 0.0f;
+    juce::dsp::FFT fft (order);
+    std::vector<float> work (2 * size, 0.0f);
+    std::vector<double> pow (size / 2, 0.0);
+    int frames = 0;
+    for (size_t start = 0; start + size <= x.size(); start += size / 2, ++frames)
+    {
+        std::fill (work.begin(), work.end(), 0.0f);
+        for (int i = 0; i < size; ++i)
+            work[(size_t) i] = x[start + (size_t) i] * (0.5f - 0.5f * std::cos (6.2831853f * (float) i / (float) size));
+        fft.performFrequencyOnlyForwardTransform (work.data());
+        for (int b = 0; b < size / 2; ++b) pow[(size_t) b] += (double) work[(size_t) b] * work[(size_t) b];
+    }
+    const double binHz = sr / size;
+    float worst = 0.0f, worstHz = 0.0f;
+    for (int b = (int) (2000.0 / binHz); b < (int) (12000.0 / binHz) && b < size / 2 - 64; ++b)
+    {
+        // Compare bin against median of a +/- 1/3 octave neighbourhood
+        const int lo = std::max (1, (int) (b / 1.26)), hi = std::min (size / 2 - 1, (int) (b * 1.26));
+        std::vector<double> nb (pow.begin() + lo, pow.begin() + hi);
+        std::nth_element (nb.begin(), nb.begin() + (long) nb.size() / 2, nb.end());
+        const double med = std::max (nb[nb.size() / 2], 1.0e-20);
+        if (pow[(size_t) b] < 1.0e-12 * frames) continue; // ignore numerically silent bins
+        // Musical content (harmonics of sung notes, incl. octave-down/fifth shimmer) is not squeal
+        bool harmonic = false;
+        const double fHz = b * binHz;
+        for (int nn : notes)
+            for (double base : { 1.0, 0.5, 1.4983 })
+            {
+                const double f0 = base * 440.0 * std::pow (2.0, (nn - 69) / 12.0);
+                const double h = std::round (fHz / f0);
+                if (h >= 1.0 && std::abs (fHz - h * f0) < std::max (0.02 * h * f0, 2.0 * binHz)) harmonic = true;
+            }
+        if (harmonic) continue;
+        const float prom = (float) (10.0 * std::log10 (pow[(size_t) b] / med));
+        if (prom > worst) { worst = prom; worstHz = (float) (b * binHz); }
+    }
+    if (std::getenv ("MONO_DUMP")) std::cout << "  squeal peak @ " << worstHz << " Hz\n";
+    return worst;
+}
+
+StressResult runStress (int presetIdx, const std::vector<int>& notes, float vel,
+                        const std::vector<std::pair<const char*, float>>& overrides,
+                        double holdSec = 3.0, double tailSec = 7.0)
+{
+    const double sr = 48000.0; const int block = 256;
+    monolith::PresetManager pm;
+    AuditHostProcessor host;
+    monolith::dsp::SwarmEngine engine;
+    monolith::TelemetrySnapshot telemetry;
+    pm.applyPreset (presetIdx, host.apvts);
+    for (auto& [id, v] : overrides) setParam (host.apvts, id, v);
+    engine.prepare (sr, block, host.apvts);
+
+    StressResult r;
+    juce::AudioBuffer<float> buf (2, block);
+    juce::MidiBuffer midi;
+    for (int nn : notes) midi.addEvent (juce::MidiMessage::noteOn (1, nn, vel), 0);
+    const float relSec = host.apvts.getRawParameterValue (monolith::params::releaseTime)->load();
+    const int holdS = (int) (holdSec * sr), tailS = (int) (tailSec * sr);
+    const int tailMeasureStart = holdS + (int) (std::min (relSec, 4.0f) * sr * 0.5f);
+    std::vector<float> tail; tail.reserve ((size_t) tailS);
+    double sumSq = 0.0; int sumN = 0;
+    std::vector<double> winRms; double winAcc = 0.0; int winN = 0;
+    for (int pos = 0; pos < holdS + tailS; pos += block)
+    {
+        if (pos >= holdS && pos < holdS + block)
+            for (int nn : notes) midi.addEvent (juce::MidiMessage::noteOff (1, nn), 0);
+        buf.clear();
+        engine.processBlock (buf, midi, 120.0, telemetry);
+        midi.clear();
+        float pk = 0.0f;
+        if (! checkFinite (buf, pk)) { r.finite = false; return r; }
+        r.outPeakDb = std::max (r.outPeakDb, ampToDb (pk));
+        for (int i = 0; i < block; ++i)
+        {
+            const float m = 0.5f * (buf.getSample (0, i) + buf.getSample (1, i));
+            const int t = pos + i;
+            if (t > (int) (1.0 * sr) && t < holdS) { sumSq += (double) m * m; ++sumN; }
+            if (t >= tailMeasureStart)
+            {
+                tail.push_back (m);
+                winAcc += (double) m * m; ++winN;
+                if (winN == (int) (0.5 * sr)) { winRms.push_back (winAcc / winN); winAcc = 0.0; winN = 0; }
+            }
+        }
+    }
+    r.preLimPeakDb = ampToDb (engine.getPreLimiterPeak());
+    r.maxGrDb      = engine.getMaxGainReductionDb();
+    r.sustainRmsDb = ampToDb ((float) std::sqrt (sumSq / std::max (1, sumN)));
+    if (std::getenv ("MONO_DUMP")) { for (auto w : winRms) std::cout << ampToDb ((float) std::sqrt (w)) << " "; std::cout << "\n"; }
+    for (size_t k = 1; k < winRms.size(); ++k)
+        if (winRms[k - 1] > 1.0e-9)
+            r.tailGrowthDb = std::max (r.tailGrowthDb, (float) (10.0 * std::log10 (winRms[k] / winRms[k - 1])));
+    r.squealDb = tonalProminenceDb (tail, sr, notes);
+    return r;
+}
+
+void printStress (const juce::String& name, const StressResult& r)
+{
+    std::cout << "  " << std::setw (28) << std::left << name.toStdString() << std::fixed << std::setprecision (1)
+              << " preLim " << std::setw (6) << r.preLimPeakDb << " | out " << std::setw (5) << r.outPeakDb
+              << " | GR " << std::setw (4) << r.maxGrDb << " | sus " << std::setw (6) << r.sustainRmsDb
+              << " | tailGrow " << std::setw (5) << r.tailGrowthDb << " | squeal " << std::setw (5) << r.squealDb << "\n";
+}
+
+bool testProStress()
+{
+    std::cout << "[6/8] Pro stress: full-velocity chords, soprano extremes, worst-case knobs...\n";
+    monolith::PresetManager pm;
+    bool ok = true;
+    const std::vector<int> bigChord { 36, 43, 48, 55, 60, 64, 67, 72 };
+    const std::vector<int> highNotes { 79, 84, 88 };
+    float minSus = 99.0f, maxSus = -140.0f;
+    for (int p = 0; p < pm.getNumPresets(); ++p)
+    {
+        const bool freezeP = pm.getPreset (p).name.containsIgnoreCase ("frozen");
+        for (int sc = 0; sc < 2; ++sc)
+        {
+            const auto r = runStress (p, sc == 0 ? bigChord : highNotes, 1.0f, {});
+            printStress (pm.getPreset (p).name + (sc == 0 ? " [chord]" : " [high]"), r);
+            if (sc == 0) { minSus = std::min (minSus, r.sustainRmsDb); maxSus = std::max (maxSus, r.sustainRmsDb); }
+            if (! r.finite || r.outPeakDb > -0.9f || r.maxGrDb > 6.0f || (! freezeP && r.tailGrowthDb > 1.0f) || r.squealDb > 30.0f)
+            { std::cerr << "  --> STRESS FAIL\n"; ok = false; }
+        }
+    }
+    std::cout << "  Big-chord sustain RMS spread across presets: " << (maxSus - minSus) << " dB\n";
+
+    using namespace monolith::params;
+    const std::vector<std::pair<const char*, float>> worst {
+        { formantFocus, 1.0f }, { spaceShimmer, 1.0f }, { spaceDecay, 1.0f }, { spaceDamp, 0.0f }, { spaceMix, 1.0f },
+        { macroColossus, 1.0f }, { macroSpecter, 1.0f }, { macroRot, 1.0f }, { macroAbyss, 1.0f },
+        { driveAmount, 1.0f }, { subAbyss, 1.0f }, { spectralCrown, 1.0f }, { throatShift, 12.0f }, { masterGain, 6.0f } };
+    for (int space = 0; space < 4; ++space)
+    {
+        auto o = worst; o.push_back ({ spaceType, (float) space });
+        const auto r = runStress (0, bigChord, 1.0f, o, 3.0, 10.0);
+        printStress ("WORST-CASE space " + juce::String (space), r);
+        if (! r.finite || r.outPeakDb > -0.9f || r.tailGrowthDb > 1.0f || r.squealDb > 30.0f)
+        { std::cerr << "  --> WORST-CASE FAIL\n"; ok = false; }
+    }
+    if (ok) std::cout << "  PASS: No overload, runaway or squeal under stress.\n";
+    return ok;
+}
+
+bool testAliasingDistortionAndExpression()
+{
+    std::cout << "[7/8] Aliasing, distortion, true-peak & CC11 expression lab...\n";
+    const auto s = qlab::runAll (false);
+    std::cout << std::fixed << std::setprecision (1)
+              << "  Glottal oscillator: worst spur " << s.worstGlottalSpur << " dBc, inharmonic floor " << s.worstGlottalInharm << " dB\n"
+              << "  Tube/tape drive:    worst audible-band (<18 kHz) alias " << s.worstDriveAudible << " dBc\n"
+              << "  Sub-Abyss layer:    worst spur " << s.worstSubSpur << " dBc\n"
+              << "  Master bus:         THD " << s.worstBusThd << " dB below limiting, " << s.worstLimiterThd
+              << " dB at +3/+6 dB overload, true peak " << s.worstTruePeakDb << " dBTP (ceiling -1.0)\n";
+
+    bool ok = true;
+    auto gate = [&ok] (bool pass, const char* what) { if (! pass) { std::cerr << "  --> FAIL: " << what << "\n"; ok = false; } };
+    gate (s.worstGlottalSpur   < -105.0, "glottal oscillator spur above -105 dBc");
+    gate (s.worstGlottalInharm < -90.0,  "glottal interpolation noise above -90 dB");
+    gate (s.worstDriveAudible  < -95.0,  "drive stage audible-band aliasing above -95 dBc");
+    gate (s.worstSubSpur       < -110.0, "sub layer spur above -110 dBc");
+    gate (s.worstBusThd        < -75.0,  "master bus THD above -75 dB below limiting");
+    gate (s.worstLimiterThd    < -70.0,  "limiter THD above -70 dB on overload");
+    gate (s.worstTruePeakDb    < -0.95,  "true-peak output above -1 dBTP ceiling");
+
+    // CC11 expression: full = reference, 64 ~ -12 dB, 0 = silent
+    auto renderCc11 = [] (int cc11) -> float
+    {
+        const double sr = 48000.0; const int block = 256;
+        monolith::PresetManager pm; AuditHostProcessor host; monolith::dsp::SwarmEngine engine; monolith::TelemetrySnapshot tel;
+        pm.applyPreset (0, host.apvts);
+        setParam (host.apvts, monolith::params::spaceMix, 0.0f);
+        engine.prepare (sr, block, host.apvts);
+        juce::AudioBuffer<float> buf (2, block); juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 11, cc11), 0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 57, 0.8f), 0);
+        double acc = 0.0; int cnt = 0;
+        for (int pos = 0; pos < (int) (2.5 * sr); pos += block)
+        {
+            buf.clear(); engine.processBlock (buf, midi, 120.0, tel); midi.clear();
+            if (pos > (int) (1.2 * sr))
+                for (int i = 0; i < block; ++i) { const float m = buf.getSample (0, i); acc += (double) m * m; ++cnt; }
+        }
+        return ampToDb ((float) std::sqrt (acc / std::max (cnt, 1)));
+    };
+    const float full = renderCc11 (127), half = renderCc11 (64), zero = renderCc11 (0);
+    std::cout << "  CC11 expression:    127 -> " << full << " dBFS, 64 -> " << (half - full) << " dB, 0 -> " << zero << " dBFS\n";
+    gate (std::abs ((half - full) + 12.0f) < 2.5f, "CC11=64 should sit ~12 dB under CC11=127");
+    gate (zero < full - 60.0f, "CC11=0 should silence the instrument");
+
+    if (ok) std::cout << "  PASS: Alias-free oscillator & drive, clean bus, true-peak safe, CC11 works.\n";
+    return ok;
+}
+
 } // namespace
 
-int main()
+int main (int argc, char** argv)
 {
     std::cout << "=== MONOLITH DSP & PRESET AUDIT SUITE ===\n";
+
+    if (argc > 2 && juce::String (argv[1]) == "one")
+    {
+        static std::vector<std::string> ids;
+        std::vector<std::pair<const char*, float>> ov;
+        ids.reserve (64);
+        for (int a = 3; a < argc; ++a)
+        {
+            const juce::String kv (argv[a]);
+            ids.push_back (kv.upToFirstOccurrenceOf ("=", false, false).toStdString());
+            ov.push_back ({ ids.back().c_str(), kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue() });
+        }
+        const bool high = std::getenv ("MONO_HIGH") != nullptr;
+        const auto r = runStress (juce::String (argv[2]).getIntValue(), high ? std::vector<int> { 79, 84, 88 } : std::vector<int> { 36, 43, 48, 55, 60, 64, 67, 72 }, 1.0f, ov);
+        printStress ("one", r);
+        return 0;
+    }
+    if (argc > 1 && juce::String (argv[1]) == "cal")
+    {
+        monolith::PresetManager pm;
+        for (int p = 0; p < pm.getNumPresets(); ++p)
+        {
+            const auto a = runStress (p, { 36, 43, 48, 55, 60, 64, 67, 72 }, 1.0f, {}, 3.0, 0.6);
+            const auto b = runStress (p, { 79, 84, 88 }, 1.0f, {}, 3.0, 0.6);
+            const auto c = runStress (p, { 48, 51, 55 }, 0.78f, {}, 3.0, 0.6);
+            std::cout << "CAL " << p << " " << std::max (a.preLimPeakDb, b.preLimPeakDb) << " " << a.sustainRmsDb << " " << c.sustainRmsDb << "\n";
+        }
+        return 0;
+    }
+    if (argc > 1 && juce::String (argv[1]) == "lab")
+    {
+        const auto s = qlab::runAll (true);
+        std::cout << "WORST glottal spur " << s.worstGlottalSpur << " dBc | drive spur " << s.worstDriveSpur
+                  << " dBc | sub spur " << s.worstSubSpur << " dBc | bus THD (no limiting) " << s.worstBusThd << " dB\n"
+                  << "WORST glottal inharm " << s.worstGlottalInharm << " dB | drive audible spur " << s.worstDriveAudible
+                  << " dBc | limiter THD (+3/+6 dB over) " << s.worstLimiterThd << " dB | true peak " << s.worstTruePeakDb << " dBTP\n";
+        return 0;
+    }
+    if (argc > 1 && juce::String (argv[1]) == "stress")
+        return testProStress() ? 0 : 1;
 
     if (! testPresetsAndParameters())
         return 1;
@@ -848,6 +1139,13 @@ int main()
     if (! testClickPopAndCpuAudit())
         return 1;
 
-    std::cout << "[6/6] ALL AUDITS PASSED.\n";
+    const bool stressOk = testProStress();
+    if (! stressOk)
+        return 1;
+
+    if (! testAliasingDistortionAndExpression())
+        return 1;
+
+    std::cout << "[8/8] ALL AUDITS PASSED.\n";
     return 0;
 }

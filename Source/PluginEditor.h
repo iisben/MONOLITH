@@ -28,6 +28,7 @@ private:
 
     MonolithAudioProcessor& audioProcessor;
     ui::MonolithLookAndFeel lookAndFeel;
+    ui::ConcreteSurface groundSurface;
     juce::TooltipWindow tooltipWindow { this, 500 };
 
     juce::Component rootContainer;
