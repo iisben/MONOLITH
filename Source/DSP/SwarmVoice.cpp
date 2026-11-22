@@ -52,6 +52,9 @@ void SwarmVoice::prepare (double sampleRate, int maxBlockSize, int voiceIndex)
 
         sg.breathNoise.seed (h1 ^ 0xA3C59AC3u);
         sg.wanderNoise.seed (h2 ^ 0x517CC1B7u);
+        sg.breathNoise.prepare (sr);
+        sg.wanderNoise.prepare (sr);
+        sg.vibrato.setHz (static_cast<double> (sg.vibratoRateHz), sr);
     }
 
     harmonicLayers.prepare (sr);
@@ -103,8 +106,8 @@ void SwarmVoice::reset() noexcept
     for (int i = 0; i < kMaxSingersPerVoice; ++i)
     {
         auto& sg = singers[static_cast<size_t> (i)];
-        sg.phase        = seedToUnit (hashSeed (sg.seed + 17u));
-        sg.vibratoPhase = seedToUnit (hashSeed (sg.seed + 53u)) * kTwoPi;
+        sg.phase = seedToUnit (hashSeed (sg.seed + 17u));
+        sg.vibrato.setPhaseRad (static_cast<double> (seedToUnit (hashSeed (sg.seed + 53u))) * kTwoPiD);
         sg.wanderState  = 0.0f;
         sg.activeGain   = 0.0f;
         sg.envLevel     = 0.0f;
@@ -174,8 +177,8 @@ void SwarmVoice::startNote (int midiNote, float velocity01, float currentGlideTi
     for (int i = 0; i < kMaxSingersPerVoice; ++i)
     {
         auto& sg = singers[static_cast<size_t> (i)];
-        sg.phase        = seedToUnit (hashSeed (sg.seed + static_cast<uint32_t> (midiNote * 131 + i)));
-        sg.vibratoPhase = seedToUnit (hashSeed (sg.seed + 97u)) * kTwoPi;
+        sg.phase = seedToUnit (hashSeed (sg.seed + static_cast<uint32_t> (midiNote * 131 + i)));
+        sg.vibrato.setPhaseRad (static_cast<double> (seedToUnit (hashSeed (sg.seed + 97u))) * kTwoPiD);
         sg.wanderState  = 0.0f;
         sg.envLevel     = 0.0f;
         sg.activeGain   = 0.0f;
@@ -329,6 +332,7 @@ void SwarmVoice::renderBlock (float* outL,
     const float totalThroatShift = params.throatShiftSt - 8.5f * std::clamp (params.screwDepth01, 0.0f, 1.0f);
 
     const auto& glottalLut = LfGlottalTables::instance();
+    const auto& trig       = FastTrig::instance();
 
     const int ctrlStep = std::max (8, static_cast<int> (srF / 3000.0f));
 
@@ -441,7 +445,7 @@ void SwarmVoice::renderBlock (float* outL,
         if (! releasing && noteElapsedSec < onsetDurSec)
         {
             const float u = noteElapsedSec / onsetDurSec;
-            onsetEnv = std::sin (kPi * u) * onsetDrive;
+            onsetEnv = trig.sinTurns (0.5f * u) * onsetDrive;
         }
 
         float sumL = 0.0f;
@@ -486,11 +490,10 @@ void SwarmVoice::renderBlock (float* outL,
             if (sg.envLevel < 1.0e-6f)
                 continue;
 
-            sg.vibratoPhase += kTwoPi * sg.vibratoRateHz * invSrF;
-            if (sg.vibratoPhase >= kTwoPi) sg.vibratoPhase -= kTwoPi;
+            sg.vibrato.tick();
 
             const float vibOnsetRamp = std::clamp ((noteElapsedSec - sg.vibratoDelaySec) / 0.35f, 0.0f, 1.0f);
-            const float vibCents = std::sin (sg.vibratoPhase)
+            const float vibCents = sg.vibrato.sinOut()
                                  * (params.vibratoDepth01 * 28.0f)
                                  * vibOnsetRamp;
 
@@ -503,11 +506,12 @@ void SwarmVoice::renderBlock (float* outL,
                 18.0f,
                 0.42f * srF);
 
-            sg.phase += singerFreq * invSrF;
-            if (sg.phase >= 1.0f) sg.phase -= std::floor (sg.phase);
+            sg.phase += static_cast<double> (singerFreq) * static_cast<double> (invSrF);
+            if (sg.phase >= 1.0) sg.phase -= std::floor (sg.phase);
+            const float phase01 = static_cast<float> (sg.phase);
 
-            const float glottal  = glottalLut.sample (sg.phase, smTension, singerFreq, srF);
-            const float openGate = glottalLut.glottalOpenGate (sg.phase, smTension);
+            const float glottal  = glottalLut.sample (phase01, smTension, singerFreq, srF);
+            const float openGate = glottalLut.glottalOpenGate (phase01, smTension);
 
             const float rawPink    = sg.breathNoise.nextPink();
             const float breathFilt = sg.breathBp.processBandpass (rawPink);

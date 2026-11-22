@@ -10,12 +10,19 @@
 namespace monolith::dsp
 {
 
-inline constexpr float kPi    = 3.14159265358979323846f;
-inline constexpr float kTwoPi = 6.28318530717958647692f;
+inline constexpr float kPi     = 3.14159265358979323846f;
+inline constexpr float kTwoPi  = 6.28318530717958647692f;
+inline constexpr double kPiD   = 3.14159265358979323846;
+inline constexpr double kTwoPiD = 6.28318530717958647692;
 
 [[nodiscard]] inline float sanitize (float x) noexcept
 {
     return std::isfinite (x) ? x : 0.0f;
+}
+
+[[nodiscard]] inline double finiteOrZero (double x) noexcept
+{
+    return std::isfinite (x) ? x : 0.0;
 }
 
 /**
@@ -41,7 +48,8 @@ inline constexpr float kTwoPi = 6.28318530717958647692f;
         return x;
 
     const float excess = (ax - kThreshold) / kHeadroom;
-    const float shaped = kThreshold + kHeadroom * std::tanh (excess);
+    // C1 at the knee: d/dx fastTanh(0) = 1, so the shelf meets the linear region.
+    const float shaped = kThreshold + kHeadroom * fastTanh (excess);
     return (x >= 0.0f) ? shaped : -shaped;
 }
 
@@ -65,6 +73,24 @@ inline constexpr float kTwoPi = 6.28318530717958647692f;
     return 1.0f + x * (1.0f + x * (0.5f + x * 0.16666667f));
 }
 
+/**
+    Smoothstep fade for an additive partial as it approaches Nyquist.
+    Unity below 0.34*fs, zero at 0.47*fs, C1 at both ends so glide never clicks.
+*/
+[[nodiscard]] inline float partialNyquistGain (float freqHz, float sampleRate) noexcept
+{
+    const float nyStart = 0.34f * sampleRate;
+    const float nyEnd   = 0.47f * sampleRate;
+    if (freqHz <= nyStart)
+        return 1.0f;
+    if (freqHz >= nyEnd)
+        return 0.0f;
+
+    const float u = (freqHz - nyStart) / (nyEnd - nyStart);
+    const float s = u * u * (3.0f - 2.0f * u);
+    return 1.0f - s;
+}
+
 /** C0-continuous IEEE-754 fast log2 for positive normal floats (zero branch, exact at 2^k). */
 [[nodiscard]] inline float fastLog2 (float x) noexcept
 {
@@ -76,51 +102,193 @@ inline constexpr float kTwoPi = 6.28318530717958647692f;
 }
 
 // ============================================================================
-/** Sample-rate-scaled 15 Hz DC blocking filter. */
+/**
+    Sample-rate-scaled 8 Hz one-pole DC blocker.
+    y[n] = x[n] - x[n-1] + r y[n-1], r = exp(-2π·8/fs).
+    8 Hz sits inside the 5–10 Hz range so chest and sub-octave energy is kept
+    while saturation / feedback offset is still removed. State is double so the
+    pole (r ≈ 0.999) does not quantise the low-frequency subtraction.
+*/
 class DCBlocker
 {
 public:
     void prepare (double sampleRate) noexcept
     {
         const double sr = std::max (8000.0, sampleRate);
-        r = static_cast<float> (std::exp (-2.0 * 3.14159265358979323846 * 15.0 / sr));
+        r = std::exp (-kTwoPiD * 8.0 / sr);
         reset();
     }
 
     void reset() noexcept
     {
-        x1 = 0.0f;
-        y1 = 0.0f;
+        x1 = 0.0;
+        y1 = 0.0;
     }
 
     [[nodiscard]] inline float process (float x) noexcept
     {
-        const float y = x - x1 + r * y1;
-        x1 = x;
-        y1 = sanitize (y);
-        return y1;
+        const double xd = static_cast<double> (x);
+        const double y  = xd - x1 + r * y1;
+        x1 = xd;
+        y1 = finiteOrZero (y);
+        return static_cast<float> (y1);
     }
 
 private:
-    float r  = 0.998f;
-    float x1 = 0.0f;
-    float y1 = 0.0f;
+    double r  = 0.999;
+    double x1 = 0.0;
+    double y1 = 0.0;
 };
 
 // ============================================================================
-/** Real-time deterministic xorshift32 PRNG + Paul Kellet 3-stage pink noise generator. */
+/**
+    Double-precision quadrature oscillator.
+    Advance is an exact complex rotation by a prepare-time cis(ω); no per-sample
+    transcendental, and the amplitude is renormalised occasionally so roundoff
+    cannot drift. Output is continuous across 2π (unlike fmod-then-multiply).
+*/
+struct QuadratureLfo
+{
+    double s = 0.0;
+    double c = 1.0;
+    double sInc = 0.0;
+    double cInc = 1.0;
+    int norm = 0;
+
+    void setHz (double hz, double sampleRate) noexcept
+    {
+        const double w = kTwoPiD * hz / std::max (8000.0, sampleRate);
+        sInc = std::sin (w);
+        cInc = std::cos (w);
+    }
+
+    void setPhaseRad (double phase) noexcept
+    {
+        s = std::sin (phase);
+        c = std::cos (phase);
+        norm = 0;
+    }
+
+    inline void tick() noexcept
+    {
+        const double ns = s * cInc + c * sInc;
+        const double nc = c * cInc - s * sInc;
+        s = ns;
+        c = nc;
+
+        if (++norm >= 2048)
+        {
+            norm = 0;
+            const double mag = std::sqrt (s * s + c * c);
+            if (mag > 1.0e-18)
+            {
+                s /= mag;
+                c /= mag;
+            }
+        }
+    }
+
+    [[nodiscard]] inline float sinOut() const noexcept { return static_cast<float> (s); }
+    [[nodiscard]] inline float cosOut() const noexcept { return static_cast<float> (c); }
+};
+
+// ============================================================================
+/**
+    4096-bin sine LUT with 4-point Catmull-Rom interpolation.
+    Replaces libm sin/cos on per-sample additive partials and window functions.
+    Knot error is zero; inter-bin error is far below -120 dB.
+*/
+class FastTrig
+{
+public:
+    static constexpr int kSize = 4096;
+
+    static const FastTrig& instance()
+    {
+        static const FastTrig table;
+        return table;
+    }
+
+    /** Sine of a phase expressed in cycles (1.0 == 2π). */
+    [[nodiscard]] inline float sinTurns (float turns) const noexcept
+    {
+        float p = turns - std::floor (turns);
+        if (p < 0.0f)
+            p += 1.0f;
+
+        const float pos = p * static_cast<float> (kSize);
+        const int i0    = static_cast<int> (pos) & (kSize - 1);
+        const float f   = pos - std::floor (pos);
+
+        const int im = (i0 == 0) ? (kSize - 1) : (i0 - 1);
+        const float ym = table[static_cast<size_t> (im)];
+        const float y0 = table[static_cast<size_t> (i0)];
+        const float y1 = table[static_cast<size_t> (i0 + 1)];
+        const float y2 = table[static_cast<size_t> (i0 + 2)];
+
+        const float c0 = y0;
+        const float c1 = 0.5f * (y1 - ym);
+        const float c2 = ym - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
+        const float c3 = 0.5f * (y2 - ym) + 1.5f * (y0 - y1);
+        return ((c3 * f + c2) * f + c1) * f + c0;
+    }
+
+    [[nodiscard]] inline float cosTurns (float turns) const noexcept
+    {
+        return sinTurns (turns + 0.25f);
+    }
+
+private:
+    std::array<float, kSize + 3> table {};
+
+    FastTrig()
+    {
+        for (int i = 0; i < kSize; ++i)
+            table[static_cast<size_t> (i)] = static_cast<float> (
+                std::sin (kTwoPiD * static_cast<double> (i) / static_cast<double> (kSize)));
+
+        table[kSize]     = table[0];
+        table[kSize + 1] = table[1];
+        table[kSize + 2] = table[2];
+    }
+};
+
+// ============================================================================
+/**
+    Deterministic xorshift32 + Paul Kellet 3-pole pink noise.
+    The published poles (0.99765 / 0.963 / 0.570) are a 44.1 kHz design.
+    prepare() warps each pole to the same corner frequency at the session rate
+    and rescales the feed gain so every stage keeps its original DC gain.
+*/
 class PinkNoiseGen
 {
 public:
+    void prepare (double sampleRate) noexcept
+    {
+        const double sr = std::max (8000.0, sampleRate);
+        auto warp = [sr] (double pRef, double gRef, double& pole, double& gain)
+        {
+            const double fc    = -std::log (pRef) * 44100.0 / kTwoPiD;
+            const double fcUse = std::min (fc, 0.45 * sr);
+            pole = std::exp (-kTwoPiD * fcUse / sr);
+            const double dc = gRef / (1.0 - pRef);
+            gain = dc * (1.0 - pole);
+        };
+
+        warp (0.99765, 0.0990460, p0, g0);
+        warp (0.96300, 0.2965164, p1, g1);
+        warp (0.57000, 1.0526913, p2, g2);
+    }
+
     void seed (uint32_t s) noexcept
     {
         state = (s != 0u) ? s : 0xA511E9B3u;
-        b0 = b1 = b2 = 0.0f;
+        b0 = b1 = b2 = 0.0;
     }
 
     void resetFilter() noexcept
     {
-        b0 = b1 = b2 = 0.0f;
+        b0 = b1 = b2 = 0.0;
     }
 
     [[nodiscard]] inline float nextWhite() noexcept
@@ -135,33 +303,36 @@ public:
 
     [[nodiscard]] inline float nextPink() noexcept
     {
-        const float white = nextWhite();
-        b0 = 0.99765f * b0 + white * 0.0990460f;
-        b1 = 0.96300f * b1 + white * 0.2965164f;
-        b2 = 0.57000f * b2 + white * 1.0526913f;
-        return (b0 + b1 + b2 + white * 0.1848f) * 0.22f;
+        const double white = static_cast<double> (nextWhite());
+        b0 = p0 * b0 + white * g0;
+        b1 = p1 * b1 + white * g1;
+        b2 = p2 * b2 + white * g2;
+        return static_cast<float> ((b0 + b1 + b2 + white * 0.1848) * 0.22);
     }
 
 private:
     uint32_t state = 0x12345678u;
-    float b0 = 0.0f;
-    float b1 = 0.0f;
-    float b2 = 0.0f;
+    double p0 = 0.99765, g0 = 0.0990460;
+    double p1 = 0.96300, g1 = 0.2965164;
+    double p2 = 0.57000, g2 = 1.0526913;
+    double b0 = 0.0, b1 = 0.0, b2 = 0.0;
 };
 
 // ============================================================================
 /**
-    Zero-Delay-Feedback (TPT) State Variable Filter with coefficient caching.
-    Supports unit-peak Bandpass (ideal for parallel vocal formants), Lowpass,
-    and Highpass topologies, unconditionally stable from 44.1 kHz to 192 kHz.
+    Zero-delay-feedback (TPT) state-variable filter.
+    Coefficients and integrators are double; audio crosses the boundary as float.
+    g = tan(π·fc/fs), k = 1/Q, trapezoidal integrators — stable for any fc in
+    (0, 0.44·fs) and any Q, including audio-rate cutoff modulation.
+    Bandpass is scaled by k so the peak is 0 dB at fc (parallel formant bank).
 */
 class ZdfSvf
 {
 public:
     void reset() noexcept
     {
-        ic1eq = 0.0f;
-        ic2eq = 0.0f;
+        ic1eq = 0.0;
+        ic2eq = 0.0;
     }
 
     void invalidateCache() noexcept
@@ -188,47 +359,51 @@ public:
         lastQ      = clampedQ;
         lastSr     = sr;
 
-        g  = std::tan (kPi * clampedFc / sr);
-        k  = 1.0f / clampedQ;
-        a1 = 1.0f / (1.0f + g * (g + k));
+        const double fc = static_cast<double> (clampedFc);
+        const double fs = static_cast<double> (sr);
+        const double qD = static_cast<double> (clampedQ);
+        g  = std::tan (kPiD * fc / fs);
+        k  = 1.0 / qD;
+        a1 = 1.0 / (1.0 + g * (g + k));
         a2 = g * a1;
         a3 = g * a2;
     }
 
-    /** Returns unit-peak bandpass output (0 dB at fc regardless of Q). */
+    /** Unit-peak bandpass (0 dB at fc regardless of Q). */
     [[nodiscard]] inline float processBandpass (float v0) noexcept
     {
-        const float v3 = v0 - ic2eq;
-        const float v1 = a1 * ic1eq + a2 * v3;
-        const float v2 = ic2eq + a2 * ic1eq + a3 * v3;
-        ic1eq = sanitize (2.0f * v1 - ic1eq);
-        ic2eq = sanitize (2.0f * v2 - ic2eq);
-        return v1 * k;
+        double v1 = 0.0, v2 = 0.0;
+        tick (static_cast<double> (v0), v1, v2);
+        return static_cast<float> (v1 * k);
     }
 
     [[nodiscard]] inline float processLowpass (float v0) noexcept
     {
-        const float v3 = v0 - ic2eq;
-        const float v1 = a1 * ic1eq + a2 * v3;
-        const float v2 = ic2eq + a2 * ic1eq + a3 * v3;
-        ic1eq = sanitize (2.0f * v1 - ic1eq);
-        ic2eq = sanitize (2.0f * v2 - ic2eq);
-        return v2;
+        double v1 = 0.0, v2 = 0.0;
+        tick (static_cast<double> (v0), v1, v2);
+        return static_cast<float> (v2);
     }
 
     [[nodiscard]] inline float processHighpass (float v0) noexcept
     {
-        const float v3 = v0 - ic2eq;
-        const float v1 = a1 * ic1eq + a2 * v3;
-        const float v2 = ic2eq + a2 * ic1eq + a3 * v3;
-        ic1eq = sanitize (2.0f * v1 - ic1eq);
-        ic2eq = sanitize (2.0f * v2 - ic2eq);
-        return v0 - k * v1 - v2;
+        const double in = static_cast<double> (v0);
+        double v1 = 0.0, v2 = 0.0;
+        tick (in, v1, v2);
+        return static_cast<float> (in - k * v1 - v2);
     }
 
 private:
-    float g = 0.1f, k = 1.0f, a1 = 1.0f, a2 = 0.0f, a3 = 0.0f;
-    float ic1eq = 0.0f, ic2eq = 0.0f;
+    inline void tick (double v0, double& v1, double& v2) noexcept
+    {
+        const double v3 = v0 - ic2eq;
+        v1 = a1 * ic1eq + a2 * v3;
+        v2 = ic2eq + a2 * ic1eq + a3 * v3;
+        ic1eq = finiteOrZero (2.0 * v1 - ic1eq);
+        ic2eq = finiteOrZero (2.0 * v2 - ic2eq);
+    }
+
+    double g = 0.1, k = 1.0, a1 = 1.0, a2 = 0.0, a3 = 0.0;
+    double ic1eq = 0.0, ic2eq = 0.0;
     float lastCutoff = -1.0f, lastQ = -1.0f, lastSr = -1.0f;
 };
 
@@ -272,17 +447,19 @@ public:
         const size_t idx2 = (writePos - 1 - intDelay - 1) & mask;
         const size_t idx3 = (writePos - 1 - intDelay - 2) & mask;
 
-        const float y0 = buffer[idx0];
-        const float y1 = buffer[idx1];
-        const float y2 = buffer[idx2];
-        const float y3 = buffer[idx3];
+        const double y0 = buffer[idx0];
+        const double y1 = buffer[idx1];
+        const double y2 = buffer[idx2];
+        const double y3 = buffer[idx3];
+        const double f  = static_cast<double> (frac);
 
-        const float c0 = y1;
-        const float c1 = 0.5f * (y2 - y0);
-        const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
-        const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+        // 4-point Catmull-Rom / Hermite. Exact at the integer knots (c0 = y1, sum@1 = y2).
+        const double c0 = y1;
+        const double c1 = 0.5 * (y2 - y0);
+        const double c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+        const double c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
 
-        return ((c3 * frac + c2) * frac + c1) * frac + c0;
+        return static_cast<float> (((c3 * f + c2) * f + c1) * f + c0);
     }
 
     [[nodiscard]] inline float readLinear (float delaySamples) const noexcept
@@ -306,8 +483,8 @@ private:
 /**
     Shared, read-only, band-limited Liljencrants-Fant (LF) glottal flow
     derivative wavetable bank. Precomputed across 8 Tension/Effort slices and
-    10 mip-map harmonic tiers with continuous trilinear interpolation across
-    phase, tension, and mip level (zero aliasing AND zero mip-switch clicks).
+    10 mip-map harmonic tiers. Phase is 4-point Catmull-Rom; tension and mip
+    crossfade linearly (zero aliasing and zero mip-switch clicks).
 */
 class LfGlottalTables
 {
@@ -322,7 +499,7 @@ public:
         return singleton;
     }
 
-    /** Sample band-limited LF glottal waveform with click-free trilinear interpolation. */
+    /** Band-limited LF glottal sample: cubic phase, linear tension and mip. */
     [[nodiscard]] inline float sample (float phase01, float tension01,
                                        float freqHz, float sampleRate) const noexcept
     {
@@ -355,11 +532,24 @@ public:
         const auto& r10 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m0)];
         const auto& r11 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m1)];
 
-        const size_t ui0 = static_cast<size_t> (i0);
-        const float s00 = r00[ui0] + frac * (r00[ui0 + 1] - r00[ui0]);
-        const float s01 = r01[ui0] + frac * (r01[ui0 + 1] - r01[ui0]);
-        const float s10 = r10[ui0] + frac * (r10[ui0 + 1] - r10[ui0]);
-        const float s11 = r11[ui0] + frac * (r11[ui0 + 1] - r11[ui0]);
+        const auto hermite = [frac] (const WaveRow& row, int bin) noexcept -> float
+        {
+            const int im = (bin == 0) ? (kTableSize - 1) : (bin - 1);
+            const float ym = row[static_cast<size_t> (im)];
+            const float y0 = row[static_cast<size_t> (bin)];
+            const float y1 = row[static_cast<size_t> (bin + 1)];
+            const float y2 = row[static_cast<size_t> (bin + 2)];
+            const float c0 = y0;
+            const float c1 = 0.5f * (y1 - ym);
+            const float c2 = ym - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
+            const float c3 = 0.5f * (y2 - ym) + 1.5f * (y0 - y1);
+            return ((c3 * frac + c2) * frac + c1) * frac + c0;
+        };
+
+        const float s00 = hermite (r00, i0);
+        const float s01 = hermite (r01, i0);
+        const float s10 = hermite (r10, i0);
+        const float s11 = hermite (r11, i0);
 
         const float s0 = s00 + mFrac * (s01 - s00);
         const float s1 = s10 + mFrac * (s11 - s10);
@@ -384,7 +574,7 @@ private:
         256, 128, 64, 32, 16, 8, 4, 2, 1, 1
     };
 
-    using WaveRow = std::array<float, kTableSize + 1>;
+    using WaveRow = std::array<float, kTableSize + 3>;
     std::array<std::array<WaveRow, kNumMipLevels>, kNumTensionSlices> tables {};
 
     LfGlottalTables()
@@ -475,7 +665,9 @@ private:
                     }
                     out[static_cast<size_t> (i)] = static_cast<float> (acc);
                 }
-                out[kTableSize] = out[0];
+                out[kTableSize]     = out[0];
+                out[kTableSize + 1] = out[1];
+                out[kTableSize + 2] = out[2];
             }
         }
     }

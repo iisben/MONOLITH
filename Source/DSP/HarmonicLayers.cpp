@@ -8,14 +8,15 @@ namespace monolith::dsp
 void HarmonicLayers::prepare (double sampleRate) noexcept
 {
     sr = std::max (8000.0, sampleRate);
+    (void) FastTrig::instance();
     reset();
 }
 
 void HarmonicLayers::reset() noexcept
 {
-    subPhase    = 0.0f;
-    crownPhaseL = 0.0f;
-    crownPhaseR = 0.37f;
+    subPhase    = 0.0;
+    crownPhaseL = 0.0;
+    crownPhaseR = 0.37;
     subLp.reset();
     subHp.reset();
     crownBpL.reset();
@@ -46,8 +47,9 @@ void HarmonicLayers::processSample (float f0Hz,
                                     float& outL,
                                     float& outR) noexcept
 {
-    const float srF   = static_cast<float> (sr);
-    const float invSr = 1.0f / srF;
+    const float srF    = static_cast<float> (sr);
+    const double invSr = 1.0 / sr;
+    const auto& trig   = FastTrig::instance();
 
     float addL = 0.0f;
     float addR = 0.0f;
@@ -57,13 +59,16 @@ void HarmonicLayers::processSample (float f0Hz,
     if (subAmt > 1.0e-5f)
     {
         const float subFreq = std::clamp (0.5f * f0Hz, 18.0f, 0.25f * srF);
-        subPhase += subFreq * invSr;
-        if (subPhase >= 1.0f) subPhase -= std::floor (subPhase);
+        subPhase += static_cast<double> (subFreq) * invSr;
+        if (subPhase >= 1.0) subPhase -= std::floor (subPhase);
 
-        const float p = kTwoPi * subPhase;
-        const float rawSub = 0.78f * std::sin (p)
-                           + 0.16f * std::sin (2.0f * p + 0.30f)
-                           + 0.06f * std::sin (3.0f * p);
+        // 0.30 rad = 0.30 / 2π cycles. Partials above ~0.34·fs fade out (no foldover).
+        const float ph  = static_cast<float> (subPhase);
+        const float g2  = partialNyquistGain (2.0f * subFreq, srF);
+        const float g3  = partialNyquistGain (3.0f * subFreq, srF);
+        const float rawSub = 0.78f * trig.sinTurns (ph)
+                           + 0.16f * g2 * trig.sinTurns (2.0f * ph + 0.0477464829f)
+                           + 0.06f * g3 * trig.sinTurns (3.0f * ph);
 
         const float sat = fastTanh (1.65f * rawSub + 0.16f) - 0.1586f;
         const float sculpted = subLp.processLowpass (subHp.processHighpass (sat));
@@ -83,15 +88,19 @@ void HarmonicLayers::processSample (float f0Hz,
             const float fL = crownBaseFreq * 0.9974f;
             const float fR = crownBaseFreq * 1.0026f;
 
-            crownPhaseL += fL * invSr;
-            crownPhaseR += fR * invSr;
-            if (crownPhaseL >= 1.0f) crownPhaseL -= std::floor (crownPhaseL);
-            if (crownPhaseR >= 1.0f) crownPhaseR -= std::floor (crownPhaseR);
+            crownPhaseL += static_cast<double> (fL) * invSr;
+            crownPhaseR += static_cast<double> (fR) * invSr;
+            if (crownPhaseL >= 1.0) crownPhaseL -= std::floor (crownPhaseL);
+            if (crownPhaseR >= 1.0) crownPhaseR -= std::floor (crownPhaseR);
 
-            const float wL = 0.76f * std::sin (kTwoPi * crownPhaseL)
-                           + 0.24f * std::sin (kTwoPi * 2.0f * crownPhaseL);
-            const float wR = 0.76f * std::sin (kTwoPi * crownPhaseR)
-                           + 0.24f * std::sin (kTwoPi * 2.0f * crownPhaseR);
+            const float h2L = partialNyquistGain (2.0f * fL, srF);
+            const float h2R = partialNyquistGain (2.0f * fR, srF);
+            const float phL = static_cast<float> (crownPhaseL);
+            const float phR = static_cast<float> (crownPhaseR);
+            const float wL = 0.76f * trig.sinTurns (phL)
+                           + 0.24f * h2L * trig.sinTurns (2.0f * phL);
+            const float wR = 0.76f * trig.sinTurns (phR)
+                           + 0.24f * h2R * trig.sinTurns (2.0f * phR);
 
             const float swell = 0.25f + 0.75f * (expression01 * expression01);
             const float crownGain = crownAmt * 0.48f * swell * nyquistFade;

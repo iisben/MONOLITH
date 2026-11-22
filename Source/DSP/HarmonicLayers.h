@@ -31,9 +31,9 @@ public:
 
 private:
     double sr          = 48000.0;
-    float  subPhase    = 0.0f;
-    float  crownPhaseL = 0.0f;
-    float  crownPhaseR = 0.37f;
+    double subPhase    = 0.0;
+    double crownPhaseL = 0.0;
+    double crownPhaseR = 0.37;
 
     ZdfSvf subLp;
     ZdfSvf subHp;

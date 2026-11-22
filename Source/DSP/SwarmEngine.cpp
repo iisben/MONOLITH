@@ -78,6 +78,7 @@ void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::Audi
 
     // Pre-initialize shared read-only static tables outside processBlock()
     (void) LfGlottalTables::instance();
+    (void) FastTrig::instance();
     (void) PhonemeField::evaluate (0.5f, 0.8f, VocalRegister::Tenor, 220.0f, 0.0f, 0.5f);
 
     for (int i = 0; i < kMaxVoices; ++i)

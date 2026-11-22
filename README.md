@@ -35,4 +35,4 @@ cmake --build build --target MONOLITH_VST3 MONOLITH_AU MONOLITH_Standalone Monol
 ```bash
 ./build/MonolithDspAudit_artefacts/Release/MonolithDspAudit
 ```
-Verifies all 41 APVTS parameters, 30 factory presets (`-18.51` to `-13.43 dBFS` RMS, zero clipping), sample-rate stability (`44.1 / 48 / 96 / 192 kHz` at `2x` and `4x` oversampling), Spectral Freeze sustain, Screw Pitch octave tracking, Legato, CC1 Expression, and all 4 Master Macros (`COLOSSUS`, `SPECTER`, `ROT`, `ABYSS`).
+Verifies all 41 APVTS parameters, 30 factory presets (`-18.46` to `-13.72 dBFS` RMS, zero clipping), sample-rate stability (`44.1 / 48 / 96 / 192 kHz` at `2x` and `4x` oversampling), Spectral Freeze sustain, Screw Pitch octave tracking, Legato, CC1 Expression, and all 4 Master Macros (`COLOSSUS`, `SPECTER`, `ROT`, `ABYSS`).

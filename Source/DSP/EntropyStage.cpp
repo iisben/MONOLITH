@@ -30,14 +30,32 @@ void EntropyStage::prepare (double sampleRate, int maxBlockSize, uint32_t voiceS
     delayR.prepare (cap);
 
     flutterNoise.seed (seed * 747796405u + 2891336453u);
+    flutterNoise.prepare (sr);
 
     const float u0 = static_cast<float> ((seed * 1664525u + 1013904223u) & 0xFFFFu) / 65535.0f;
     const float u1 = static_cast<float> ((seed * 22695477u + 1u) & 0xFFFFu) / 65535.0f;
     wowRateHz     = 0.42f + 0.36f * u0;
     flutterRateHz = 6.20f + 4.30f * u1;
 
-    wowPhase     = u0 * kTwoPi;
-    flutterPhase = u1 * kTwoPi;
+    wowLfo.setHz (static_cast<double> (wowRateHz), sr);
+    wowLfo.setPhaseRad (static_cast<double> (u0) * kTwoPiD);
+    flutterLfo.setHz (static_cast<double> (flutterRateHz), sr);
+    flutterLfo.setPhaseRad (static_cast<double> (u1) * kTwoPiD);
+    // Independent 1.07× oscillator. Multiplying a wrapped phase by 1.07 jumps
+    // once per cycle; a second quadrature does not.
+    flutterSideLfo.setHz (static_cast<double> (flutterRateHz) * 1.07, sr);
+    flutterSideLfo.setPhaseRad (static_cast<double> (u1) * kTwoPiD * 1.07);
+
+    // Match the legacy one-pole (pole 0.985 at 48 kHz) at every sample rate.
+    const double flutterPole = std::exp (std::log (0.985) * (48000.0 / sr));
+    flutterSmooth = static_cast<float> (1.0 - flutterPole);
+
+    const int lat2 = (os2x != nullptr) ? static_cast<int> (std::lround (os2x->getLatencyInSamples())) : 0;
+    const int lat4 = (os4x != nullptr) ? static_cast<int> (std::lround (os4x->getLatencyInSamples())) : 0;
+    const int maxLat = std::max (lat2, lat4);
+    align2.assign (maxLat - lat2);
+    align4.assign (maxLat - lat4);
+    reportedLatency = maxLat;
 
     reset();
 }
@@ -63,18 +81,18 @@ void EntropyStage::reset() noexcept
     oxideLpR.invalidateCache();
     headBumpBpL.invalidateCache();
     headBumpBpR.invalidateCache();
+    emph2.reset();
+    emph4.reset();
+    align2.reset();
+    align4.reset();
     smoothedFlutter = 0.0f;
     smootherPrimed  = false;
     osXfade         = 1.0f;
 }
 
-int EntropyStage::getLatencySamples (bool highQuality4x) const noexcept
+int EntropyStage::getLatencySamples (bool) const noexcept
 {
-    if (highQuality4x && os4x)
-        return static_cast<int> (std::lround (os4x->getLatencyInSamples()));
-    if (os2x)
-        return static_cast<int> (std::lround (os2x->getLatencyInSamples()));
-    return 0;
+    return reportedLatency;
 }
 
 void EntropyStage::processBlock (float* left,
@@ -104,20 +122,38 @@ void EntropyStage::processBlock (float* left,
         smootherPrimed = true;
     }
 
-    // Trigger click-free 15 ms crossfade when toggling 2x <-> 4x oversampling live
+    // Trigger click-free 15 ms crossfade when toggling 2x <-> 4x oversampling live.
+    // Only the path being engaged is cleared; its align delay starts empty so the
+    // fade-in does not replay stale samples.
     if (highQuality4x != lastHq4x)
     {
-        if (highQuality4x && os4x) os4x->reset();
-        if (! highQuality4x && os2x) os2x->reset();
+        if (highQuality4x)
+        {
+            if (os4x) os4x->reset();
+            emph4.reset();
+            align4.reset();
+        }
+        else
+        {
+            if (os2x) os2x->reset();
+            emph2.reset();
+            align2.reset();
+        }
         lastHq4x = highQuality4x;
         osXfade  = 0.0f;
     }
 
     const float paramCoeff = 1.0f - std::exp (-1.0f / (0.020f * srF));
 
-    // Helper lambda to run asymmetric tube/tape drive inside an oversampling stage
+    // HF shelf: H = 1 + k (1 - L), L a unity-DC one-pole at kEmphHz.
+    // Post coefficient kInv = -k / (1 + β k), β = 2p/(1+p), inverts H when the
+    // waveshaper is linear, so small-signal level is unchanged.
+    constexpr double kEmph   = 0.18;
+    constexpr double kEmphHz = 7200.0;
+
     auto runOversampledDrive = [&] (juce::dsp::Oversampling<float>* os,
                                     juce::AudioBuffer<float>& buf,
+                                    Emphasis& emph,
                                     float startDrive) noexcept
     {
         if (os == nullptr)
@@ -138,31 +174,59 @@ void EntropyStage::processBlock (float* left,
         const size_t osLen = osBlock.getNumSamples();
         const float factor = static_cast<float> (os->getOversamplingFactor());
         const float osCoeff = 1.0f - std::exp (-1.0f / (0.020f * srF * factor));
+        const double osSr = sr * static_cast<double> (factor);
+        const double pole = std::exp (-kTwoPiD * kEmphHz / osSr);
+        const double beta = (2.0 * pole) / (1.0 + pole);
+        const double kInv = -kEmph / (1.0 + beta * kEmph);
+        const double envA = 1.0 - std::exp (-1.0 / (0.012 * osSr));
+        const double oneMinusPole = 1.0 - pole;
 
         float curDrive = startDrive;
         if (curDrive > 1.0e-5f || targetDrive > 1.0e-5f)
         {
             float* dataL = osBlock.getChannelPointer (0);
             float* dataR = osBlock.getChannelPointer (1);
+
+            auto shape = [&] (float x, double& preS, double& postS, double& env,
+                              float g, float b, float normScale) noexcept -> float
+            {
+                const double xd = static_cast<double> (x);
+                preS = pole * preS + oneMinusPole * xd;
+                const double pre = xd + kEmph * (xd - preS);
+
+                env += envA * (std::abs (pre) - env);
+                if (! std::isfinite (env))
+                    env = 0.0;
+
+                const float bDyn = b * (1.0f + 0.20f * std::min (1.0f, static_cast<float> (env)));
+                const float y = (fastTanh (g * static_cast<float> (pre) + bDyn) - fastTanh (bDyn)) * normScale;
+                const double yd = static_cast<double> (y);
+                postS = pole * postS + oneMinusPole * yd;
+                const double post = yd + kInv * (yd - postS);
+                preS = finiteOrZero (preS);
+                postS = finiteOrZero (postS);
+                return static_cast<float> (finiteOrZero (post));
+            };
+
             for (size_t i = 0; i < osLen; ++i)
             {
                 curDrive += osCoeff * (targetDrive - curDrive);
                 const float wet = std::clamp (curDrive * 20.0f, 0.0f, 1.0f);
-                if (wet > 1.0e-5f)
-                {
-                    const float g = 1.0f + curDrive * 7.5f;
-                    const float b = curDrive * 0.22f;
-                    const float biasOffset = fastTanh (b);
-                    const float normScale  = 1.0f / (1.0f + 4.8f * curDrive);
+                const float g = 1.0f + curDrive * 7.5f;
+                const float b = curDrive * 0.22f;
+                const float normScale = 1.0f / (1.0f + 4.8f * curDrive);
 
-                    const float xL = dataL[i];
-                    const float xR = dataR[i];
-                    const float yL = (fastTanh (g * xL + b) - biasOffset) * normScale;
-                    const float yR = (fastTanh (g * xR + b) - biasOffset) * normScale;
-                    dataL[i] = xL + wet * (yL - xL);
-                    dataR[i] = xR + wet * (yR - xR);
-                }
+                const float xL = dataL[i];
+                const float xR = dataR[i];
+                const float yL = shape (xL, emph.preL, emph.postL, emph.envL, g, b, normScale);
+                const float yR = shape (xR, emph.preR, emph.postR, emph.envR, g, b, normScale);
+                dataL[i] = sanitize (xL + wet * (yL - xL));
+                dataR[i] = sanitize (xR + wet * (yR - xR));
             }
+        }
+        else
+        {
+            emph.reset();
         }
 
         os->processSamplesDown (block);
@@ -170,19 +234,26 @@ void EntropyStage::processBlock (float* left,
     };
 
     // ── 1. Per-Voice Pre-Sum Oversampled Asymmetric Tape/Tube Saturation ────
-    auto* activeOs = (highQuality4x && os4x) ? os4x.get() : os2x.get();
+    const bool activeIs4x = highQuality4x && os4x;
+    auto* activeOs = activeIs4x ? os4x.get() : os2x.get();
+    Emphasis& activeEmph = activeIs4x ? emph4 : emph2;
     const float driveBefore = smDrive;
-    smDrive = runOversampledDrive (activeOs, scratchBuffer, driveBefore);
+    smDrive = runOversampledDrive (activeOs, scratchBuffer, activeEmph, driveBefore);
 
     float* scratchL = scratchBuffer.getWritePointer (0);
     float* scratchR = scratchBuffer.getWritePointer (1);
+    (activeIs4x ? align4 : align2).process (scratchL, scratchR, n);
 
     if (osXfade < 1.0f)
     {
-        auto* prevOs = (highQuality4x && os2x) ? os2x.get() : os4x.get();
-        (void) runOversampledDrive (prevOs, xfadeScratchBuffer, driveBefore);
-        const float* prevL = xfadeScratchBuffer.getReadPointer (0);
-        const float* prevR = xfadeScratchBuffer.getReadPointer (1);
+        const bool prevIs4x = ! activeIs4x;
+        auto* prevOs = prevIs4x ? os4x.get() : os2x.get();
+        Emphasis& prevEmph = prevIs4x ? emph4 : emph2;
+        (void) runOversampledDrive (prevOs, xfadeScratchBuffer, prevEmph, driveBefore);
+        float* prevL = xfadeScratchBuffer.getWritePointer (0);
+        float* prevR = xfadeScratchBuffer.getWritePointer (1);
+        (prevIs4x ? align4 : align2).process (prevL, prevR, n);
+
         const float xfadeInc = 1.0f / std::max (0.015f * srF, 16.0f);
 
         for (int i = 0; i < n; ++i)
@@ -204,10 +275,11 @@ void EntropyStage::processBlock (float* left,
     }
 
     // ── 2. Musical Tape Wow & Flutter (Smoothed Cubic Modulated Delay) ──────
-    const float wowInc     = kTwoPi * wowRateHz / srF;
-    const float flutterInc = kTwoPi * flutterRateHz / srF;
     // Slower smoother for tape delay position avoids pitch-jump clicks on rapid knob turns
     const float tapeDelayCoeff = 1.0f - std::exp (-1.0f / (0.045f * srF));
+    // sin(θ + 0.65) = sin θ · cos 0.65 + cos θ · sin 0.65
+    constexpr float kWowOffSin = 0.6051864057f;
+    constexpr float kWowOffCos = 0.7960837985f;
 
     if (smTape > 1.0e-5f || targetTape > 1.0e-5f)
     {
@@ -220,22 +292,21 @@ void EntropyStage::processBlock (float* left,
             delayL.push (inL);
             delayR.push (inR);
 
-            wowPhase += wowInc;
-            if (wowPhase >= kTwoPi) wowPhase -= kTwoPi;
-            flutterPhase += flutterInc;
-            if (flutterPhase >= kTwoPi) flutterPhase -= kTwoPi;
+            wowLfo.tick();
+            flutterLfo.tick();
+            flutterSideLfo.tick();
 
-            smoothedFlutter += 0.015f * (flutterNoise.nextPink() - smoothedFlutter);
+            smoothedFlutter += flutterSmooth * (flutterNoise.nextPink() - smoothedFlutter);
 
             const float tapeMix          = std::clamp (smTape * 18.0f, 0.0f, 1.0f);
             const float baseDelaySamples = 4.0f + 0.0065f * srF * smTape;
             const float wowDepthSamples  = 0.0038f * srF * smTape * smTape;
             const float flutDepthSamples = 0.00055f * srF * smTape;
 
-            const float wowL = std::sin (wowPhase);
-            const float wowR = std::sin (wowPhase + 0.65f);
-            const float fltL = std::sin (flutterPhase) + 0.45f * smoothedFlutter;
-            const float fltR = std::cos (flutterPhase * 1.07f) - 0.45f * smoothedFlutter;
+            const float wowL = wowLfo.sinOut();
+            const float wowR = wowL * kWowOffCos + wowLfo.cosOut() * kWowOffSin;
+            const float fltL = flutterLfo.sinOut() + 0.45f * smoothedFlutter;
+            const float fltR = flutterSideLfo.cosOut() - 0.45f * smoothedFlutter;
 
             const float dL = baseDelaySamples + wowDepthSamples * wowL + flutDepthSamples * fltL;
             const float dR = baseDelaySamples + wowDepthSamples * wowR + flutDepthSamples * fltR;
@@ -263,6 +334,8 @@ void EntropyStage::processBlock (float* left,
         headBumpBpR.setParameters (240.0f, 0.90f, srF);
 
         const int ctrlStep = std::max (8, static_cast<int> (srF / 3000.0f));
+        // 19500 * (1600/19500)^x = 19500 * exp(x * ln(1600/19500)); log is invariant.
+        static const float kOxideLog = std::log (1600.0f / 19500.0f);
 
         for (int i = 0; i < n; ++i)
         {
@@ -270,7 +343,7 @@ void EntropyStage::processBlock (float* left,
 
             if ((i % ctrlStep) == 0)
             {
-                const float cutoff = 19500.0f * std::pow (1600.0f / 19500.0f, smOxide);
+                const float cutoff = 19500.0f * std::exp (kOxideLog * smOxide);
                 oxideLpL.setParameters (cutoff, 0.72f, srF);
                 oxideLpR.setParameters (cutoff, 0.72f, srF);
             }
