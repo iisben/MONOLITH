@@ -62,7 +62,7 @@ private:
         }
         inline float process (float x, float delaySamples, float g) noexcept
         {
-            const float delayed = line.readLinear (delaySamples);
+            const float delayed = line.readCubic (delaySamples);
             const float v = sanitize (x + g * delayed);
             line.push (v);
             return delayed - g * v;
@@ -74,55 +74,60 @@ private:
     std::array<CubicDelayLine, kNumFdnLines> fdnLines;
     std::array<ZdfSvf, kNumFdnLines> fdnDampLp;
     std::array<DCBlocker, kNumFdnLines> fdnDc;
-    std::array<float, kNumFdnLines> lfoPhases {};
-    std::array<float, kNumFdnLines> lfoRates {};
+    std::array<QuadratureLfo, kNumFdnLines> fdnLfo {};
 
     // Dual-grain Hann-windowed pitch shimmer (stereo)
     struct GrainShifter
     {
         CubicDelayLine ring;
         float grainSizeSamples = 3200.0f;
-        float phaseA           = 0.0f;
-        float phaseB           = 0.5f;
+        double phaseA          = 0.0;
+        double phaseB          = 0.5;
+        float cachedSt         = 1.0e9f;
+        float cachedDelta      = 0.0f;
 
         void prepare (double sampleRate)
         {
             const size_t cap = static_cast<size_t> (sampleRate * 0.25) + 64;
             ring.prepare (cap);
             grainSizeSamples = static_cast<float> (sampleRate * 0.075);
-            phaseA = 0.0f;
-            phaseB = 0.5f;
+            phaseA = 0.0;
+            phaseB = 0.5;
+            cachedSt = 1.0e9f;
         }
 
         void reset() noexcept
         {
             ring.reset();
-            phaseA = 0.0f;
-            phaseB = 0.5f;
+            phaseA = 0.0;
+            phaseB = 0.5;
+            cachedSt = 1.0e9f;
         }
 
         inline float process (float input, float pitchSemitones) noexcept
         {
             ring.push (input);
-            const float ratio = semitonesToRatio (pitchSemitones);
-            const float delta = (1.0f - ratio) / std::max (grainSizeSamples, 64.0f);
+            if (std::abs (pitchSemitones - cachedSt) > 1.0e-4f)
+            {
+                cachedSt = pitchSemitones;
+                const float ratio = semitonesToRatio (pitchSemitones);
+                cachedDelta = (1.0f - ratio) / std::max (grainSizeSamples, 64.0f);
+            }
 
-            phaseA += delta;
-            phaseB += delta;
-            if (phaseA >= 1.0f) phaseA -= 1.0f;
-            if (phaseA <  0.0f) phaseA += 1.0f;
-            if (phaseB >= 1.0f) phaseB -= 1.0f;
-            if (phaseB <  0.0f) phaseB += 1.0f;
+            phaseA += static_cast<double> (cachedDelta);
+            phaseB += static_cast<double> (cachedDelta);
+            phaseA -= std::floor (phaseA);
+            phaseB -= std::floor (phaseB);
 
-            const float dA = 12.0f + phaseA * grainSizeSamples;
-            const float dB = 12.0f + phaseB * grainSizeSamples;
+            const float dA = 12.0f + static_cast<float> (phaseA) * grainSizeSamples;
+            const float dB = 12.0f + static_cast<float> (phaseB) * grainSizeSamples;
 
-            const float wA = 0.5f * (1.0f - std::cos (kTwoPi * phaseA));
-            const float wB = 0.5f * (1.0f - std::cos (kTwoPi * phaseB));
+            const auto& trig = FastTrig::instance();
+            // Hann window. Dual grains a half-period apart sum to 1 (COLA).
+            const float wA = 0.5f * (1.0f - trig.cosTurns (static_cast<float> (phaseA)));
+            const float wB = 0.5f * (1.0f - trig.cosTurns (static_cast<float> (phaseB)));
 
-            const float sA = ring.readLinear (dA) * wA;
-            const float sB = ring.readLinear (dB) * wB;
-            return sA + sB;
+            return ring.readCubic (dA) * wA + ring.readCubic (dB) * wB;
         }
     };
     GrainShifter shimmerL, shimmerR;

@@ -1,6 +1,7 @@
 #include "BrutalistReverb.h"
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 namespace monolith::dsp
 {
@@ -46,6 +47,47 @@ namespace
         // 3: Ghost Void (Haunted pitch-drifted dark shimmer)
         { 1.32f, 28.0f, 0.28f, 1.25f, 1550.0f, 1.10f,  11.86f,  12.14f, 0.32f }
     }};
+
+    /**
+        Nudge each delay to a nearby integer that is pairwise coprime with the
+        lines already chosen. Steady-state FDN lengths then cannot share a
+        common period, which is what produces a metallic flutter when modulation
+        depth is small. The nudge is a few samples, so RT60 (recomputed from the
+        snapped length) is unchanged at audio precision.
+    */
+    void snapCoprimeDelays (std::array<float, BrutalistReverb::kNumFdnLines>& delays) noexcept
+    {
+        std::array<int, BrutalistReverb::kNumFdnLines> chosen {};
+        for (int i = 0; i < BrutalistReverb::kNumFdnLines; ++i)
+        {
+            const int base = std::max (17, static_cast<int> (std::lround (delays[static_cast<size_t> (i)])));
+            int pick = base;
+            for (int nudge = 0; nudge < 96; ++nudge)
+            {
+                const int sign = (nudge & 1) ? -1 : 1;
+                const int cand = base + sign * (nudge / 2);
+                if (cand < 17)
+                    continue;
+
+                bool ok = true;
+                for (int j = 0; j < i; ++j)
+                {
+                    if (std::gcd (cand, chosen[static_cast<size_t> (j)]) != 1)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok)
+                {
+                    pick = cand;
+                    break;
+                }
+            }
+            chosen[static_cast<size_t> (i)] = pick;
+            delays[static_cast<size_t> (i)] = static_cast<float> (pick);
+        }
+    }
 
     /** Orthonormal 8x8 Fast Walsh-Hadamard mixing matrix (1 / sqrt(8) = 0.35355339f). */
     inline void hadamard8 (std::array<float, 8>& v) noexcept
@@ -99,12 +141,13 @@ void BrutalistReverb::prepare (double sampleRate, int maxBlockSize)
         const size_t cap = static_cast<size_t> (sr * (kFdnDelaysMs[i] * 0.001f * 1.65f)) + 128;
         fdnLines[i].prepare (cap);
         fdnDc[i].prepare (sr);
-        lfoPhases[i] = static_cast<float> (i) * (kTwoPi / static_cast<float> (kNumFdnLines));
-        lfoRates[i]  = kLfoRatesHz[i];
+        fdnLfo[i].setHz (static_cast<double> (kLfoRatesHz[i]), sr);
+        fdnLfo[i].setPhaseRad (static_cast<double> (i) * kTwoPiD / static_cast<double> (kNumFdnLines));
     }
 
     shimmerL.prepare (sr);
     shimmerR.prepare (sr);
+    (void) FastTrig::instance();
 
     reset();
 }
@@ -167,22 +210,32 @@ void BrutalistReverb::processBlock (float* left,
     const float freezeCoeff  = 1.0f - std::exp (-1.0f / (0.040f * srF));
     const float freezeTarget = freezeEnabled ? 1.0f : 0.0f;
 
-    const float rt60Sec               = 0.38f * std::pow (42.0f, targetDecay) * prof.decayScale;
+    // RT60 = 0.38 * 42^decay * scale. exp(decay * ln 42) keeps the pow out of the loop.
+    constexpr float kLn42 = 3.737669618f;
+    constexpr float kLn10 = 2.302585093f;
+    const float rt60Sec               = 0.38f * std::exp (kLn42 * targetDecay) * prof.decayScale;
     const float targetModDepthSamples = prof.modDepthMs * 0.001f * srF;
     const float targetPreDelaySamples = std::max (2.0f, prof.preDelayMs * 0.001f * srF);
 
     const float effectiveDamp = targetDamp * (1.0f - 0.90f * freezeBlend);
-    const float targetDampCutHz = std::clamp (16000.0f * std::pow (prof.dampFloorHz / 16000.0f, effectiveDamp),
+    const float dampLog = std::log (prof.dampFloorHz / 16000.0f);
+    const float targetDampCutHz = std::clamp (16000.0f * std::exp (dampLog * effectiveDamp),
                                               320.0f,
                                               0.43f * srF);
 
     std::array<float, kNumFdnLines> targetFdnDelay {};
     std::array<float, kNumFdnLines> targetFdnFeedback {};
     for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
+        targetFdnDelay[i] = kFdnDelaysMs[i] * 0.001f * prof.sizeScale * srF;
+
+    snapCoprimeDelays (targetFdnDelay);
+
+    const float rt60Safe = std::max (rt60Sec, 0.15f);
+    for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
     {
-        const float dSec     = kFdnDelaysMs[i] * 0.001f * prof.sizeScale;
-        targetFdnDelay[i]    = dSec * srF;
-        targetFdnFeedback[i] = std::clamp (std::pow (10.0f, -3.0f * dSec / std::max (rt60Sec, 0.15f)), 0.10f, 0.9990f);
+        const float dSec = targetFdnDelay[i] * invSrF;
+        // g = 10^(-3 T / RT60) so a line of length T decays by 60 dB in RT60.
+        targetFdnFeedback[i] = std::clamp (std::exp (-3.0f * kLn10 * dSec / rt60Safe), 0.10f, 0.9990f);
     }
 
     std::array<float, kNumAllpass> targetApLenL {};
@@ -218,6 +271,7 @@ void BrutalistReverb::processBlock (float* left,
     const float geomCoeff     = 1.0f - std::exp (-1.0f / (0.060f * srF));
     const float rmsTrackAlpha = 1.0f - std::exp (-1.0f / (0.045f * srF));
     const int   ctrlStep      = std::max (8, static_cast<int> (srF / 3000.0f));
+    const auto& trig          = FastTrig::instance();
 
     for (int n = 0; n < numSamples; ++n)
     {
@@ -269,11 +323,10 @@ void BrutalistReverb::processBlock (float* left,
             smFdnDelay[i]    += geomCoeff * (targetFdnDelay[i] - smFdnDelay[i]);
             smFdnFeedback[i] += fastCoeff * (targetFdnFeedback[i] - smFdnFeedback[i]);
 
-            lfoPhases[i] += kTwoPi * lfoRates[i] * invSrF;
-            if (lfoPhases[i] >= kTwoPi) lfoPhases[i] -= kTwoPi;
+            fdnLfo[i].tick();
 
             const float modScale = 1.0f - 0.35f * freezeBlend;
-            const float d = smFdnDelay[i] + smModDepthSamples * modScale * std::sin (lfoPhases[i]);
+            const float d = smFdnDelay[i] + smModDepthSamples * modScale * fdnLfo[i].sinOut();
             const float rawTap = fdnLines[i].readCubic (d);
 
             const float damped = fdnDampLp[i].processLowpass (fdnDc[i].process (rawTap));
@@ -320,8 +373,9 @@ void BrutalistReverb::processBlock (float* left,
         const float wetR = earlyR * smEarlyBalance + tankOutR * (1.0f - 0.35f * smEarlyBalance);
 
         const float effMix  = std::max (smMix, freezeBlend * 0.55f);
-        const float dryGain = std::max (std::cos (smMix * 0.5f * kPi), 0.78f * freezeBlend);
-        const float wetGain = std::sin (effMix * 0.5f * kPi) * 0.92f;
+        // Equal-power law: cos/sin of (mix * π/2) == cosTurns/sinTurns of (mix * 0.25).
+        const float dryGain = std::max (trig.cosTurns (smMix * 0.25f), 0.78f * freezeBlend);
+        const float wetGain = trig.sinTurns (effMix * 0.25f) * 0.92f;
 
         left[n]  = sanitize (dryL * dryGain + wetL * wetGain);
         right[n] = sanitize (dryR * dryGain + wetR * wetGain);

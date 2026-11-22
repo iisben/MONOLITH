@@ -32,7 +32,8 @@ MIDI Note / CC1 / CC64 / PitchBend / Aftertouch
   │  ├─ HarmonicLayers: Sub-Abyss (0.5*f0 + chest sat) + Spectral Crown │
   │  └─ Per-Voice Pre-Sum EntropyStage (Stereo):                        │
   │       • 2x/4x Polyphase IIR Oversampled Asymmetric Tube/Tape Drive  │
-  │       • DC Blocker -> Cubic Delay Tape Wow & Flutter -> Oxide LPF   │
+  │         (matched HF pre/de-emphasis, envelope-tracked bias)         │
+  │       • 8 Hz DC Blocker -> Cubic Tape Wow & Flutter -> Oxide LPF    │
   └─────────────────────────────────────────────────────────────────────┘
         │
         ▼  (Pre-allocated Stereo Sum Bus)
@@ -58,7 +59,7 @@ MIDI Note / CC1 / CC64 / PitchBend / Aftertouch
   - **Zero locks/mutexes** and zero UI/file/String/ValueTree operations.
   - All 41 APVTS parameters are read via cached `std::atomic<float>*` pointers (`memory_order_relaxed`).
   - Host buffers larger than `preparedMaxBlockSize` are automatically processed in safe chunks `<= preparedMaxBlockSize`.
-  - `juce::ScopedNoDenormals` wraps every block; DC blockers follow non-linear saturation and reverb feedback; every output sample is sanitized against `NaN`/`Inf` and passed through a soft transparent safety limiter (`0.75` linear knee -> `0.985` ceiling).
+  - `juce::ScopedNoDenormals` wraps every block; 8 Hz double-precision DC blockers follow non-linear saturation and reverb feedback; every output sample is sanitized against `NaN`/`Inf` and passed through a soft transparent safety limiter (`0.75` linear knee -> `0.985` ceiling, C1 `fastTanh` knee).
 - **UI Thread (`PluginEditor` @ 60 Hz)**:
   - Polls `TelemetrySnapshot` (`std::atomic` relaxed loads) to animate the 2D Phoneme Field halo, formant energy rings, swarm motes, expression meter, voice badge, and stereo RMS/Peak meters.
   - Preset switching and A/B compare occur exclusively on the message thread via `PresetManager`.
@@ -66,10 +67,13 @@ MIDI Note / CC1 / CC64 / PitchBend / Aftertouch
 ---
 
 ## 4. Sample-Rate Independence (44.1 kHz – 192 kHz)
-- All filter cutoffs are derived analytically via `tan(pi * fc / fs)` inside `ZdfSvf` and clamped strictly to `[20.0f, 0.44f * sampleRate]`.
-- `LfGlottalTables` automatically selects the mip-map level satisfying `maxHarmonic * f0 <= 0.45 * sampleRate` so glottal pulses remain alias-free across the entire pitch and sample-rate range.
-- All delay lines (`EntropyStage` wow/flutter, `BrutalistReverb` pre-delay, allpass diffusers, 8 FDN lines, and pitch-shifter grain buffers) scale capacity from `sampleRate` during `prepare()`.
-- `EntropyStage` reports its active `2x` or `4x` polyphase IIR oversampling latency via `AudioProcessor::setLatencySamples()`.
+- TPT/ZDF integrators, phase accumulators, DC blockers, and the pink-noise poles run in `double`. `ZdfSvf` coefficients are `g = tan(π·fc/fs)`, `k = 1/Q`, clamped to `[20 Hz, 0.44·fs]`, and audio is cast back to `float` only at the filter boundary.
+- `LfGlottalTables` selects the mip level satisfying `maxHarmonic * f0 <= 0.45 * sampleRate` and reads it with 4-point Catmull-Rom interpolation, so glottal pulses stay alias-free and free of bin-interpolation dulling.
+- Pink-noise poles are the Paul Kellet 44.1 kHz design, warped onto the session rate in `prepare()` so breath and wander keep the same corner frequencies from 44.1 kHz to 192 kHz.
+- All delay lines (`EntropyStage` wow/flutter, `BrutalistReverb` pre-delay, allpass diffusers, 8 FDN lines, and pitch-shifter grains) scale from `sampleRate` during `prepare()`. Diffuser and shimmer reads are cubic Hermite. Steady-state FDN lengths are nudged to mutually coprime integers; feedback is `10^(-3T/RT60)` from that length.
+- Modulators (vibrato, tape wow/flutter, FDN) are quadrature oscillators. The flutter sideband is a real 1.07× oscillator — a wrapped phase multiplied by 1.07 used to jump once per cycle.
+- Sub-octave and spectral-crown partials above `0.34·fs` fade out with a C1 smoothstep before they can fold.
+- `EntropyStage` reports one latency for both oversampling modes: the shorter polyphase group delay is padded with an integer delay so a 2x↔4x crossfade is time-aligned. `AudioProcessor::setLatencySamples()` publishes that constant.
 
 ---
 

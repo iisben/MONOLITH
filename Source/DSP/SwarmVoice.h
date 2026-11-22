@@ -96,8 +96,8 @@ private:
     struct SingerState
     {
         uint32_t seed          = 1u;
-        float phase            = 0.0f;
-        float vibratoPhase     = 0.0f;
+        double phase           = 0.0;
+        QuadratureLfo vibrato;
         float vibratoRateHz    = 5.2f;
         float vibratoDelaySec  = 0.35f;
         float microTuneCents   = 0.0f;
