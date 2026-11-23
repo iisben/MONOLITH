@@ -1,4 +1,5 @@
 import { portrait } from './photos.mjs';
+import { material } from './tex.mjs';
 import { FURNITURE, ROOMS, floorName, roomAt, TILE } from './world.mjs';
 
 export const VIEW_W = 416;
@@ -24,6 +25,21 @@ function mixHex(hex, other, t) {
   const p = (h, i) => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16);
   const ch = (i) => Math.round(p(hex, i) + (p(other, i) - p(hex, i)) * t);
   return `rgb(${ch(0)}, ${ch(1)}, ${ch(2)})`;
+}
+
+function paintFloor(ctx, tile, x, y, room, sx, sy) {
+  const name = typeof tile === 'string' ? tile : floorName(tile);
+  const src = material(name);
+  ctx.drawImage(src, hash(x, y) % 32, hash(y, x) % 32, 32, 32, sx, sy, TILE, TILE);
+  const wash = {
+    her: 'rgba(18, 48, 44, 0.22)',
+    mom: 'rgba(20, 42, 58, 0.24)',
+    chris: 'rgba(58, 38, 22, 0.16)',
+    basement: 'rgba(8, 12, 18, 0.28)',
+  }[room];
+  if (!wash) return;
+  ctx.fillStyle = wash;
+  ctx.fillRect(sx, sy, TILE, TILE);
 }
 
 function floorColor(tile, x, y, room) {
@@ -59,8 +75,7 @@ export function render(game) {
       const sx = Math.round(x * TILE - ox);
       const sy = Math.round(y * TILE - oy);
       if (tile === 0) {
-        ctx.fillStyle = hash(x, y) % 2 ? '#5c4e44' : '#4a3e36';
-        ctx.fillRect(sx, sy, TILE, TILE);
+        ctx.drawImage(material('wall'), sx, sy, TILE, TILE);
         ctx.fillStyle = '#1a1512';
         ctx.fillRect(sx + 4, sy, TILE - 4, 1);
         ctx.fillRect(sx, sy + 8, TILE, 1);
@@ -82,13 +97,11 @@ export function render(game) {
       if (tile === 9) {
         const door = world.doorAt.get(`${x},${y}`);
         const open = state.doors[door.id].open;
-        ctx.fillStyle = floorColor(door.floor, x, y, roomAt(x, y));
-        ctx.fillRect(sx, sy, TILE, TILE);
+        paintFloor(ctx, door.floor, x, y, roomAt(x, y), sx, sy);
         if (!open) drawDoor(ctx, sx, sy, door, state);
         continue;
       }
-      ctx.fillStyle = floorColor(tile, x, y, roomAt(x, y));
-      ctx.fillRect(sx, sy, TILE, TILE);
+      paintFloor(ctx, tile, x, y, roomAt(x, y), sx, sy);
       ctx.fillStyle = 'rgba(0,0,0,0.22)';
       ctx.fillRect(sx, sy + TILE - 1, TILE, 1);
       ctx.fillRect(sx + TILE - 1, sy, 1, TILE);
@@ -125,7 +138,12 @@ export function render(game) {
   drawDarkness(ctx, game, ox, oy);
   drawCloseSilhouettes(ctx, game, ox, oy);
   drawPlayer(ctx, state.player, ox, oy, game);
+  game.fx?.draw(ctx, ox, oy);
   drawMotes(ctx, game, ox, oy);
+  if (game.settings.post !== false) {
+    ctx.fillStyle = 'rgba(36, 22, 14, 0.1)';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
 
   if (game.hurtFlash > 0) {
     ctx.fillStyle = `rgba(120, 24, 18, ${game.hurtFlash * 0.55})`;
@@ -347,6 +365,14 @@ function drawHeld(ctx, game, x, y, player) {
 function drawEnemy(ctx, enemy, ox, oy, game) {
   const x = Math.round(enemy.x - ox);
   const y = Math.round(enemy.y - oy);
+  if (enemy.wind > 0) {
+    const ang = Math.atan2(game.state.player.y - enemy.y, game.state.player.x - enemy.x);
+    ctx.strokeStyle = '#c45048';
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(ang) * 16, y + Math.sin(ang) * 16);
+    ctx.stroke();
+  }
   if (enemy.downUntil > game.time) {
     ctx.fillStyle = '#e8e4dc';
     ctx.fillRect(x - 6, y, 12, 2);

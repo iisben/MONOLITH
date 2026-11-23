@@ -1,4 +1,5 @@
 import { ENEMY, ITEMS, MOM_LINES, TUNING, describeGoal } from './data.mjs';
+import { createFx } from './fx.mjs';
 import { render, VIEW_H, VIEW_W } from './render.mjs';
 import {
   COLS,
@@ -35,12 +36,23 @@ export class Game {
     this.audio = audio;
     this.world = createWorld();
     this.input = { x: 0, y: 0, sneak: false, run: false, use: false };
+    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     this.settings = {
       captions: true,
-      reduceFlash: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
+      reduceFlash: calm,
       volume: 0.85,
+      music: 0.85,
+      sfx: 0.9,
+      ambience: 0.8,
+      shake: !calm,
+      post: true,
     };
     this.mouseAim = false;
+    this.fx = createFx();
+    this.acc = 0;
+    this.hitStop = 0;
+    this.bufAtk = 0;
+    this.bufDodge = 0;
     this.state = null;
     this.time = 0;
     this.uiTime = 0;
@@ -81,6 +93,8 @@ export class Game {
         dodgeX: 0,
         dodgeY: 0,
         atk: 0,
+        vx: 0,
+        vy: 0,
         step: 0.2,
         sneaking: false,
         running: false,
@@ -292,17 +306,34 @@ export class Game {
 
   update(dt) {
     if (!this.state) return;
-    this.uiTime += dt;
-    this.flash = Math.max(0, this.flash - dt * 1.4);
-    this.grinFlash = Math.max(0, this.grinFlash - dt * 1.15);
-    this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.6);
-    this.shake = Math.max(0, this.shake - dt * 2.2);
+    const frame = Math.min(0.05, dt);
+    this.uiTime += frame;
+    this.flash = Math.max(0, this.flash - frame * 1.4);
+    this.grinFlash = Math.max(0, this.grinFlash - frame * 1.15);
+    this.hurtFlash = Math.max(0, this.hurtFlash - frame * 1.6);
+    this.shake = this.settings.shake === false ? 0 : Math.max(0, this.shake - frame * 2.2);
     if (this.caption && this.uiTime > this.caption.until) this.caption = null;
     if (this.state.screen || this.state.dead || this.state.won) {
       this.audio.mix({ danger: 0.05, humVol: 0.004, humPan: 0, distorted: false });
+      this.fx.update(frame);
       return;
     }
-    const step = Math.min(0.033, dt);
+    this.acc += frame;
+    const step = 1 / 60;
+    let guard = 0;
+    while (this.acc >= step && guard < 5) {
+      this.acc -= step;
+      guard += 1;
+      if (this.hitStop > 0) {
+        this.hitStop -= step;
+        this.fx.update(step);
+        continue;
+      }
+      this.stepSim(step);
+    }
+  }
+
+  stepSim(step) {
     this.time += step;
     this.updatePlayer(step);
     this.state.noises = this.state.noises.filter((noise) => noise.until > this.time);
@@ -315,6 +346,7 @@ export class Game {
       if (this.state.hold >= TUNING.holdTime) this.win();
     } else this.state.hold = Math.max(0, this.state.hold - step * 1.7);
     this.updateCamera(step);
+    this.fx.update(step);
     this.mixAudio();
   }
 
@@ -324,6 +356,9 @@ export class Game {
     if (p.atk > 0) p.atk -= dt;
     if (p.dodge > 0) {
       p.dodge -= dt;
+      p.moving = true;
+      p.vx = p.dodgeX;
+      p.vy = p.dodgeY;
       this.tryMove(p, p.dodgeX * dt, p.dodgeY * dt, 9);
       return;
     }
@@ -344,21 +379,42 @@ export class Game {
     else if (run) speed = TUNING.run;
     if (p.hp < 36) speed *= 0.9;
     p.moving = moving;
-    if (moving) {
-      if (!this.mouseAim) p.facing = Math.atan2(y, x);
-      this.tryMove(p, x * speed * dt, y * speed * dt, 9);
-      p.step -= dt;
-      const interval = sneak ? 0.62 : run ? 0.28 : 0.44;
-      if (p.step <= 0) {
-        p.step = interval;
-        this.audio.foot(floorName(this.tileAt(p.x, p.y)), sneak ? 0.25 : run ? 1 : 0.55);
-        this.makeNoise(sneak ? 14 : run ? 100 : 46, 0.28);
+    if (this.bufAtk > 0) {
+      this.bufAtk -= dt;
+      if (p.atk <= 0) this.attack();
+    }
+    if (this.bufDodge > 0) {
+      this.bufDodge -= dt;
+      if (p.dodge <= 0 && p.stamina >= TUNING.dodgeCost) this.dodge();
+    }
+    const tx = moving ? x * speed : 0;
+    const ty = moving ? y * speed : 0;
+    const blend = Math.min(1, dt * (moving ? 18 : 24));
+    p.vx += (tx - p.vx) * blend;
+    p.vy += (ty - p.vy) * blend;
+    if (moving || Math.hypot(p.vx, p.vy) > 8) {
+      if (moving && !this.mouseAim) p.facing = Math.atan2(y, x);
+      this.tryMove(p, p.vx * dt, p.vy * dt, 9);
+      if (moving) {
+        p.step -= dt;
+        const interval = sneak ? 0.62 : run ? 0.28 : 0.44;
+        if (p.step <= 0) {
+          p.step = interval;
+          this.audio.foot(floorName(this.tileAt(p.x, p.y)), sneak ? 0.25 : run ? 1 : 0.55);
+          this.fx.burst(p.x, p.y + 4, '#6b5344', 2, 18);
+          this.makeNoise(sneak ? 14 : run ? 100 : 46, 0.28);
+        }
+        if (run) p.stamina = Math.max(0, p.stamina - TUNING.runDrain * dt);
       }
-      if (run) p.stamina = Math.max(0, p.stamina - TUNING.runDrain * dt);
     }
     if (!run) {
       const regen = moving ? TUNING.stamRegen * 0.45 : TUNING.stamRegen;
       p.stamina = Math.min(100, p.stamina + regen * dt);
+    }
+    if (p.lightOn && this.state.hasLight && Math.random() < 0.45) {
+      const a = p.facing + (Math.random() - 0.5) * 0.8;
+      const r = 18 + Math.random() * 100;
+      this.fx.burst(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r, '#e6d2a4', 1, 12);
     }
     if (p.lightOn && this.state.hasLight) {
       p.battery -= TUNING.lightDrain * dt;
@@ -379,6 +435,7 @@ export class Game {
     this.state.seen[id] = true;
     if (ROOMS[id].name !== previous) this.roomBanner = { name: ROOMS[id].name, until: this.uiTime + 1.7 };
     if (id === 'yard') this.state.flags.enteredYard = true;
+    this.audio.zone(id);
     if (id === 'mom' && !this.state.flags.sawMom) {
       this.state.flags.sawMom = true;
       this.ambient('Breathing. Close. Not yours.');
@@ -434,10 +491,22 @@ export class Game {
       if (enemy.lost > 2) enemy.revealed = false;
       if (enemy.lost > (enemy.kind === 'grin' ? 7 : 4)) enemy.state = 'patrol';
     }
+    if (enemy.wind > 0) {
+      enemy.wind -= dt;
+      if (enemy.wind <= 0) {
+        enemy.wind = 0;
+        enemy.cool = TUNING.enemyCool;
+        const still = Math.hypot(enemy.x - player.x, enemy.y - player.y);
+        if (still < enemy.reach + 14 && player.iframes <= 0 && player.dodge <= 0) {
+          this.hurt(enemy.dmg, enemy);
+          if (this.state.dead) return;
+        }
+      }
+      return;
+    }
     if (distance < enemy.reach + 8 && player.iframes <= 0 && player.dodge <= 0 && enemy.cool <= 0) {
-      enemy.cool = TUNING.enemyCool;
-      this.hurt(enemy.dmg, enemy);
-      if (this.state.dead) return;
+      enemy.wind = enemy.kind === 'grin' ? 0.2 : 0.28;
+      return;
     }
     enemy.groan -= dt;
     if (enemy.groan <= 0) {
@@ -746,7 +815,12 @@ export class Game {
   dodge() {
     if (!this.state || this.state.screen || this.state.dead) return;
     const p = this.state.player;
-    if (p.dodge > 0 || p.stamina < TUNING.dodgeCost) return;
+    if (p.dodge > 0) return;
+    if (p.stamina < TUNING.dodgeCost) {
+      this.bufDodge = 0.12;
+      return;
+    }
+    this.bufDodge = 0;
     let x = this.input.x;
     let y = this.input.y;
     if (Math.hypot(x, y) < 0.2) {
@@ -758,14 +832,21 @@ export class Game {
     p.dodge = TUNING.dodgeTime;
     p.dodgeX = (x / mag) * TUNING.dodge;
     p.dodgeY = (y / mag) * TUNING.dodge;
+    p.vx = 0;
+    p.vy = 0;
     p.iframes = Math.max(p.iframes, TUNING.dodgeTime + 0.08);
     this.audio.swing();
+    this.fx.burst(p.x, p.y, '#d7cbb6', 4, 28);
   }
 
   attack() {
     if (!this.state || this.state.screen || this.state.dead) return;
     const p = this.state.player;
-    if (p.atk > 0) return;
+    if (p.atk > 0) {
+      this.bufAtk = 0.14;
+      return;
+    }
+    this.bufAtk = 0;
     const index = this.state.equipped;
     const slot = index >= 0 ? this.state.inv[index] : null;
     const def = slot ? ITEMS[slot.id] : null;
@@ -879,6 +960,8 @@ export class Game {
     const mag = Math.hypot(dx, dy) || 1;
     this.tryMove(enemy, (dx / mag) * 14, (dy / mag) * 14, enemy.radius);
     this.audio.hit();
+    this.fx.burst(enemy.x, enemy.y, '#e4c07a', 7, 48);
+    if (this.settings.shake !== false) this.hitStop = 0.035;
     if (enemy.hp > 0) return;
     if (enemy.kind === 'grin') {
       enemy.hp = ENEMY.grin.hp;
@@ -901,9 +984,11 @@ export class Game {
     p.hp = Math.max(0, p.hp - amount);
     p.iframes = TUNING.meleeIFrames;
     p.stamina = Math.max(0, p.stamina - 18);
-    this.shake = 1;
+    this.shake = this.settings.shake === false ? 0 : 1;
     this.hurtFlash = 0.28;
     this.audio.hurt();
+    this.fx.burst(p.x, p.y, '#9d2f2a', 8, 42);
+    if (this.settings.shake !== false) this.hitStop = 0.05;
     this.rumble(0.7, 140);
     const dx = p.x - from.x;
     const dy = p.y - from.y;
@@ -1529,6 +1614,7 @@ export class Game {
     }
     if (this.state.player.hp < 36) danger = Math.max(danger, 0.35);
     const hum = this.distVol({ x: humX, y: humY }, 520);
+    this.audio.zone(this.state.room);
     this.audio.mix({
       danger,
       humVol: this.state.flags.finale ? 0.02 : 0.012 * (0.35 + hum),

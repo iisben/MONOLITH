@@ -69,12 +69,12 @@ function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
     if (!saved || typeof saved !== 'object') return;
-    if (typeof saved.captions === 'boolean') game.settings.captions = saved.captions;
-    if (typeof saved.reduceFlash === 'boolean') game.settings.reduceFlash = saved.reduceFlash;
-    if (typeof saved.volume === 'number' && saved.volume >= 0 && saved.volume <= 1) {
-      game.settings.volume = saved.volume;
+    for (const key of ['captions', 'reduceFlash', 'shake', 'post', 'touch']) {
+      if (typeof saved[key] === 'boolean') game.settings[key] = saved[key];
     }
-    if (typeof saved.touch === 'boolean') game.settings.touch = saved.touch;
+    for (const key of ['volume', 'music', 'sfx', 'ambience']) {
+      if (typeof saved[key] === 'number' && saved[key] >= 0 && saved[key] <= 1) game.settings[key] = saved[key];
+    }
   } catch { /* a private window can refuse */ }
 }
 
@@ -83,7 +83,12 @@ function writeSettings() {
     const payload = {
       captions: game.settings.captions,
       reduceFlash: game.settings.reduceFlash,
+      shake: game.settings.shake !== false,
+      post: game.settings.post !== false,
       volume: game.settings.volume,
+      music: game.settings.music,
+      sfx: game.settings.sfx,
+      ambience: game.settings.ambience,
     };
     if (typeof game.settings.touch === 'boolean') payload.touch = game.settings.touch;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(payload));
@@ -97,19 +102,20 @@ function touchPreferred() {
 
 function applySettings() {
   audio.setVolume(game.settings.volume);
+  audio.setBuses({
+    music: game.settings.music ?? 0.85,
+    sfx: game.settings.sfx ?? 0.9,
+    ambience: game.settings.ambience ?? 0.8,
+  });
   document.body.classList.toggle('reduce', !!game.settings.reduceFlash);
+  document.body.classList.toggle('nopost', game.settings.post === false);
   document.body.classList.toggle('touch', touchPreferred());
-  for (const node of document.querySelectorAll('[data-setting="reduceFlash"]')) {
-    node.checked = !!game.settings.reduceFlash;
-  }
-  for (const node of document.querySelectorAll('[data-setting="captions"]')) {
-    node.checked = game.settings.captions !== false;
-  }
-  for (const node of document.querySelectorAll('[data-setting="touch"]')) {
-    node.checked = touchPreferred();
-  }
-  for (const node of document.querySelectorAll('[data-setting="volume"]')) {
-    if (document.activeElement !== node) node.value = String(game.settings.volume);
+  for (const node of document.querySelectorAll('[data-setting]')) {
+    const key = node.dataset.setting;
+    if (node.type === 'checkbox') node.checked = key === 'touch' ? touchPreferred() : game.settings[key] !== false && !!game.settings[key];
+    if (node.type === 'range' && document.activeElement !== node && game.settings[key] != null) {
+      node.value = String(game.settings[key]);
+    }
   }
 }
 
@@ -117,7 +123,7 @@ function settingChanged(target) {
   const key = target?.dataset?.setting;
   if (!key) return;
   if (target.type === 'checkbox') game.settings[key] = target.checked;
-  if (target.type === 'range') game.settings.volume = Number(target.value);
+  if (target.type === 'range') game.settings[key] = Number(target.value);
   writeSettings();
   applySettings();
 }
@@ -439,7 +445,7 @@ function bindInput() {
   });
   document.addEventListener('change', (event) => settingChanged(event.target));
   document.addEventListener('input', (event) => {
-    if (event.target?.dataset?.setting === 'volume') settingChanged(event.target);
+    if (event.target?.dataset?.setting && event.target.type === 'range') settingChanged(event.target);
   });
 
   beginBtn.addEventListener('click', startIntro);
@@ -898,24 +904,20 @@ function buildPause() {
     ['Bag', 'I or Tab'],
     ['Map', 'M'],
     ['Drop', 'G, from the bag'],
+    ['Gamepad', 'Stick move, A use, B dodge, X hit, Y light'],
   ];
   for (const [name, how] of lines) list.appendChild(el('span', '', `${name} ${how}`));
   card.appendChild(list);
   const settings = el('div', 'settings');
   settings.appendChild(check('Less flicker', 'reduceFlash', !!game.settings.reduceFlash));
+  settings.appendChild(check('Screen shake', 'shake', game.settings.shake !== false));
+  settings.appendChild(check('Grade', 'post', game.settings.post !== false));
   settings.appendChild(check('Captions', 'captions', game.settings.captions !== false));
   settings.appendChild(check('Touch controls', 'touch', touchPreferred()));
-  const volume = document.createElement('label');
-  volume.appendChild(document.createTextNode('Volume '));
-  const range = document.createElement('input');
-  range.type = 'range';
-  range.min = '0';
-  range.max = '1';
-  range.step = '0.05';
-  range.value = String(game.settings.volume);
-  range.dataset.setting = 'volume';
-  volume.appendChild(range);
-  settings.appendChild(volume);
+  settings.appendChild(slider('Volume', 'volume'));
+  settings.appendChild(slider('Music', 'music'));
+  settings.appendChild(slider('Effects', 'sfx'));
+  settings.appendChild(slider('Room', 'ambience'));
   card.appendChild(settings);
   card.appendChild(actions([
     btn('Resume', () => game.closeScreen(), 'primary'),
@@ -998,6 +1000,20 @@ function itemList(items, selected, onPick) {
   return list;
 }
 
+function slider(label, key) {
+  const node = document.createElement('label');
+  node.appendChild(document.createTextNode(`${label} `));
+  const range = document.createElement('input');
+  range.type = 'range';
+  range.min = '0';
+  range.max = '1';
+  range.step = '0.05';
+  range.value = String(game.settings[key] ?? 0.8);
+  range.dataset.setting = key;
+  node.appendChild(range);
+  return node;
+}
+
 function check(label, key, checked) {
   const node = document.createElement('label');
   const input = document.createElement('input');
@@ -1026,6 +1042,7 @@ function btn(label, onClick, className) {
   node.type = 'button';
   node.addEventListener('click', () => {
     audio.unlock();
+    audio.ui();
     onClick();
   });
   return node;

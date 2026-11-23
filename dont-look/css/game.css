@@ -102,6 +102,7 @@ img { max-width: 100%; -webkit-user-drag: none; }
 
 #scan,
 #vignette,
+#grain,
 #hurt,
 #whiteflash,
 #grinflash,
@@ -126,8 +127,17 @@ img { max-width: 100%; -webkit-user-drag: none; }
 
 #vignette {
   inset: 0;
-  background: radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.62) 100%);
+  background: radial-gradient(ellipse at center, transparent 46%, rgba(0, 0, 0, 0.55) 100%);
 }
+
+#grain {
+  inset: 0;
+  opacity: 0.08;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
+}
+
+body.nopost #grain { display: none; }
 
 #hurt {
   inset: 0;
@@ -573,8 +583,8 @@ canvas.portrait {
   height: 100%;
   object-fit: cover;
   object-position: center 20%;
-  opacity: 0.2;
-  filter: grayscale(0.45) contrast(1.15);
+  opacity: 0.22;
+  filter: grayscale(0.35) contrast(1.2) saturate(0.7);
   animation: pulse 8s ease-in-out infinite;
 }
 

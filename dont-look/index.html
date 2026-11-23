@@ -18,6 +18,7 @@
         <canvas id="view" width="416" height="224" aria-label="Don't Look, the house"></canvas>
         <div id="scan"></div>
         <div id="vignette"></div>
+        <div id="grain"></div>
         <div id="hurt"></div>
         <div id="whiteflash"></div>
         <div id="grinflash" hidden><img src="assets/grin.jpg" alt=""></div>
@@ -92,6 +93,11 @@
         <label><input type="checkbox" data-setting="reduceFlash" id="opt-flash"> Less flicker</label>
         <label><input type="checkbox" data-setting="captions" id="opt-captions" checked> Captions</label>
         <label>Volume <input type="range" data-setting="volume" id="opt-volume" min="0" max="1" step="0.05" value="0.85"></label>
+        <label>Music <input type="range" data-setting="music" id="opt-music" min="0" max="1" step="0.05" value="0.85"></label>
+        <label>Effects <input type="range" data-setting="sfx" id="opt-sfx" min="0" max="1" step="0.05" value="0.9"></label>
+        <label>Room <input type="range" data-setting="ambience" id="opt-amb" min="0" max="1" step="0.05" value="0.8"></label>
+        <label><input type="checkbox" data-setting="shake" id="opt-shake" checked> Screen shake</label>
+        <label><input type="checkbox" data-setting="post" id="opt-post" checked> Grade</label>
         <label><input type="checkbox" data-setting="touch" id="opt-touch"> Touch controls</label>
       </div>
       <p class="controls">
@@ -106,7 +112,10 @@
         <span>I bag</span>
         <span>M map</span>
         <span>Esc pause</span>
-        <span>Gamepad</span>
+        <span>Gamepad A use</span>
+        <span>B dodge</span>
+        <span>X hit</span>
+        <span>Y light</span>
       </p>
       <p class="fine">Flashes can be shortened. The house still goes dark. Played in this browser. Nothing you do is sent anywhere.</p>
     </div>
