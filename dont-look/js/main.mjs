@@ -752,10 +752,16 @@ function syncHud() {
   document.querySelector('#hurt').style.opacity = String(Math.min(0.65, game.hurtFlash || 0));
   document.querySelector('#whiteflash').style.opacity = String((game.flash || 0) * (game.settings.reduceFlash ? 0.2 : 0.8));
   const grin = document.querySelector('#grinflash');
-  if (game.grinFlash > 0.02 && !game.settings.reduceFlash) {
+  const face = !!(fx?.face && fx.lunge > 0.08 && !game.settings.reduceFlash);
+  const bulb = game.grinFlash > 0.02 && !game.settings.reduceFlash;
+  if (face || bulb) {
     grin.hidden = false;
-    grin.style.opacity = String(Math.min(1, game.grinFlash * 4));
-  } else grin.hidden = true;
+    grin.style.opacity = String(face ? Math.min(1, fx.lunge) : Math.min(1, game.grinFlash * 4));
+    grin.style.transform = face ? `scale(${(1 + fx.lunge * 0.18).toFixed(3)})` : 'none';
+  } else {
+    grin.hidden = true;
+    grin.style.transform = 'none';
+  }
 
   const sneakBtn = document.querySelector('[data-act="sneak"]');
   const runBtn = document.querySelector('[data-act="run"]');

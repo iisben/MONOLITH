@@ -49,9 +49,9 @@ export function render(game) {
   const ctx = game.ctx;
   const { state, world, cam } = game;
   if (!state) return;
-  const shake = game.shake || 0;
-  const ox = cam.x + (shake ? (Math.random() - 0.5) * shake * 5 : 0);
-  const oy = cam.y + (shake ? (Math.random() - 0.5) * shake * 5 : 0);
+  const fx = game.director?.view;
+  const ox = cam.x + (fx?.kickX || 0) + (fx?.driftX || 0);
+  const oy = cam.y + (fx?.kickY || 0) + (fx?.driftY || 0);
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#070605';
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
@@ -171,6 +171,60 @@ export function render(game) {
     ctx.fillStyle = `rgba(232, 220, 190, ${game.flash * (game.settings.reduceFlash ? 0.25 : 0.7)})`;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
+  applyGrade(ctx, game);
+}
+
+let gradeBuf = null;
+
+function gradeBuffer() {
+  if (!gradeBuf && typeof document !== 'undefined') {
+    gradeBuf = document.createElement('canvas');
+    gradeBuf.width = VIEW_W;
+    gradeBuf.height = VIEW_H;
+  }
+  return gradeBuf;
+}
+
+function applyGrade(ctx, game) {
+  const fx = game.director?.view;
+  if (!fx) return;
+  const reduce = !!game.settings.reduceFlash;
+  const aberrate = !reduce && fx.aberration > 0.05;
+  const distort = !reduce && fx.distort > 0.05;
+  if ((aberrate || distort) && gradeBuffer()) {
+    const buf = gradeBuffer();
+    const bctx = buf.getContext('2d', { alpha: false });
+    bctx.drawImage(game.canvas, 0, 0);
+    if (distort) {
+      const amp = fx.distort * 2.2;
+      const slices = 8;
+      const h = Math.ceil(VIEW_H / slices);
+      for (let i = 0; i < slices; i += 1) {
+        const y = i * h;
+        const dx = Math.round(Math.sin(game.time * 0.8 + i * 0.7) * amp);
+        ctx.drawImage(buf, 0, y, VIEW_W, h, dx, y, VIEW_W, h);
+      }
+    }
+    if (aberrate) {
+      const shift = Math.max(1, Math.round(fx.aberration * 2.5));
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = 0.16;
+      ctx.drawImage(buf, shift, 0);
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.globalAlpha = 0.2;
+      ctx.drawImage(buf, -shift, 0);
+      ctx.restore();
+    }
+  }
+  if (!reduce && fx.grain > 0.05) {
+    const bucket = Math.floor(game.time * 8);
+    ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.16, fx.grain * 0.22).toFixed(3)})`;
+    for (let i = 0; i < 28; i += 1) {
+      const n = (bucket * 131 + i * 17) % 997;
+      ctx.fillRect((n * 13) % VIEW_W, (n * 29) % VIEW_H, 2, 1);
+    }
+  }
 }
 
 function drawFurniture(ctx, piece, ox, oy, state, game) {
@@ -286,9 +340,8 @@ function drawPlayer(ctx, player, ox, oy, game) {
   const time = game.time;
   const x = Math.round(player.x - ox);
   const y = Math.round(player.y - oy);
-  if (player.iframes > 0 && Math.sin(time * 40) > 0) return;
-  const rate = player.running ? 16 : player.sneaking ? 7 : 11;
-  const swing = player.moving ? Math.sin(time * rate) : 0;
+  if (player.iframes > 0 && Math.sin(time * 9) > 0) return;
+  const swing = player.moving ? Math.sin(player.phase || 0) : 0;
   const bob = player.moving ? Math.round(Math.abs(swing)) : 0;
   ctx.fillStyle = '#8a8172';
   ctx.fillRect(x - 5, y + 1 - bob, 3, 6 + Math.round(swing * 2));
@@ -355,7 +408,7 @@ function drawEnemy(ctx, enemy, ox, oy, game) {
     ctx.fillRect(x - 5, y - 2, 10, 6);
     return;
   }
-  const bob = Math.sin(game.time * 8 + enemy.x) > 0 ? 0 : 1;
+  const bob = Math.sin(enemy.phase || 0) > 0 ? 0 : 1;
   if (enemy.kind === 'grin') {
     const light = shadeIllumination(game, enemy.x, enemy.y);
     ctx.fillStyle = '#0c0b0c';

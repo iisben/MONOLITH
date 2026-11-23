@@ -689,12 +689,17 @@ function drawSwingDoor(ctx, door, st, sx, sy, light, time, game) {
   const wobble = st.rattle > 0 ? Math.sin(time * 48) * st.rattle * 3 : 0;
   const pose = leafPose(door, st.angle, wobble);
   const corners = leafCorners(door, st.angle, wobble).map((p) => ({ x: p.x + sx, y: p.y + sy }));
-  const nudge = leafShadowNudge(game, (door.x + 0.5) * TILE, (door.y + 0.5) * TILE);
-  const shadow = corners.map((p) => ({ x: p.x + nudge.x, y: p.y + nudge.y }));
-  fillConvex(ctx, shadow, () => `rgba(0,0,0,${nudge.alpha})`);
   const face = FACE[door.face] || FACE.stained;
+  const parked = pose.thick <= 4.5 && pose.e > 0.8;
+  const nudge = leafShadowNudge(game, (door.x + 0.5) * TILE, (door.y + 0.5) * TILE);
+  if (parked) drawParkedShadow(ctx, pose, sx, sy);
+  else {
+    const shadow = corners.map((p) => ({ x: p.x + nudge.x, y: p.y + nudge.y }));
+    fillConvex(ctx, shadow, () => `rgba(0,0,0,${nudge.alpha})`);
+  }
   const locked = !!(door.lock && !st.unlocked);
   fillConvex(ctx, corners, (x, y) => leafPixel(door, face, pose, x - sx, y - sy, locked, light));
+  if (parked) drawHingePlate(ctx, pose, sx, sy, face);
 }
 
 function drawFrame(ctx, door, sx, sy) {
@@ -722,12 +727,103 @@ function drawSill(ctx, door, sx, sy) {
   else ctx.fillRect(sx + door.jamb, sy + TILE / 2, TILE - door.jamb * 2, 1);
 }
 
+function wallNormal(pose) {
+  const north = { x: 0, y: -1 };
+  const south = { x: 0, y: 1 };
+  const west = { x: -1, y: 0 };
+  const east = { x: 1, y: 0 };
+  const choices = pose.n.y < -0.5 || pose.n.y > 0.5
+    ? [pose.n.y < 0 ? north : south, pose.n.y < 0 ? south : north]
+    : [pose.n.x < 0 ? west : east, pose.n.x < 0 ? east : west];
+  let best = choices[0];
+  let bestD = Infinity;
+  for (const n of choices) {
+    const d = n.y < 0 ? pose.hinge.y
+      : n.y > 0 ? TILE - pose.hinge.y
+        : n.x < 0 ? pose.hinge.x
+          : TILE - pose.hinge.x;
+    if (d < bestD) {
+      bestD = d;
+      best = n;
+    }
+  }
+  return best;
+}
+
+function drawParkedShadow(ctx, pose, sx, sy) {
+  const wall = wallNormal(pose);
+  const room = { x: -wall.x, y: -wall.y };
+  const hx = sx + pose.hinge.x;
+  const hy = sy + pose.hinge.y;
+  const tipX = hx + pose.dir.x * pose.span;
+  const tipY = hy + pose.dir.y * pose.span;
+  const x0 = Math.round(Math.min(hx, tipX) + room.x * 2);
+  const y0 = Math.round(Math.min(hy, tipY) + room.y * 2);
+  const x1 = Math.round(Math.max(hx, tipX) + room.x * 5);
+  const y1 = Math.round(Math.max(hy, tipY) + room.y * 5);
+  ctx.fillStyle = 'rgba(0,0,0,0.38)';
+  ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0) || 3, Math.abs(y1 - y0) || 3);
+}
+
+function drawHingePlate(ctx, pose, sx, sy, face) {
+  const wall = wallNormal(pose);
+  const into = 6;
+  const along = 8;
+  const hx = sx + pose.hinge.x + wall.x * 1;
+  const hy = sy + pose.hinge.y + wall.y * 1;
+  const x = Math.round(hx + (wall.x < 0 ? wall.x * into : 0) + (pose.dir.x < 0 ? pose.dir.x * 2 : 0));
+  const y = Math.round(hy + (wall.y < 0 ? wall.y * into : 0) + (pose.dir.y < 0 ? pose.dir.y * 2 : 0));
+  const w = Math.max(4, Math.round(Math.abs(wall.x) * into + Math.abs(pose.dir.x) * along));
+  const h = Math.max(4, Math.round(Math.abs(wall.y) * into + Math.abs(pose.dir.y) * along));
+  ctx.fillStyle = tone(face.metal, 0.55);
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = tone(face.edge, 1.05, 18);
+  ctx.fillRect(x, y, w, 1);
+  ctx.fillRect(x, y, 1, h);
+  ctx.fillStyle = tone(face.grime, 0.45);
+  ctx.fillRect(x + 1, y + 1, 1, 1);
+  ctx.fillRect(x + w - 2, y + Math.max(1, h - 2), 1, 1);
+  const tx = Math.round(sx + pose.hinge.x + pose.dir.x * (pose.span - 2));
+  const ty = Math.round(sy + pose.hinge.y + pose.dir.y * (pose.span - 2));
+  ctx.fillStyle = tone(face.metal, 0.7);
+  ctx.fillRect(tx - 1, ty - 1, 3, 3);
+}
+
+function edgeOnPixel(door, face, u, v, light) {
+  const grain = hash(door.x * 13 + Math.floor(u * 22), door.y * 9 + Math.floor(v * 4));
+  let base = face.edge;
+  let mul = 1.05;
+  let add = light > 0.3 ? 22 : 8;
+  if (v > 0.66) {
+    base = face.grime;
+    mul = 0.55;
+    add = 0;
+  } else if (v < 0.34) {
+    base = face.edge;
+    mul = 1.2;
+    add += 10;
+  }
+  if (u < 0.16) {
+    base = face.metal;
+    mul = v > 0.38 && v < 0.62 ? 0.5 : 1.15;
+    add = light > 0.3 ? 16 : 0;
+  } else if (u > 0.9) {
+    base = face.metal;
+    mul = 0.8;
+    add = 0;
+  } else if (grain % 7 === 0) {
+    mul *= 0.82;
+  }
+  return tone(base, mul, add);
+}
+
 function leafPixel(door, face, pose, x, y, locked, light) {
   const rx = x - pose.hinge.x;
   const ry = y - pose.hinge.y;
   const u = (rx * pose.dir.x + ry * pose.dir.y) / pose.span;
   const v = (rx * pose.n.x + ry * pose.n.y) / pose.thick + 0.5;
   if (u < -0.02 || u > 1.02 || v < -0.02 || v > 1.02) return null;
+  if (pose.thick <= 4.5) return edgeOnPixel(door, face, u, v, light);
   const faceBand = v < 0.22 || v > 0.78;
   let base = faceBand ? face.panel : face.plank;
   const grain = hash(door.x * 13 + Math.floor(u * 18), door.y * 9 + Math.floor(v * 6));

@@ -25,6 +25,20 @@ const problems = [];
 const fail = (msg) => problems.push(msg);
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 
+function contactCovers(calls, ax, ay) {
+  let style = '';
+  for (const call of calls) {
+    if (call[0] === 'set' && call[1] === 'fillStyle') style = String(call[2]);
+    if (call[0] !== 'fillRect' || !style.startsWith('rgba(2, 3, 6')) continue;
+    const x = call[1];
+    const y = call[2];
+    const w = call[3];
+    const h = call[4];
+    if (ax >= x && ax < x + w && ay >= y && ay < y + h) return true;
+  }
+  return false;
+}
+
 function mockCtx() {
   const calls = [];
   return new Proxy({ calls }, {
@@ -357,8 +371,7 @@ if (!(stats.aoBands > 0)) fail('rooms have no wall or corner occlusion');
 if (!(stats.worstGap < 0)) fail('rendered casts leave a gap at the feet');
 const player = game.state.player;
 const anchor = spriteAnchor(player.x, player.y, game.cam.x, game.cam.y, ACTORS.player.foot);
-const ellipses = game.ctx.calls.filter((call) => call[0] === 'ellipse');
-if (!ellipses.some((call) => call[1] === anchor.x && call[2] === anchor.y)) {
+if (!contactCovers(game.ctx.calls, anchor.x, anchor.y)) {
   fail('the player contact shadow is not on the sprite feet');
 }
 if (game.ctx.globalCompositeOperation === 'multiply') fail('the light map left the frame in multiply mode');
@@ -372,7 +385,7 @@ if (blinked.some((call) => call[0] === 'set' && call[2] === '#1c2744')) {
   fail('iframe blink still drew the body, so the shadow test is invalid');
 }
 const blinkAnchor = spriteAnchor(player.x, player.y, game.cam.x, game.cam.y, ACTORS.player.foot);
-if (!blinked.some((call) => call[0] === 'ellipse' && call[1] === blinkAnchor.x && call[2] === blinkAnchor.y)) {
+if (!contactCovers(blinked, blinkAnchor.x, blinkAnchor.y)) {
   fail('the contact shadow disappears when the sprite blinks');
 }
 

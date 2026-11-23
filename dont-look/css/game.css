@@ -96,11 +96,14 @@ img { max-width: 100%; -webkit-user-drag: none; }
 }
 
 #world {
+  --vig-clear: 46%;
+  --vig-ink: 0.62;
   position: relative;
   width: 416px;
   height: 224px;
   background: #070605;
   box-shadow: 0 0 0 1px #2a241c;
+  contain: layout paint;
 }
 
 #view {
@@ -115,6 +118,7 @@ img { max-width: 100%; -webkit-user-drag: none; }
 
 #scan,
 #vignette,
+#blackout,
 #hurt,
 #whiteflash,
 #grinflash,
@@ -139,7 +143,18 @@ img { max-width: 100%; -webkit-user-drag: none; }
 
 #vignette {
   inset: 0;
-  background: radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.62) 100%);
+  background: radial-gradient(
+    ellipse at center,
+    transparent var(--vig-clear, 46%),
+    rgba(0, 0, 0, var(--vig-ink, 0.62)) 100%
+  );
+}
+
+#blackout {
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  transition: none;
 }
 
 #hurt {
@@ -147,15 +162,21 @@ img { max-width: 100%; -webkit-user-drag: none; }
   background: #9d2f2a;
   opacity: 0;
   mix-blend-mode: multiply;
+  transition: none;
 }
 
 #whiteflash {
   inset: 0;
   background: #efe6d4;
   opacity: 0;
+  transition: none;
 }
 
-#grinflash { inset: 0; }
+#grinflash {
+  inset: 0;
+  transform-origin: center;
+  transition: none;
+}
 
 #grinflash img {
   width: 100%;

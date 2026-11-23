@@ -11,7 +11,8 @@ const CLIP_NORM = Math.tanh(CLIP_K);
 
 export function softClipSample(x) {
   if (!Number.isFinite(x)) return 0;
-  return Math.tanh(CLIP_K * x) / CLIP_NORM;
+  const y = Math.tanh(CLIP_K * x) / CLIP_NORM;
+  return y > 1 ? 1 : y < -1 ? -1 : y;
 }
 
 export function clipCurve(length = 2048) {

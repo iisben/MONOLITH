@@ -493,9 +493,9 @@ export function projectCasts(feetX, feetY, actor, lights, game, opts = {}) {
       const facing = opts.facing || 0;
       dirX = -Math.cos(facing);
       dirY = -Math.sin(facing);
-      length = clamp(10 + actor.h * 0.12, 8, 16);
-      alpha = light.intensity * 0.52 * actor.cast;
-      soft = 0.38;
+      length = clamp(20 + actor.h * 0.5, 18, 34);
+      alpha = light.intensity * 0.56 * actor.cast;
+      soft = 0.46;
     } else if (light.kind === 'point' || light.kind === 'cone') {
       const dx = feetX - light.x;
       const dy = feetY - light.y;
@@ -512,7 +512,7 @@ export function projectCasts(feetX, feetY, actor, lights, game, opts = {}) {
       dirY = dy / dist;
       length = clamp((actor.h * dist) / light.z, 4, 72);
       const fall = (1 - dist / light.radius) ** 1.15;
-      alpha *= light.intensity * fall * exposed * 0.74 * actor.cast;
+      alpha *= light.intensity * fall * exposed * 1.15 * actor.cast;
       soft = clamp(0.18 + (length / 72) * 0.78, 0.18, 0.95);
     } else continue;
     if (alpha < 0.025) continue;
@@ -542,37 +542,54 @@ export function projectCasts(feetX, feetY, actor, lights, game, opts = {}) {
   return kept;
 }
 
+function fillPixelOval(ctx, sx, sy, rx, ry, color) {
+  const cx = Math.round(sx);
+  const cy = Math.round(sy);
+  const radX = Math.max(1, rx);
+  const radY = Math.max(1, ry);
+  ctx.fillStyle = color;
+  const y0 = Math.ceil(-radY);
+  const y1 = Math.floor(radY);
+  for (let y = y0; y <= y1; y++) {
+    const span = radX * Math.sqrt(Math.max(0, 1 - (y / radY) ** 2));
+    const half = Math.max(0, Math.round(span));
+    ctx.fillRect(cx - half, cy + y, half * 2 + 1, 1);
+  }
+}
+
 export function drawContactShadow(ctx, sx, sy, actor, press = 1) {
-  const rx = actor.radius * press;
-  const ry = Math.max(1.35, actor.radius * 0.36);
+  const rx = Math.max(3.4, actor.radius * press);
+  const ry = Math.max(1.8, actor.radius * 0.46);
   const layers = [
-    [rx * 1.7, ry * 1.9, 0.1],
-    [rx * 1.12, ry * 1.12, 0.18],
-    [rx * 0.64, ry * 0.7, 0.26],
+    [rx * 2.55, ry * 2.5, 0.42],
+    [rx * 1.6, ry * 1.6, 0.58],
+    [rx * 0.95, ry * 1.05, 0.76],
   ];
   for (const [w, h, alpha] of layers) {
-    ctx.beginPath();
-    ctx.fillStyle = `rgba(2, 3, 6, ${alpha})`;
-    ctx.ellipse(sx, sy, Math.max(0.8, w), Math.max(0.8, h), 0, 0, Math.PI * 2);
-    ctx.fill();
+    fillPixelOval(ctx, sx, sy, w, h, `rgba(2, 3, 6, ${alpha})`);
   }
 }
 
 export function drawCastShadow(ctx, sx, sy, cast, visibility = 1) {
   const alpha = cast.alpha * visibility;
   if (alpha < 0.02) return;
-  const ang = Math.atan2(cast.dirY, cast.dirX);
-  const cx = sx + cast.dirX * cast.along;
-  const cy = sy + cast.dirY * cast.along;
-  const grow = 1 + cast.soft * 0.42;
-  ctx.beginPath();
-  ctx.fillStyle = `rgba(2, 4, 8, ${alpha * 0.4})`;
-  ctx.ellipse(cx, cy, Math.max(0.8, cast.len * grow), Math.max(0.8, cast.wid * (1.12 + cast.soft * 0.65)), ang, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.fillStyle = `rgba(1, 2, 4, ${alpha})`;
-  ctx.ellipse(cx, cy, Math.max(0.8, cast.len), Math.max(0.8, cast.wid * 0.92), ang, 0, Math.PI * 2);
-  ctx.fill();
+  const reach = Math.max(4, cast.length);
+  const step = Math.max(2, reach / 12);
+  for (let d = 0; d <= reach + 0.01; d += step) {
+    const t = d / reach;
+    const fade = (1 - t) ** 1.35;
+    const rx = Math.max(1.2, cast.wid * (1.15 - t * 0.62));
+    const ry = Math.max(1.1, cast.wid * (0.5 - t * 0.16));
+    const ink = alpha * (0.34 + 0.66 * fade) * 0.62;
+    fillPixelOval(
+      ctx,
+      sx + cast.dirX * d,
+      sy + cast.dirY * d,
+      rx,
+      ry,
+      `rgba(1, 2, 4, ${ink.toFixed(3)})`,
+    );
+  }
 }
 
 export function drawActorShadows(ctx, game, worldX, worldY, name, opts = {}) {
@@ -617,7 +634,7 @@ export function drawEnvironmentShade(ctx, game, ox, oy, x0, y0, x1, y1) {
   const shade = game._shade;
   if (!shade) return;
   const { blockers, lights } = shade;
-  const aoAlpha = [0.2, 0.11, 0.05, 0.025];
+  const aoAlpha = [0.32, 0.16, 0.07, 0.03];
   for (let ty = y0; ty <= y1; ty++) {
     for (let tx = x0; tx <= x1; tx++) {
       if (isOccluder(blockers, tx, ty)) continue;
@@ -646,19 +663,19 @@ export function drawEnvironmentShade(ctx, game, ox, oy, x0, y0, x1, y1) {
         shade.stats.aoBands += 1;
       }
       if (north && west) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
         ctx.fillRect(sx, sy, 10, 10);
       }
       if (north && east) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
         ctx.fillRect(sx + TILE - 10, sy, 10, 10);
       }
       if (south && west) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
         ctx.fillRect(sx, sy + TILE - 10, 10, 10);
       }
       if (south && east) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
         ctx.fillRect(sx + TILE - 10, sy + TILE - 10, 10, 10);
       }
 
