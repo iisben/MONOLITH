@@ -131,6 +131,23 @@ img { max-width: 100%; -webkit-user-drag: none; }
   pointer-events: none;
 }
 
+#scan,
+#vignette,
+#blackout,
+#hurt,
+#whiteflash,
+#grinflash {
+  z-index: 1;
+}
+
+#room-name,
+#objective,
+#pips,
+#prompt,
+#subtitle {
+  z-index: 3;
+}
+
 #scan {
   inset: 0;
   background: repeating-linear-gradient(

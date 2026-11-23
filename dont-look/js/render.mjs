@@ -188,8 +188,9 @@ function applyGrade(ctx, game) {
   const fx = game.director?.view;
   if (!fx) return;
   const reduce = !!game.settings.reduceFlash;
-  const aberrate = !reduce && fx.aberration > 0.05;
-  const distort = !reduce && fx.distort > 0.05;
+  const grading = !!game.director?.mode && game.director.mode !== 'idle';
+  const aberrate = grading && !reduce && fx.aberration > 0.05;
+  const distort = grading && !reduce && fx.distort > 0.05;
   if ((aberrate || distort) && gradeBuffer()) {
     const buf = gradeBuffer();
     const bctx = buf.getContext('2d', { alpha: false });

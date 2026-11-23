@@ -355,6 +355,19 @@ export function createAudio() {
     riser = null;
   }
 
+  function settle() {
+    stopRiser();
+    patternUntil = 0;
+    scareUntil = 0;
+    heartAt = 0;
+    if (!duck || !ctx) return;
+    const t = now();
+    const current = duck.gain.value;
+    duck.gain.cancelScheduledValues(t);
+    duck.gain.setValueAtTime(Math.max(0.0001, Number.isFinite(current) ? current : 1), t);
+    duck.gain.linearRampToValueAtTime(1, t + 0.08);
+  }
+
   function scale(peak) {
     return peak * (hitQuiet ? 0.62 : 1);
   }
@@ -1157,7 +1170,11 @@ export function createAudio() {
       cine.bus.gain.setValueAtTime(Math.max(0.0001, cine.bus.gain.value), t);
       cine.bus.gain.linearRampToValueAtTime(0.0001, t + Math.max(0.05, seconds));
     },
+    settle() {
+      settle();
+    },
     endCinematic(fade = 0.25) {
+      settle();
       if (!cine || !ctx) {
         cine = null;
         return;

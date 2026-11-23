@@ -163,6 +163,8 @@ export class Game {
     this.director.reset();
     this.ambienceN = 0;
     this.danger = 0;
+    this.holdInput = false;
+    this.audio.settle?.();
     this.snapCamera();
     this.say("She's calling. The flashlight is in the foyer.");
   }
@@ -356,13 +358,27 @@ export class Game {
     }
     const step = Math.min(0.033, dt);
     const halted = !!(this.state.screen || this.state.dead || this.state.won);
-    this.playDirector(this.director.update(step, {
-      reduce: !!this.settings.reduceFlash,
-      danger: this.danger || 0,
-      time: this.time,
-    }));
+    const p = this.state.player;
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+      p.x = (SPAWN.x + 0.5) * TILE;
+      p.y = (SPAWN.y + 0.5) * TILE;
+      this.snapCamera();
+    }
+    if (this.holdInput) {
+      this.input.x = 0;
+      this.input.y = 0;
+      this.input.run = false;
+      this.input.sneak = false;
+      this.input.use = false;
+    }
+    if (!modal) {
+      this.playDirector(this.director.update(step, {
+        reduce: !!this.settings.reduceFlash,
+        danger: this.danger || 0,
+        time: this.time,
+      }));
+    }
     if (halted) {
-      this.updateDoors(step);
       this.audio.mix({
         danger: 0.05,
         humVol: 0.004,

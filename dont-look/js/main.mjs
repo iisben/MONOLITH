@@ -185,17 +185,29 @@ function seedPad() {
   padMem.use = padMem.down.has(0);
 }
 
+function wakeHouse() {
+  mode = 'play';
+  if (!loopOn) {
+    loopOn = true;
+    requestAnimationFrame(frame);
+  }
+}
+
 function prepareArrival() {
   releaseInput();
   game.newGame();
+  game.holdInput = true;
   game.armArrival();
-  document.body.classList.add('arriving');
+  document.body.classList.add('playing', 'arriving');
   dock.hidden = false;
+  app.inert = false;
   fit();
   game.draw();
+  wakeHouse();
 }
 
 function arriveLive() {
+  game.holdInput = false;
   releaseInput();
   play();
   canvas.focus();
@@ -235,6 +247,8 @@ function continueGame() {
 function backToTitle() {
   mode = 'title';
   releaseInput();
+  game.holdInput = false;
+  audio.settle?.();
   document.body.classList.remove('playing', 'arriving');
   dock.hidden = true;
   overlay.hidden = true;
@@ -268,7 +282,7 @@ function wakeFromBench() {
 }
 
 function play() {
-  mode = 'play';
+  wakeHouse();
   portraitBand = '';
   sig = '';
   screenType = '';
@@ -279,10 +293,6 @@ function play() {
   boot.hidden = true;
   fit();
   requestAnimationFrame(fit);
-  if (!loopOn) {
-    loopOn = true;
-    requestAnimationFrame(frame);
-  }
 }
 
 function fit() {
