@@ -699,6 +699,16 @@ input[type="checkbox"] { accent-color: #e4c07a; width: 16px; height: 16px; }
   margin: 14px 0 0;
 }
 
+.headlights {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 18%;
+  height: 28%;
+  background: radial-gradient(ellipse at center, rgba(228, 196, 140, 0.28), transparent 70%);
+  pointer-events: none;
+}
+
 #intro {
   position: fixed;
   inset: 0;
@@ -781,6 +791,11 @@ input[type="checkbox"] { accent-color: #e4c07a; width: 16px; height: 16px; }
 }
 
 #scene-glitch img.hit { animation: tear 0.42s steps(2, end) 2; }
+
+#scene-road {
+  position: relative;
+  width: min(640px, 100%);
+}
 
 #scene-arrive {
   display: grid;
