@@ -43,6 +43,7 @@ if (JSON.stringify(calls) !== JSON.stringify(lock.calls)) {
 const pages = [
   readFileSync(new URL('../index.html', import.meta.url), 'utf8'),
   readFileSync(new URL('../js/main.mjs', import.meta.url), 'utf8'),
+  readFileSync(new URL('../js/data.mjs', import.meta.url), 'utf8'),
   game,
 ].join('\n');
 for (const line of lock.lines) {

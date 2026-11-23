@@ -43,7 +43,7 @@ export const ITEMS = {
     arc: 1.2,
     cool: 0.46,
     noise: 34,
-    desc: 'Still taped from the game. Quiet, until the tape gives.',
+    desc: 'Taped from tonight\'s game. Quiet, until the tape gives.',
   },
   knife: {
     name: 'Kitchen Knife',
@@ -54,7 +54,7 @@ export const ITEMS = {
     arc: 0.85,
     cool: 0.32,
     noise: 22,
-    desc: 'Short, sharp, and not going to last.',
+    desc: 'From the kitchen block. The edge is already nicked.',
   },
   pistol: {
     name: 'Revolver',
@@ -65,53 +65,53 @@ export const ITEMS = {
     cool: 0.62,
     noise: 340,
     ammo: true,
-    desc: 'Loud enough to call the whole house. The street is not there to hear it.',
+    desc: 'One shot is loud enough for the whole house. There is no street left to hear it.',
   },
   ammo: {
     name: 'Rounds',
     type: 'ammo',
     stack: 12,
-    desc: 'Not many. Spending one should mean something.',
+    desc: 'A few rounds. Spend one only if you mean it.',
   },
   bandage: {
     name: 'Bandage',
     type: 'heal',
     heal: 34,
     stack: 4,
-    desc: 'Enough to keep walking.',
+    desc: 'Enough to stop the shaking and keep walking.',
   },
   pills: {
     name: 'Painkillers',
     type: 'heal',
     heal: 78,
     stack: 2,
-    desc: 'The date on the bottle is fine. Everything else is not.',
+    desc: 'The date on the bottle is still good. The rest of the house is not.',
   },
   film: {
     name: 'Film Slide',
     type: 'film',
     stack: 3,
-    desc: 'One exposure. The garage bench can pin a room in place. There are not many.',
+    desc: 'One exposure. The garage bench can hold this room. There are not many slides.',
   },
   tape: {
     name: 'Stick Tape',
     type: 'tape',
-    desc: 'Wrap the hockey stick before it gives up.',
+    desc: 'Wrap the hockey stick before the shaft splits.',
   },
   'key-her': {
     name: 'Brass Key',
     type: 'key',
-    desc: 'From the bathroom cabinet. It fits her door, off the hall.',
+    desc: 'From the left side of the bathroom cabinet. It opens her door, off the hall.',
   },
   'key-base': {
     name: 'Basement Key',
     type: 'key',
-    desc: 'Warm from the sweater pocket. The basement door is in the mudroom.',
+    desc: 'Still warm from the sweater pocket. The basement door is in the mudroom.',
   },
   'key-shed': {
     name: 'Shed Key',
     type: 'key',
-    desc: 'A ring with the name scratched off. The shed is in the yard.',
+    desc: 'A ring with the name scratched off. It opens the shed in the yard.',
   },
   'key-car': {
     name: 'Car Keys',
@@ -121,18 +121,18 @@ export const ITEMS = {
   fuse: {
     name: 'Fuse',
     type: 'quest',
-    desc: 'The garage door motor is dead without it. Seat it in the car.',
+    desc: 'The yard door will not lift without it. It goes in the car.',
   },
   gas: {
     name: 'Gas Can',
     type: 'quest',
-    desc: 'Heavy. The gauge was on E. So is everything else.',
+    desc: 'Heavy. The gauge was on empty. Pour it into the car.',
   },
   camera: {
     name: "Ben's Camera",
     type: 'camera',
     flashes: 3,
-    desc: 'The bulbs stun. The plate in the back is for the car — not the face.',
+    desc: 'The bulbs stun whatever is wearing the smile. The plate in the back is for a photo of the car, not the face.',
   },
 };
 
@@ -143,9 +143,9 @@ export const ENEMY = {
 
 export const MOM_LINES = [
   'Chris? The door is open, honey.',
-  "I'm in my room. Don't turn on the light.",
+  "I'm in my room. Don't turn the light on.",
   'I kept a plate warm for you.',
-  "Come closer. I can't see you from here.",
+  "Come closer. I can't see you from the hall.",
   "You looked at it, didn't you.",
   'Ben said you would.',
   'Come upstairs.',
@@ -155,47 +155,47 @@ export const MOM_LINES = [
 export const NOTES = {
   foyer: {
     title: "Mom's note",
-    body: "Chris —\n\nShe has your keys again. The flashlight is on this table if you walked past it.\n\nThe basement key is in my room, sweater pocket. If you already hear me talking, that isn't me. I'm in the car. Don't answer.\n\nIf your hands fill up, the bin in the garage holds the rest.",
+    body: "Chris —\n\nShe has your keys again. If you walked past the flashlight, it is on this table.\n\nThe basement key is in my room, in the sweater pocket. If you can already hear me talking, that is not me. I am in the car. Do not answer.\n\nIf your hands fill up, the bin in the garage will hold the rest.",
   },
   kitchen: {
     title: 'Grocery list',
-    body: "milk, batteries, the good bread\n\nleft side of the bathroom cabinet. her key. it sticks.",
+    body: "milk\nbatteries\nthe good bread\n\nHer key is on the left side of the bathroom cabinet. It sticks.",
   },
   hockey: {
     title: 'Desk',
-    body: "Thursday. We won. Film in the drawer, tape next to it, two rounds I shouldn't have kept.\n\nIf the car won't leave, the garage bench takes a slide. There are not many slides.",
+    body: "Thursday. We won.\n\nThe film is in the drawer. The tape is next to it. So are two rounds I should not have kept.\n\nIf the car will not leave, the bench in the garage takes one slide. There are not many slides.",
   },
   journal: {
     title: 'Her journal',
-    body: "Mom said stay in the car. The gauge was on E, so I went for the can. It's on the shed shelf. The yard door wouldn't lift. No power.\n\nI heard Ben in the basement, in the tanks. It wasn't his voice for long.\n\nIf you're reading this, get the gas, then don't look at the water.",
+    body: "Mom said to stay in the car. The gauge was on empty, so I went for the can. It is on the shelf in the shed. The yard door would not lift. There is no power.\n\nI heard Ben in the basement, in the tanks. It was not his voice for long.\n\nIf you are reading this, get the gas. Then do not look at the water.",
   },
   diary: {
     title: "Mom's diary",
-    body: "Ben called before midnight. He was crying. He said the picture from the trail opened, and that he sent it to you anyway.\n\nI'm going to sit in the car with the doors locked. If the house says my name, it learned it from the photo.\n\nBasement key is in the sweater. Don't pick it up if the bed is breathing.",
+    body: "Ben called before midnight. He was crying. He said the trail picture opened, and that he sent it to you anyway.\n\nI am going to sit in the car with the doors locked. If the house says my name, it learned that name from the photo.\n\nThe basement key is in the sweater. Do not take it if the bed is breathing.",
   },
   ray: {
     title: 'Scratched note',
-    body: "I pulled the fuse so the yard door couldn't open and it couldn't see the grass.\n\nFuse is on this bench. Camera too. Bulbs stun it. The plate in the back is only for the car — photograph the car, not the face.\n\nShed key is on the ring. The name on the ring is gone.",
+    body: "I pulled the fuse so the yard door could not open, and so it could not see the grass.\n\nThe fuse is on this bench. Ben's camera is here too. The bulbs stun it. The plate in the back is only for the car. Photograph the car, not the face.\n\nThe shed key is on the ring. The name on the ring is gone.",
   },
   bag: {
     title: 'On the lock screen',
     photo: 'teammate',
-    body: "you left this in my car.\n\nalso don't open ben's picture.\n\ni looked.\ni'm fine.\ni'm fine.",
+    body: "You left this in my car.\n\nAlso: do not open Ben's picture.\n\nI looked.\nI'm fine.\nI'm fine.",
   },
 };
 
 export const INSPECTIONS = {
   duffel: {
     title: 'Your bag',
-    body: "The stick isn't in it. You dropped it by the couch. The rest of the gear is in the garage.",
+    body: 'The stick is not in it. You dropped it by the couch. The rest of the gear is in the garage.',
   },
   front: {
     title: 'Front door',
-    body: 'The door is here. The street is not. The wood is warm, like someone breathing on the other side.',
+    body: 'The door is here. The street is not. The wood is warm, as if someone is breathing on the other side.',
   },
   family: {
     title: 'The yard, before',
-    body: "Three people and a normal afternoon. If the picture starts to move, put it down.",
+    body: 'Three people, and a normal afternoon. If the picture starts to move, put it down.',
     photos: [
       { id: 'chris', crop: 'bust', label: 'Chris' },
       { id: 'her', crop: 'bust', label: 'Her' },
@@ -209,17 +209,17 @@ export const INSPECTIONS = {
   },
   herpic: {
     title: 'A photo on the dresser',
-    body: "She's laughing. The shirt is the brightest thing in the house. Nothing else is that color anymore.",
+    body: 'She is laughing. The turquoise shirt is the brightest thing left in the house.',
     photos: [{ id: 'her', crop: 'bust', label: '' }],
   },
   mirror: {
     title: 'Mirror',
-    body: "DONT FOLLOW HER VOICE\n\nWritten in lipstick. The mouth in the glass isn't yours.",
+    body: "DONT FOLLOW HER VOICE\n\nWritten in lipstick. The mouth in the glass is not yours.",
     photos: [{ id: 'chris', crop: 'face', label: 'You', grin: 0.45, corrupt: 0.7 }],
   },
   mompic: {
     title: 'Nightstand',
-    body: "Mom, in the yard. The sweater in the picture is the one on the bed. She isn't in it.",
+    body: 'Mom, in the yard. The blue sweater in the picture is the one on the bed. She is not in it.',
     photos: [{ id: 'mom', crop: 'bust', label: 'Mom' }],
   },
   badge: {
@@ -229,7 +229,7 @@ export const INSPECTIONS = {
   },
   tanks: {
     title: 'The tanks',
-    body: "They haven't stopped humming. The glass would rather show the other face.",
+    body: 'They have not stopped humming. The glass would rather show the other face.',
     photos: [
       { id: 'basement', crop: 'face', label: 'Then' },
       { id: 'grin', crop: 'face', label: 'Now' },
@@ -237,11 +237,11 @@ export const INSPECTIONS = {
   },
   yard: {
     title: 'The yard',
-    body: 'The grass is the right shape and the wrong color. The sky looks like a bruise that learned your address.',
+    body: 'The grass is the right shape and the wrong color. The sky looks like a bruise that learned this address.',
   },
   cloth: {
     title: 'Torn cloth',
-    body: "Turquoise, caught on the shelf. The can is still here. She isn't.",
+    body: 'Turquoise, caught on the shelf. The gas can is still here. She is not.',
     photos: [{ id: 'her', crop: 'face', label: '' }],
   },
 };
@@ -254,24 +254,24 @@ export function describeGoal(c) {
   const L = c.loc;
   const rules = [
     [c.finale, 'Hold E at the car. Do not let it in with you.'],
-    [c.room === 'her' && !I.keys && L['key-car'] === 'world', 'The keys are on the desk.'],
-    [c.room === 'shed' && !I.gas, 'The can is on the shelf.'],
-    [c.room === 'basement' && !I.fuse, 'Bench: fuse, camera, shed key. The revolver is optional. Loud.'],
-    [I.fuse && I.keys && I.gas && !I.photo && held(L, 'camera'), "Photograph the car. Not the face."],
-    [I.fuse && I.keys && I.gas && !I.photo, "Ben's camera is on the basement bench. One picture of the car."],
-    [!I.fuse && held(L, 'fuse'), 'Seat the fuse in the car. It opens the yard.'],
-    [!I.gas && held(L, 'gas'), 'Put the gas can in the car.'],
+    [c.room === 'her' && !I.keys && L['key-car'] === 'world', 'The car keys are on the desk.'],
+    [c.room === 'shed' && !I.gas, 'The gas can is on the shelf.'],
+    [c.room === 'basement' && !I.fuse, 'On the bench: the fuse, the camera, and the shed key. The revolver is loud.'],
+    [I.fuse && I.keys && I.gas && !I.photo && held(L, 'camera'), 'Photograph the car. Not the face.'],
+    [I.fuse && I.keys && I.gas && !I.photo, "Ben's camera is on the basement bench. Take one picture of the car."],
+    [!I.fuse && held(L, 'fuse'), 'Put the fuse in the car. That powers the yard door.'],
+    [!I.gas && held(L, 'gas'), 'Pour the gas into the car.'],
     [!I.keys && held(L, 'key-car'), 'The car keys go in the ignition.'],
-    [I.fuse && !I.gas && (R.journal || R.ray), 'Shed in the yard. The can is on the shelf. The ring key opens it.'],
-    [I.fuse && !I.gas, 'The yard door is open. Find fuel.'],
-    [!I.fuse && R.ray, 'Basement bench: fuse, camera, shed key.'],
-    [!I.fuse && (c.tookBaseKey || L['key-base'] !== 'world'), 'Mudroom. The basement door. Cold air under it.'],
-    [!I.keys && held(L, 'key-her'), 'Her door is off the hall. The keys are on the desk.'],
-    [!I.keys && R.kitchen, 'Bathroom cabinet, left side. Her key.'],
-    [R.diary && L['key-base'] === 'world' && !c.tookBaseKey, "Sweater pocket, Mom's room. The bed is breathing."],
+    [I.fuse && !I.gas && (R.journal || R.ray), 'The shed is in the yard. The can is on the shelf. The ring key opens it.'],
+    [I.fuse && !I.gas, 'The yard door is open. Find the gas.'],
+    [!I.fuse && R.ray, 'The basement bench has the fuse, the camera, and the shed key.'],
+    [!I.fuse && (c.tookBaseKey || L['key-base'] === 'inv' || L['key-base'] === 'stash'), 'The basement door is in the mudroom. Cold air comes under it.'],
+    [!I.keys && held(L, 'key-her'), 'Her door is off the hall. The car keys are on the desk.'],
+    [!I.keys && R.kitchen, 'Her key is on the left side of the bathroom cabinet.'],
+    [R.diary && L['key-base'] === 'world' && !c.tookBaseKey, "The basement key is in the sweater, in Mom's room. The bed is breathing."],
     [R.foyer && !I.keys, 'She has the car keys. The voice in the house is not Mom.'],
     [c.hasLight, "Mom's voice is down the hall. The car is in the garage."],
-    [true, 'The foyer table. Find a light.'],
+    [true, 'Find the flashlight on the foyer table.'],
   ];
   for (const [ok, text] of rules) if (ok) return text;
   return 'Get the car running.';
