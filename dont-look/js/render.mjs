@@ -1,10 +1,18 @@
+import {
+  beginShade,
+  drawActorShadows,
+  drawContactShadow,
+  drawEnvironmentShade,
+  drawLightMap,
+  shadeIllumination,
+} from './lighting.mjs';
+import { artIdForProp, drawWorldSprite, finderColor, shadowFor } from './art.mjs';
 import { portrait } from './photos.mjs';
+import { drawDoors, interactPoint } from './doors.mjs';
 import { FURNITURE, ROOMS, floorName, roomAt, TILE } from './world.mjs';
 
 export const VIEW_W = 416;
 export const VIEW_H = 224;
-
-const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
 const FLOOR = {
   wood: ['#6b4e3a', '#5a4030', '#7d5c44'],
@@ -47,6 +55,7 @@ export function render(game) {
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#070605';
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  beginShade(game, ox, oy);
 
   const x0 = Math.max(0, Math.floor(ox / TILE) - 1);
   const y0 = Math.max(0, Math.floor(oy / TILE) - 1);
@@ -81,10 +90,8 @@ export function render(game) {
       }
       if (tile === 9) {
         const door = world.doorAt.get(`${x},${y}`);
-        const open = state.doors[door.id].open;
         ctx.fillStyle = floorColor(door.floor, x, y, roomAt(x, y));
         ctx.fillRect(sx, sy, TILE, TILE);
-        if (!open) drawDoor(ctx, sx, sy, door, state);
         continue;
       }
       ctx.fillStyle = floorColor(tile, x, y, roomAt(x, y));
@@ -99,10 +106,14 @@ export function render(game) {
     }
   }
 
+  drawEnvironmentShade(ctx, game, ox, oy, x0, y0, x1, y1);
+
   for (const piece of FURNITURE) {
     if (piece.x + piece.w < x0 || piece.x > x1 || piece.y + piece.h < y0 || piece.y > y1) continue;
     drawFurniture(ctx, piece, ox, oy, state, game);
   }
+
+  drawDoors(ctx, game, ox, oy);
 
   for (const decal of state.decals) {
     const sx = Math.round(decal.x - ox);
@@ -113,18 +124,43 @@ export function render(game) {
 
   for (const enemy of state.enemies) {
     if (!enemy.alive) continue;
+    const kind = enemy.downUntil > game.time
+      ? 'down'
+      : enemy.kind === 'grin'
+        ? 'grin'
+        : !enemy.awake && enemy.silent
+          ? 'sleeper'
+          : 'shambler';
+    drawActorShadows(ctx, game, enemy.x, enemy.y, kind, { time: game.time });
     drawEnemy(ctx, enemy, ox, oy, game);
   }
 
-  for (const prop of world.props) drawProp(ctx, prop, ox, oy, state);
+  for (const prop of world.props) drawProp(ctx, prop, ox, oy, state, game);
 
   for (const drop of state.dropped) {
-    drawGlint(ctx, drop.x - ox, drop.y - oy, '#e4c07a', game.time);
+    const broken = drop.slot.dur != null && drop.slot.dur <= 0;
+    const shade = shadowFor(broken ? `${drop.slot.id}-cracked` : drop.slot.id);
+    drawActorShadows(ctx, game, drop.x, drop.y, 'drop', shade);
+    drawWorldSprite(ctx, drop.slot.id, drop.x - ox, drop.y - oy, {
+      ground: true,
+      foot: 1,
+      shadow: false,
+      broken,
+      time: game.time,
+      reduce: game.settings.reduceFlash,
+    });
   }
 
-  drawDarkness(ctx, game, ox, oy);
+  drawLightMap(ctx, game);
   drawCloseSilhouettes(ctx, game, ox, oy);
+  drawActorShadows(ctx, game, state.player.x, state.player.y, 'player', {
+    self: true,
+    facing: state.player.facing,
+    moving: state.player.moving,
+    overDark: true,
+  });
   drawPlayer(ctx, state.player, ox, oy, game);
+  drawPickupFx(ctx, game, ox, oy);
   drawMotes(ctx, game, ox, oy);
 
   if (game.hurtFlash > 0) {
@@ -142,6 +178,7 @@ function drawFurniture(ctx, piece, ox, oy, state, game) {
   const sy = Math.round(piece.y * TILE - oy);
   const w = piece.w * TILE;
   const h = piece.h * TILE;
+  drawContactShadow(ctx, sx + w * 0.5, sy + h - 3, { radius: Math.min(20, Math.max(6, w * 0.16)) }, 1);
   if (piece.kind === 'car') {
     ctx.fillStyle = '#343a42';
     ctx.fillRect(sx + 4, sy + 12, w - 8, h - 20);
@@ -151,7 +188,7 @@ function drawFurniture(ctx, piece, ox, oy, state, game) {
     ctx.fillStyle = '#9aafbc';
     ctx.fillRect(sx + 14, sy + 14, w * 0.3, 26);
     ctx.fillRect(sx + w * 0.52, sy + 14, w * 0.34, 26);
-    const light = game.lightAt((piece.x + 2.2) * TILE, (piece.y + 0.85) * TILE);
+    const light = shadeIllumination(game, (piece.x + 2.2) * TILE, (piece.y + 0.85) * TILE);
     if (light > 0.12) {
       const face = portrait('mom', {
         crop: 'face',
@@ -198,78 +235,51 @@ function drawFurniture(ctx, piece, ox, oy, state, game) {
   }
 }
 
-function drawDoor(ctx, sx, sy, door, state) {
-  const locked = door.lock && !state.doors[door.id].unlocked && !(door.lock === 'power' && state.flags.powerOn);
-  ctx.fillStyle = locked ? '#4a2a28' : '#5a4632';
-  ctx.fillRect(sx + 6, sy + 4, TILE - 12, TILE - 8);
-  ctx.fillStyle = locked ? '#e07068' : '#e4c07a';
-  ctx.fillRect(sx + TILE - 12, sy + 14, 3, 3);
-}
-
-function drawProp(ctx, prop, ox, oy, state) {
+function drawProp(ctx, prop, ox, oy, state, game) {
   if (state.taken[prop.id]) return;
+  if (prop.inspect === 'front') return;
   if (prop.kind === 'container' && !(state.containers[prop.id] || []).length) return;
-  const x = Math.round((prop.x + 0.5) * TILE - ox);
-  const y = Math.round((prop.y + 0.5) * TILE - oy);
-  if (prop.kind === 'flashlight') {
-    ctx.fillStyle = '#d7c27a';
-    ctx.fillRect(x - 5, y - 2, 10, 4);
-    return;
-  }
-  if (prop.kind === 'battery') {
-    ctx.fillStyle = '#6f8f62';
-    ctx.fillRect(x - 4, y - 5, 8, 10);
-    return;
-  }
-  if (prop.kind === 'note') {
-    ctx.fillStyle = '#d9d0c0';
-    ctx.fillRect(x - 5, y - 6, 10, 12);
-    ctx.fillStyle = '#8a7b68';
-    ctx.fillRect(x - 3, y - 3, 6, 1);
-    return;
-  }
-  if (prop.kind === 'inspect') {
-    ctx.fillStyle = '#c4b48a';
-    ctx.fillRect(x - 6, y - 7, 12, 10);
-    ctx.fillStyle = '#1a1612';
-    ctx.fillRect(x - 4, y - 5, 8, 6);
-    return;
-  }
-  if (prop.kind === 'pickup') {
-    const color = {
-      weapon: '#c8c2b4',
-      ammo: '#c2a15a',
-      heal: '#d7d2c8',
-      film: '#222',
-      tape: '#b7b0a4',
-      key: '#e0b84e',
-      quest: '#d07a3a',
-      camera: '#22262c',
-    };
-    // Color is chosen by the caller via item type in draw; keep a warm default and a key glint.
-    ctx.fillStyle = prop.item?.startsWith('key') ? '#e0b84e' : color.quest;
-    if (prop.item === 'bandage' || prop.item === 'pills') ctx.fillStyle = '#e6e0d4';
-    if (prop.item === 'ammo') ctx.fillStyle = '#c2a15a';
-    if (prop.item === 'stick' || prop.item === 'knife' || prop.item === 'pistol') ctx.fillStyle = '#c8c2b4';
-    if (prop.item === 'film') ctx.fillStyle = '#1c1c1c';
-    if (prop.item === 'camera') ctx.fillStyle = '#2a2e34';
-    ctx.fillRect(x - 4, y - 4, 8, 8);
-    return;
-  }
-  if (prop.kind === 'save' || prop.kind === 'stash' || prop.kind === 'board') {
-    ctx.fillStyle = prop.kind === 'board' ? '#d9d0c0' : '#6a5a44';
-    ctx.fillRect(x - 6, y - 5, 12, 8);
-  }
+  const id = artIdForProp(prop);
+  if (!id) return;
+  const wx = (prop.x + 0.5) * TILE;
+  const wy = (prop.y + 0.5) * TILE;
+  if (game) drawActorShadows(ctx, game, wx, wy, prop.kind === 'car' ? 'drop' : 'prop', shadowFor(id));
+  drawWorldSprite(ctx, id, wx - ox, wy - oy, {
+    ground: true,
+    foot: prop.kind === 'car' ? 1 : 2,
+    shadow: false,
+    time: game?.time || 0,
+    reduce: !!game?.settings?.reduceFlash,
+  });
 }
 
-function drawGlint(ctx, x, y, color, time) {
-  if (Math.sin(time * 3.2 + x * 0.2) < -0.35) return;
+function drawFinder(ctx, x, y, color, time, reduce) {
+  const wave = Math.sin(time * 1.15 + x * 0.13);
+  if (!reduce && wave < 0.2) return;
   const px = Math.round(x);
   const py = Math.round(y);
+  ctx.globalAlpha = reduce ? 0.5 : 0.35 + Math.max(0, wave) * 0.45;
   ctx.fillStyle = color;
-  ctx.fillRect(px - 1, py - 1, 3, 3);
-  ctx.fillStyle = '#fff4d2';
   ctx.fillRect(px, py, 1, 1);
+  ctx.globalAlpha = 1;
+}
+
+function drawPickupFx(ctx, game, ox, oy) {
+  const fx = game.state.fx;
+  if (!fx?.length) return;
+  for (const bit of fx) {
+    const k = 1 - bit.age / bit.life;
+    if (k <= 0) continue;
+    const lift = game.settings.reduceFlash ? 0 : (1 - k) * 8;
+    drawWorldSprite(ctx, bit.id, bit.x - ox, bit.y - oy - lift, {
+      ground: true,
+      foot: 0,
+      shadow: false,
+      alpha: Math.max(0, k),
+      time: game.time,
+      reduce: true,
+    });
+  }
 }
 
 function drawPlayer(ctx, player, ox, oy, game) {
@@ -280,10 +290,6 @@ function drawPlayer(ctx, player, ox, oy, game) {
   const rate = player.running ? 16 : player.sneaking ? 7 : 11;
   const swing = player.moving ? Math.sin(time * rate) : 0;
   const bob = player.moving ? Math.round(Math.abs(swing)) : 0;
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
-  ctx.beginPath();
-  ctx.ellipse(x, y + 7, 7, 3, 0, 0, Math.PI * 2);
-  ctx.fill();
   ctx.fillStyle = '#8a8172';
   ctx.fillRect(x - 5, y + 1 - bob, 3, 6 + Math.round(swing * 2));
   ctx.fillRect(x + 2, y + 1 - bob, 3, 6 - Math.round(swing * 2));
@@ -297,51 +303,36 @@ function drawPlayer(ctx, player, ox, oy, game) {
   ctx.fillRect(x - 3, y - 11 - bob, 6, 5);
   ctx.fillStyle = '#241c18';
   ctx.fillRect(x - 4, y - 13 - bob, 8, 3);
-  const aim = 12;
-  ctx.strokeStyle = 'rgba(228,192,122,0.85)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(x, y - 4);
-  ctx.lineTo(x + Math.cos(player.facing) * aim, y - 4 + Math.sin(player.facing) * aim);
-  ctx.stroke();
   drawHeld(ctx, game, x, y - bob, player);
 }
 
 function drawHeld(ctx, game, x, y, player) {
   const slot = game.state.inv[game.state.equipped];
-  if (!slot) return;
-  const reach = slot.id === 'pistol' ? 16 : slot.id === 'stick' ? 18 : 12;
   const fx = Math.cos(player.facing);
   const fy = Math.sin(player.facing);
-  const tipX = x + fx * reach;
-  const tipY = y + fy * reach;
+  ctx.strokeStyle = 'rgba(228,192,122,0.55)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 4);
+  ctx.lineTo(x + fx * 8, y - 4 + fy * 8);
+  ctx.stroke();
+  if (!slot) return;
+  const held = slot.id === 'stick' || slot.id === 'knife' || slot.id === 'pistol' || slot.id === 'camera';
+  if (!held) return;
   if (player.atk > 0) {
-    ctx.strokeStyle = 'rgba(228, 192, 122, 0.55)';
+    ctx.strokeStyle = 'rgba(228, 192, 122, 0.4)';
     ctx.beginPath();
-    ctx.arc(x, y, reach - 2, player.facing - 0.8, player.facing + 0.8);
+    ctx.arc(x, y, slot.id === 'stick' ? 16 : 12, player.facing - 0.7, player.facing + 0.7);
     ctx.stroke();
   }
-  if (slot.id === 'stick') {
-    ctx.strokeStyle = '#c4a06a';
-    ctx.beginPath();
-    ctx.moveTo(x + fx * 4, y + fy * 4);
-    ctx.lineTo(tipX, tipY);
-    ctx.stroke();
-  } else if (slot.id === 'knife') {
-    ctx.strokeStyle = '#d5dbe6';
-    ctx.beginPath();
-    ctx.moveTo(x + fx * 5, y + fy * 5);
-    ctx.lineTo(tipX, tipY);
-    ctx.stroke();
-  } else if (slot.id === 'pistol') {
-    ctx.fillStyle = '#1a1c20';
-    ctx.fillRect(Math.round(tipX) - 2, Math.round(tipY) - 2, 4, 3);
-  } else if (slot.id === 'camera') {
-    ctx.fillStyle = '#2a2e34';
-    ctx.fillRect(Math.round(x + fx * 8) - 3, Math.round(y + fy * 8) - 3, 6, 5);
-    ctx.fillStyle = '#9aafbc';
-    ctx.fillRect(Math.round(x + fx * 10), Math.round(y + fy * 10), 2, 2);
-  }
+  drawWorldSprite(ctx, slot.id, x + fx * 6, y + fy * 6, {
+    aim: player.facing,
+    jab: player.atk > 0 ? 3 : 0,
+    shadow: false,
+    broken: slot.dur != null && slot.dur <= 0,
+    time: game.time,
+    reduce: game.settings.reduceFlash,
+  });
 }
 
 function drawEnemy(ctx, enemy, ox, oy, game) {
@@ -366,7 +357,7 @@ function drawEnemy(ctx, enemy, ox, oy, game) {
   }
   const bob = Math.sin(game.time * 8 + enemy.x) > 0 ? 0 : 1;
   if (enemy.kind === 'grin') {
-    const light = game.lightAt(enemy.x, enemy.y);
+    const light = shadeIllumination(game, enemy.x, enemy.y);
     ctx.fillStyle = '#0c0b0c';
     ctx.fillRect(x - 3, y - 6, 6, 14);
     if (light > 0.16) {
@@ -397,8 +388,9 @@ function drawCloseSilhouettes(ctx, game, ox, oy) {
     if (!enemy.alive || !enemy.awake || enemy.downUntil > game.time) continue;
     const d = Math.hypot(enemy.x - game.state.player.x, enemy.y - game.state.player.y);
     if (d > 40) continue;
-    const light = game.lightAt(enemy.x, enemy.y);
+    const light = shadeIllumination(game, enemy.x, enemy.y);
     if (light > 0.22) continue;
+    drawActorShadows(ctx, game, enemy.x, enemy.y, enemy.kind === 'grin' ? 'grin' : 'shambler', { contactOnly: true, overDark: true });
     ctx.globalAlpha = 0.45;
     drawEnemy(ctx, enemy, ox, oy, game);
     ctx.globalAlpha = 1;
@@ -411,22 +403,30 @@ function drawCloseSilhouettes(ctx, game, ox, oy) {
     if (prop.kind === 'board' || prop.kind === 'save' || prop.kind === 'stash' || prop.kind === 'car') continue;
     const x = (prop.x + 0.5) * TILE;
     const y = (prop.y + 0.5) * TILE;
-    if (game.lightAt(x, y) > 0.35) continue;
+    if (shadeIllumination(game, x, y) > 0.35) continue;
     if (Math.hypot(x - game.state.player.x, y - game.state.player.y) > 210) continue;
     if (!game.los(game.state.player.x, game.state.player.y, x, y)) continue;
-    drawGlint(ctx, x - ox, y - oy, '#e4c07a', time + prop.x);
+    const id = artIdForProp(prop);
+    drawFinder(ctx, x - ox, y - oy, finderColor(id || 'stick'), time + prop.x, game.settings.reduceFlash);
+  }
+  for (const drop of game.state.dropped) {
+    if (shadeIllumination(game, drop.x, drop.y) > 0.35) continue;
+    if (Math.hypot(drop.x - game.state.player.x, drop.y - game.state.player.y) > 210) continue;
+    if (!game.los(game.state.player.x, game.state.player.y, drop.x, drop.y)) continue;
+    drawFinder(ctx, drop.x - ox, drop.y - oy, finderColor(drop.slot.id), time + drop.x, game.settings.reduceFlash);
   }
   const player = game.state.player;
   for (const door of game.world.doors) {
-    const x = (door.x + 0.5) * TILE;
-    const y = (door.y + 0.5) * TILE;
+    const st = game.state.doors[door.id];
+    const point = interactPoint(door, st);
+    const x = point.x;
+    const y = point.y;
     const distance = Math.hypot(x - player.x, y - player.y);
     if (distance > 160 || distance < 18) continue;
-    if (game.lightAt(x, y) > 0.5) continue;
+    if (shadeIllumination(game, x, y) > 0.5) continue;
     if (!game.los(player.x, player.y, x, y)) continue;
-    const st = game.state.doors[door.id];
     const locked = door.lock && !st.unlocked && !(door.lock === 'power' && game.state.flags.powerOn);
-    drawGlint(ctx, x - ox, y - oy, locked ? '#c45048' : '#e4c07a', time + door.y);
+    drawFinder(ctx, x - ox, y - oy, locked ? '#c45048' : '#e4c07a', time + door.y, game.settings.reduceFlash);
   }
 }
 
@@ -439,27 +439,8 @@ function drawMotes(ctx, game, ox, oy) {
     const r = 18 + ((i * 17) % 80);
     const x = p.x + Math.cos(p.facing + Math.sin(a) * 0.35) * r - ox;
     const y = p.y + Math.sin(p.facing + Math.sin(a + 1) * 0.35) * r - oy;
-    if (game.lightAt(p.x + (x + ox - p.x), p.y + (y + oy - p.y)) < 0.4) continue;
+    if (shadeIllumination(game, p.x + (x + ox - p.x), p.y + (y + oy - p.y)) < 0.4) continue;
     ctx.fillRect(Math.round(x), Math.round(y + Math.sin(game.time * 2 + i) * 2), 1, 1);
-  }
-}
-
-function drawDarkness(ctx, game, ox, oy) {
-  const cell = 4;
-  for (let y = 0; y < VIEW_H; y += cell) {
-    for (let x = 0; x < VIEW_W; x += cell) {
-      const wx = ox + x + cell / 2;
-      const wy = oy + y + cell / 2;
-      let light = game.lightAt(wx, wy);
-      const b = BAYER[((y >> 2) & 3) * 4 + ((x >> 2) & 3)] / 16;
-      if (light < 0.92) light = light + (b - 0.5) * 0.035;
-      const clamped = Math.max(0, Math.min(1, light));
-      const dark = (1 - clamped) ** 1.15;
-      if (dark < 0.04) continue;
-      const cool = Math.round(8 + (1 - clamped) * 6);
-      ctx.fillStyle = `rgba(4, 5, ${cool}, ${dark})`;
-      ctx.fillRect(x, y, cell, cell);
-    }
   }
 }
 
@@ -505,8 +486,35 @@ export function drawMap(ctx, game, w, h) {
     ctx.fillRect(x, y, rw, rh);
     ctx.strokeRect(x + 0.5, y + 0.5, rw, rh);
     if (seen) {
+      const full = room.name;
+      const brief = room.brief || full;
+      const fits = (label, px) => {
+        ctx.font = `${px}px Courier New, monospace`;
+        return ctx.measureText(label).width <= rw - 8;
+      };
+      let label = full;
+      let size = 12;
+      if (!fits(full, 12)) {
+        if (fits(full, 10)) size = 10;
+        else if (fits(brief, 11)) {
+          label = brief;
+          size = 11;
+        } else if (fits(brief, 9)) {
+          label = brief;
+          size = 9;
+        } else {
+          label = brief;
+          size = 8;
+        }
+      }
+      ctx.font = `${size}px Courier New, monospace`;
       ctx.fillStyle = '#e4c07a';
-      ctx.fillText(room.name, x + 4, y + 13);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + 1, y + 1, Math.max(0, rw - 2), Math.max(0, rh - 2));
+      ctx.clip();
+      ctx.fillText(label, x + 3, y + Math.min(rh - 3, size + 2));
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
   }
@@ -519,8 +527,11 @@ export function drawMap(ctx, game, w, h) {
     const y = pad + (door.y + 0.5 - minY) * scale;
     const st = state.doors[door.id];
     const locked = door.lock && !st.unlocked && !(door.lock === 'power' && state.flags.powerOn);
-    ctx.fillStyle = locked ? '#c45048' : st.open ? '#8d734c' : '#e4c07a';
-    ctx.fillRect(x - 2, y - 2, 4, 4);
+    const across = door.axis === 'ew';
+    const w = across ? Math.max(5, scale * 0.7) : Math.max(2, scale * 0.22);
+    const h = across ? Math.max(2, scale * 0.22) : Math.max(5, scale * 0.7);
+    ctx.fillStyle = locked ? '#c45048' : st.angle > 0.72 ? '#8d734c' : '#e4c07a';
+    ctx.fillRect(x - w / 2, y - h / 2, w, h);
   }
   const px = pad + (state.player.x / TILE - minX) * scale;
   const py = pad + (state.player.y / TILE - minY) * scale;

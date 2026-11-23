@@ -1,24 +1,29 @@
+import { prepareDoor } from './doors.mjs';
+
 // House geometry. Tile 0 is solid. 2–6 are floors. 9 is a door.
-// Run `node dont-look/test/reach.mjs` after moving a room, door, or prop.
+// Door frames, hinges, and swing pockets are fitted in doors.mjs.
+// Run `node dont-look/test/reach.mjs` and `node dont-look/test/doors.mjs`
+// after moving a room, door, or prop.
 
 export const TILE = 32;
 export const COLS = 32;
 export const ROWS = 49;
 
+// brief is the map label when the full name will not fit the room.
 export const ROOMS = {
-  her:      { x: 2,  y: 2,  w: 8,  h: 6, floor: 'carpet',   name: 'Her Room' },
-  hallN:    { x: 11, y: 2,  w: 8,  h: 6, floor: 'wood',     name: 'Hall' },
-  bath:     { x: 20, y: 2,  w: 8,  h: 6, floor: 'tile',     name: 'Bathroom' },
-  chris:    { x: 2,  y: 9,  w: 8,  h: 6, floor: 'carpet',   name: "Chris's Room" },
-  hallS:    { x: 11, y: 9,  w: 8,  h: 6, floor: 'wood',     name: 'Hall' },
-  mom:      { x: 20, y: 9,  w: 8,  h: 6, floor: 'carpet',   name: "Mom's Room" },
-  living:   { x: 2,  y: 16, w: 15, h: 7, floor: 'wood',     name: 'Living Room' },
-  dining:   { x: 18, y: 16, w: 10, h: 7, floor: 'wood',     name: 'Dining Room' },
+  her:      { x: 2,  y: 2,  w: 8,  h: 6, floor: 'carpet',   name: 'Her Room', brief: 'Her' },
+  hallN:    { x: 11, y: 2,  w: 8,  h: 6, floor: 'wood',     name: 'Upper Hall', brief: 'Upper' },
+  bath:     { x: 20, y: 2,  w: 8,  h: 6, floor: 'tile',     name: 'Bathroom', brief: 'Bath' },
+  chris:    { x: 2,  y: 9,  w: 8,  h: 6, floor: 'carpet',   name: "Chris's Room", brief: 'Chris' },
+  hallS:    { x: 11, y: 9,  w: 8,  h: 6, floor: 'wood',     name: 'Lower Hall', brief: 'Lower' },
+  mom:      { x: 20, y: 9,  w: 8,  h: 6, floor: 'carpet',   name: "Mom's Room", brief: 'Mom' },
+  living:   { x: 2,  y: 16, w: 15, h: 7, floor: 'wood',     name: 'Living Room', brief: 'Living' },
+  dining:   { x: 18, y: 16, w: 10, h: 7, floor: 'wood',     name: 'Dining Room', brief: 'Dining' },
   kitchen:  { x: 2,  y: 24, w: 10, h: 6, floor: 'tile',     name: 'Kitchen' },
   foyer:    { x: 13, y: 24, w: 8,  h: 6, floor: 'wood',     name: 'Foyer' },
-  mud:      { x: 22, y: 24, w: 6,  h: 6, floor: 'tile',     name: 'Mudroom' },
+  mud:      { x: 22, y: 24, w: 6,  h: 6, floor: 'tile',     name: 'Mudroom', brief: 'Mud' },
   garage:   { x: 2,  y: 31, w: 16, h: 7, floor: 'concrete', name: 'Garage' },
-  basement: { x: 19, y: 31, w: 11, h: 7, floor: 'concrete', name: 'Basement' },
+  basement: { x: 19, y: 31, w: 11, h: 7, floor: 'concrete', name: 'Basement', brief: 'Basement' },
   yard:     { x: 2,  y: 39, w: 26, h: 8, floor: 'grass',    name: 'Yard' },
   shed:     { x: 21, y: 42, w: 5,  h: 3, floor: 'wood',     name: 'Shed', nest: true },
 };
@@ -82,7 +87,7 @@ export const PROPS = [
   { id: 'bat-her', x: 6, y: 3, kind: 'battery', label: 'Batteries' },
   { id: 'cabinet', x: 21, y: 3, kind: 'container', label: 'Cabinet', items: [{ item: 'key-her' }, { item: 'bandage' }] },
   { id: 'mirror', x: 23, y: 2, kind: 'inspect', inspect: 'mirror', label: 'Mirror' },
-  { id: 'note-chris', x: 7, y: 13, kind: 'note', note: 'hockey', label: 'A note on the desk' },
+  { id: 'note-chris', x: 7, y: 13, kind: 'note', note: 'hockey', label: 'Thursday note' },
   { id: 'film-chris', x: 8, y: 13, kind: 'pickup', item: 'film', label: 'Film slide' },
   { id: 'band-chris', x: 6, y: 12, kind: 'pickup', item: 'bandage', label: 'Bandage' },
   { id: 'ammo-chris', x: 8, y: 12, kind: 'pickup', item: 'ammo', count: 2, label: 'Rounds' },
@@ -92,14 +97,14 @@ export const PROPS = [
   { id: 'sweater', x: 21, y: 12, kind: 'pickup', item: 'key-base', label: 'Sweater pocket' },
   { id: 'mompic', x: 21, y: 10, kind: 'inspect', inspect: 'mompic', label: "Mom's photo" },
   { id: 'car', x: 12, y: 34, kind: 'car', label: 'The car' },
-  { id: 'save', x: 5, y: 32, kind: 'save', label: 'Workbench' },
+  { id: 'save', x: 5, y: 32, kind: 'save', label: 'Garage bench' },
   { id: 'stash', x: 3, y: 35, kind: 'stash', label: 'Parts bin' },
   { id: 'bag', x: 14, y: 35, kind: 'container', label: 'Gear bag', items: [{ note: 'bag' }, { item: 'pills' }, { item: 'film' }] },
   { id: 'board', x: 15, y: 32, kind: 'board', label: 'Checklist' },
   { id: 'ray', x: 21, y: 36, kind: 'note', note: 'ray', label: 'A scratched note' },
   { id: 'fuse', x: 21, y: 34, kind: 'pickup', item: 'fuse', label: 'Fuse' },
   { id: 'camera', x: 26, y: 34, kind: 'pickup', item: 'camera', label: "Ben's camera" },
-  { id: 'shedkey', x: 23, y: 35, kind: 'pickup', item: 'key-shed', label: 'Key ring' },
+  { id: 'shedkey', x: 23, y: 35, kind: 'pickup', item: 'key-shed', label: 'Shed key' },
   { id: 'gun', x: 26, y: 36, kind: 'pickup', item: 'pistol', label: 'Revolver' },
   { id: 'ammo-base', x: 24, y: 36, kind: 'pickup', item: 'ammo', count: 4, label: 'Rounds' },
   { id: 'film-base', x: 29, y: 36, kind: 'pickup', item: 'film', label: 'Film slide' },
@@ -107,7 +112,7 @@ export const PROPS = [
   { id: 'bat-base', x: 29, y: 35, kind: 'battery', label: 'Batteries' },
   { id: 'badge', x: 29, y: 33, kind: 'inspect', inspect: 'badge', label: 'A scratched photo' },
   { id: 'tanks', x: 26, y: 32, kind: 'inspect', inspect: 'tanks', label: 'The tanks' },
-  { id: 'yardnote', x: 6, y: 42, kind: 'inspect', inspect: 'yard', label: 'Look at the yard' },
+  { id: 'yardnote', x: 6, y: 42, kind: 'inspect', inspect: 'yard', label: 'The yard' },
   { id: 'gas', x: 22, y: 43, kind: 'pickup', item: 'gas', label: 'Gas can' },
   { id: 'cloth', x: 24, y: 44, kind: 'inspect', inspect: 'cloth', label: 'Torn cloth' },
 ];
@@ -142,6 +147,13 @@ export function createWorld() {
     for (let x = shed.x; x < shed.x + shed.w; x++) tiles[y][x] = FLOOR_ID.wood;
   }
 
+  const furniture = new Set();
+  for (const piece of FURNITURE) {
+    for (let y = piece.y; y < piece.y + piece.h; y++) {
+      for (let x = piece.x; x < piece.x + piece.w; x++) furniture.add(`${x},${y}`);
+    }
+  }
+
   const doors = DOORS.map((d) => ({ ...d }));
   for (const door of doors) {
     tiles[door.y][door.x] = 9;
@@ -153,16 +165,18 @@ export function createWorld() {
       }
     }
     door.floor = door.floor || 2;
+    prepareDoor(door, tiles, furniture);
   }
 
-  const furniture = new Set();
-  for (const piece of FURNITURE) {
-    for (let y = piece.y; y < piece.y + piece.h; y++) {
-      for (let x = piece.x; x < piece.x + piece.w; x++) furniture.add(`${x},${y}`);
-    }
-  }
   const doorAt = new Map(doors.map((d) => [`${d.x},${d.y}`, d]));
-  return { tiles, doors, doorAt, furniture, props: PROPS, spawns: SPAWNS };
+  const pocketAt = new Map();
+  for (const door of doors) {
+    if (!door.pocket) continue;
+    const key = `${door.pocket.x},${door.pocket.y}`;
+    if (!pocketAt.has(key)) pocketAt.set(key, []);
+    pocketAt.get(key).push(door);
+  }
+  return { tiles, doors, doorAt, pocketAt, furniture, props: PROPS, spawns: SPAWNS };
 }
 
 export function inBounds(tx, ty) {

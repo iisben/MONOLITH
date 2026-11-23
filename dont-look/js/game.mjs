@@ -1,4 +1,26 @@
-import { ENEMY, ITEMS, MOM_LINES, TUNING, describeGoal } from './data.mjs';
+import { CaptionQueue } from './captions.mjs';
+import {
+  CUE,
+  ENEMY_STEP_MARKS,
+  FOOT_MARKS,
+  HEAVY_ROOMS,
+  gaitRate,
+  hashPhase,
+  phaseMarksCrossed,
+} from './cues.mjs';
+import { ENEMY, ITEMS, MOM_LINES, MOM_LINES_LATE, TUNING, describeGoal } from './data.mjs';
+import { createDirector } from './director.mjs';
+import {
+  SWING_FRAMES,
+  bodyBlocked,
+  createDoorState,
+  doorBlocksPoint,
+  interactPoint,
+  planDoorUse,
+  stepDoor,
+  syncDoorMotion,
+} from './doors.mjs';
+import { flashlightFlicker } from './lighting.mjs';
 import { render, VIEW_H, VIEW_W } from './render.mjs';
 import {
   COLS,
@@ -16,6 +38,7 @@ import {
 export const SAVE_KEY = 'dont-look-save-v1';
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const CAR_LEAVE = 26;
 
 function angDiff(a, b) {
   let d = a - b;
@@ -37,13 +60,14 @@ export class Game {
     this.input = { x: 0, y: 0, sneak: false, run: false, use: false };
     this.settings = {
       captions: true,
-      reduceFlash: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
+      reduceFlash: (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) || false,
       volume: 0.85,
     };
     this.mouseAim = false;
     this.state = null;
     this.time = 0;
     this.uiTime = 0;
+    this.captions = new CaptionQueue();
     this.caption = null;
     this.roomBanner = null;
     this.shake = 0;
@@ -55,13 +79,14 @@ export class Game {
     this.momTimer = 3.4;
     this.momIndex = 0;
     this.creak = 6;
+    this.director = createDirector();
+    this.ambienceN = 0;
+    this.danger = 0;
   }
 
   newGame() {
     const doors = {};
-    for (const door of this.world.doors) {
-      doors[door.id] = { open: !!door.open, unlocked: !door.lock };
-    }
+    for (const door of this.world.doors) doors[door.id] = createDoorState(door);
     const containers = {};
     for (const prop of this.world.props) {
       if (prop.kind === 'container') containers[prop.id] = prop.items.map((item) => ({ ...item }));
@@ -82,6 +107,7 @@ export class Game {
         dodgeY: 0,
         atk: 0,
         step: 0.2,
+        phase: 0,
         sneaking: false,
         running: false,
       },
@@ -118,21 +144,27 @@ export class Game {
       hold: 0,
       dead: false,
       won: false,
+      fx: [],
     };
+    this.dropN = 1;
     this.time = 0;
     this.uiTime = 0;
     this.momTimer = 3.2;
     this.momIndex = 0;
     this.creak = 6.5;
+    this.captions.clear();
     this.caption = null;
-    this.roomBanner = { name: 'Mudroom', until: 2.4 };
+    this.showRoom(ROOMS.mud.name);
     this.shake = 0;
     this.flash = 0;
     this.grinFlash = 0;
     this.hurtFlash = 0;
     this.mouseAim = false;
+    this.director.reset();
+    this.ambienceN = 0;
+    this.danger = 0;
     this.snapCamera();
-    this.say("She's calling. The foyer table has a light.");
+    this.say("She's calling. The flashlight is in the foyer.");
   }
 
   makeEnemy(spawn) {
@@ -169,6 +201,7 @@ export class Game {
       opening: 0,
       stunUntil: 0,
       downUntil: 0,
+      phase: hashPhase(spawn.id),
       groan: 2 + Math.random() * 3,
       risen: 0,
       revealed: false,
@@ -224,7 +257,7 @@ export class Game {
   save(quiet) {
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(this.serialize()));
-      if (!quiet) this.say('The slide holds the room. For now.');
+      if (!quiet) this.say('The slide holds this room. For now.');
       return true;
     } catch {
       if (!quiet) this.say("The slide won't stick in this browser.");
@@ -257,9 +290,13 @@ export class Game {
     s.seen = { ...s.seen, ...data.seen };
     s.room = data.room || s.room;
     s.decals = data.decals || [];
-    for (const [id, door] of Object.entries(data.doors || {})) {
-      if (s.doors[id]) Object.assign(s.doors[id], door);
+    for (const [id, saved] of Object.entries(data.doors || {})) {
+      const st = s.doors[id];
+      if (!st) continue;
+      Object.assign(st, saved);
+      if (typeof saved.angle !== 'number') st.angle = st.open ? 1 : 0;
     }
+    this.normalizeDoors();
     for (const saved of data.enemies || []) {
       const enemy = s.enemies.find((item) => item.id === saved.id);
       if (!enemy) continue;
@@ -277,8 +314,9 @@ export class Game {
     s.screen = null;
     s.dead = false;
     s.won = false;
-    const roomName = ROOMS[s.room]?.name || '';
-    this.roomBanner = roomName ? { name: roomName, until: this.uiTime + 1.7 } : null;
+    this.captions.clear();
+    this.caption = null;
+    this.showRoom(ROOMS[s.room]?.name || '');
     this.snapCamera();
     this.say('The slide lets go. You are still here.');
   }
@@ -290,6 +328,14 @@ export class Game {
     this.cam.ready = true;
   }
 
+  armArrival() {
+    if (!this.state) return;
+    this.snapCamera();
+    if (!this.captionMotion()) return;
+    this.cam.x += 34;
+    this.cam.y += 16;
+  }
+
   update(dt) {
     if (!this.state) return;
     this.uiTime += dt;
@@ -297,20 +343,47 @@ export class Game {
     this.grinFlash = Math.max(0, this.grinFlash - dt * 1.15);
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.6);
     this.shake = Math.max(0, this.shake - dt * 2.2);
-    if (this.caption && this.uiTime > this.caption.until) this.caption = null;
-    if (this.state.screen || this.state.dead || this.state.won) {
-      this.audio.mix({ danger: 0.05, humVol: 0.004, humPan: 0, distorted: false });
-      return;
+    if (this.state.fx?.length) {
+      const age = Math.min(0.05, dt);
+      for (const bit of this.state.fx) bit.age += age;
+      this.state.fx = this.state.fx.filter((bit) => bit.age < bit.life);
+    }
+    const modal = this.state.screen
+      && this.state.screen.type !== 'dead'
+      && this.state.screen.type !== 'ending';
+    if (!this.state.dead && !this.state.won && !modal) {
+      this.caption = this.captions.advance(Math.min(0.05, dt), this.captionMotion());
     }
     const step = Math.min(0.033, dt);
+    const halted = !!(this.state.screen || this.state.dead || this.state.won);
+    this.playDirector(this.director.update(step, {
+      reduce: !!this.settings.reduceFlash,
+      danger: this.danger || 0,
+      time: this.time,
+    }));
+    if (halted) {
+      this.updateDoors(step);
+      this.audio.mix({
+        danger: 0.05,
+        humVol: 0.004,
+        humPan: 0,
+        distorted: !!this.state.flags.tookBaseKey,
+        room: this.state.room,
+        paused: true,
+        reduce: !!this.settings.reduceFlash,
+        time: this.time,
+      });
+      return;
+    }
     this.time += step;
+    this.updateDoors(step);
     this.updatePlayer(step);
     this.state.noises = this.state.noises.filter((noise) => noise.until > this.time);
     this.updateRoom();
     this.updateMom(step);
     this.updateCreak(step);
     for (const enemy of this.state.enemies) this.updateEnemy(enemy, step);
-    if (!this.state.dead && this.state.flags.finale && this.nearCar(22) && this.input.use) {
+    if (!this.state.dead && this.state.flags.finale && this.nearCar(CAR_LEAVE) && this.input.use) {
       this.state.hold += step;
       if (this.state.hold >= TUNING.holdTime) this.win();
     } else this.state.hold = Math.max(0, this.state.hold - step * 1.7);
@@ -322,6 +395,11 @@ export class Game {
     const p = this.state.player;
     if (p.iframes > 0) p.iframes -= dt;
     if (p.atk > 0) p.atk -= dt;
+    if (this.director.locked) {
+      p.moving = false;
+      if (p.dodge > 0) p.dodge -= dt;
+      return;
+    }
     if (p.dodge > 0) {
       p.dodge -= dt;
       this.tryMove(p, p.dodgeX * dt, p.dodgeY * dt, 9);
@@ -347,10 +425,10 @@ export class Game {
     if (moving) {
       if (!this.mouseAim) p.facing = Math.atan2(y, x);
       this.tryMove(p, x * speed * dt, y * speed * dt, 9);
-      p.step -= dt;
-      const interval = sneak ? 0.62 : run ? 0.28 : 0.44;
-      if (p.step <= 0) {
-        p.step = interval;
+      const prev = p.phase || 0;
+      const next = prev + dt * gaitRate(!!run, sneak && moving);
+      p.phase = next;
+      if (phaseMarksCrossed(prev, next, FOOT_MARKS) > 0) {
         this.audio.foot(floorName(this.tileAt(p.x, p.y)), sneak ? 0.25 : run ? 1 : 0.55);
         this.makeNoise(sneak ? 14 : run ? 100 : 46, 0.28);
       }
@@ -377,7 +455,13 @@ export class Game {
     const previous = this.state.room && ROOMS[this.state.room] ? ROOMS[this.state.room].name : '';
     this.state.room = id;
     this.state.seen[id] = true;
-    if (ROOMS[id].name !== previous) this.roomBanner = { name: ROOMS[id].name, until: this.uiTime + 1.7 };
+    if (ROOMS[id].name !== previous) this.showRoom(ROOMS[id].name);
+    const heavy = HEAVY_ROOMS.has(id);
+    this.director.requestTransition(`enter-${id}`, {
+      heavy,
+      once: heavy,
+      reduce: !!this.settings.reduceFlash,
+    });
     if (id === 'yard') this.state.flags.enteredYard = true;
     if (id === 'mom' && !this.state.flags.sawMom) {
       this.state.flags.sawMom = true;
@@ -389,22 +473,33 @@ export class Game {
     this.momTimer -= dt;
     if (this.momTimer > 0 || this.state.flags.finale) return;
     this.momTimer = 17 + Math.random() * 8;
-    const line = MOM_LINES[this.momIndex % MOM_LINES.length];
+    const lines = this.state.flags.tookBaseKey ? MOM_LINES_LATE : MOM_LINES;
+    const line = lines[this.momIndex % lines.length];
     this.momIndex += 1;
-    this.voice(this.state.flags.tookBaseKey ? glitch(line) : line);
+    this.voice(line);
   }
 
   updateCreak(dt) {
     this.creak -= dt;
     if (this.creak > 0) return;
-    this.creak = 8 + Math.random() * 9;
+    const room = this.state.room || 'default';
+    const heavy = HEAVY_ROOMS.has(room);
+    this.ambienceN += 1;
+    this.creak = (heavy ? 5.2 : 7.4) + (this.ambienceN % 5) * 0.7;
     const p = this.state.player;
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 90 + Math.random() * 120;
+    const angle = (this.ambienceN * 2.399963) % (Math.PI * 2);
+    const dist = 110 + (this.ambienceN % 4) * 28;
     const x = p.x + Math.cos(angle) * dist;
     const y = p.y + Math.sin(angle) * dist;
-    this.audio.creak(this.pan(x, y));
-    if (Math.random() < 0.55) this.ambient(`A board creaks ${this.dirPhrase(x, y)}.`);
+    const kind = this.audio.ambience?.({
+      room,
+      pan: this.pan(x, y),
+      danger: this.danger || 0,
+      index: this.ambienceN,
+    }) || 'creak';
+    if (kind === 'creak' && this.ambienceN % 2 === 0) {
+      this.ambient(`A board creaks ${this.dirPhrase(x, y)}.`);
+    }
   }
 
   updateEnemy(enemy, dt) {
@@ -425,8 +520,7 @@ export class Game {
       enemy.goalY = player.y;
       if (enemy.kind === 'grin' && this.beamTouches(enemy) && !enemy.revealed) {
         enemy.revealed = true;
-        this.spook('grin');
-        this.audio.stinger();
+        this.scare('grin-reveal', { story: true, face: true, weight: 1 });
         this.say('The smile.');
       }
     } else if (enemy.state === 'chase') {
@@ -463,7 +557,10 @@ export class Game {
     const before = enemy.x + enemy.y;
     this.steer(enemy, goal, dt);
     if (Math.abs(enemy.x + enemy.y - before) < 0.35) enemy.stuck += dt;
-    else enemy.stuck = 0;
+    else {
+      enemy.stuck = 0;
+      this.plantEnemy(enemy, dt);
+    }
     if (enemy.stuck > 0.7) {
       enemy.stuck = 0;
       enemy.path = null;
@@ -488,8 +585,7 @@ export class Game {
     enemy.awake = true;
     enemy.state = 'chase';
     if (enemy.lightWake) this.ambient('Something in the kitchen moves.');
-    if (enemy.id === 'yardbug') this.ambient('Something is in the yard with you.');
-    if (enemy.flag === 'tookCarKeys') this.ambient('The dining room answers.');
+    if (enemy.id === 'yardbug') this.ambient('Something in the yard is with you.');
   }
 
   detection(enemy, distance) {
@@ -509,24 +605,22 @@ export class Game {
     const tx = Math.floor((enemy.x + Math.cos(angle) * 14) / TILE);
     const ty = Math.floor((enemy.y + Math.sin(angle) * 14) / TILE);
     const door = this.world.doorAt.get(`${tx},${ty}`);
-    if (!door || this.state.doors[door.id].open || !this.doorMayCross(door)) {
+    const st = door && this.state.doors[door.id];
+    const blocked = door && st && bodyBlocked(door, st, (door.x + 0.5) * TILE, (door.y + 0.5) * TILE, 10);
+    if (!door || !st || !blocked || !this.doorMayCross(door)) {
       enemy.openingDoor = null;
       return false;
     }
     if (enemy.openingDoor !== door.id) {
       enemy.openingDoor = door.id;
-      enemy.opening = enemy.kind === 'grin' ? 0.4 : 1.05;
-      this.audio.creak(this.pan(tx * TILE, ty * TILE));
+      enemy.opening = enemy.kind === 'grin' ? 0.22 : 0.4;
+      this.audio.rattle(this.pan(tx * TILE, ty * TILE));
       if (Math.hypot(enemy.x - this.state.player.x, enemy.y - this.state.player.y) < 260) {
         this.ambient(`A handle turns ${this.dirPhrase(tx * TILE, ty * TILE)}.`);
       }
     }
     enemy.opening -= dt;
-    if (enemy.opening <= 0) {
-      this.state.doors[door.id].open = true;
-      enemy.openingDoor = null;
-      this.audio.door();
-    }
+    if (enemy.opening <= 0) st.open = true;
     return true;
   }
 
@@ -664,7 +758,15 @@ export class Game {
     if (tile === 9) {
       const door = this.world.doorAt.get(`${tx},${ty}`);
       if (!door) return true;
-      return !this.state.doors[door.id]?.open;
+      const st = this.state.doors[door.id];
+      if (st && doorBlocksPoint(door, st, px, py)) return true;
+    }
+    const pocket = this.world.pocketAt?.get(`${tx},${ty}`);
+    if (pocket) {
+      for (const door of pocket) {
+        const st = this.state.doors[door.id];
+        if (st && doorBlocksPoint(door, st, px, py)) return true;
+      }
     }
     return false;
   }
@@ -703,10 +805,7 @@ export class Game {
     const fall = Math.max(0, 1 - distance / TUNING.lightRange);
     const cone = diff < TUNING.cone ? 1 - diff / TUNING.cone : 0;
     let beam = fall * (0.22 + 0.78 * cone);
-    if (p.battery < 16) {
-      const flick = this.settings.reduceFlash ? 0.72 : 0.45 + 0.55 * Math.abs(Math.sin(this.time * 26));
-      beam *= flick;
-    }
+    beam *= flashlightFlicker(this.time, p.battery, this.settings.reduceFlash);
     return Math.min(1, Math.max(ambient, beam));
   }
 
@@ -732,7 +831,7 @@ export class Game {
   toggleLight() {
     if (!this.state || this.state.screen) return;
     if (!this.state.hasLight) {
-      this.say('No light yet.');
+      this.say('No light yet. The foyer has one.');
       return;
     }
     const p = this.state.player;
@@ -789,7 +888,7 @@ export class Game {
     let damage = def.dmg;
     if (slot && def.dur != null && slot.dur <= 0) {
       damage = 6;
-      this.say(slot.id === 'stick' ? 'The shaft is cracked. It needs tape.' : 'Nothing left of it.');
+      this.say(slot.id === 'stick' ? 'The shaft is cracked. It needs the tape.' : 'Nothing left of it.');
     }
     p.atk = def.cool;
     this.audio.swing();
@@ -804,24 +903,29 @@ export class Game {
       slot.dur -= 1;
       if (slot.dur <= 0 && slot.id === 'knife') {
         this.say('The blade snaps.');
+        this.audio.cue?.('knife', 'break');
         this.removeAt(index);
-      } else if (slot.dur <= 0) this.say('The stick cracks.');
+      } else if (slot.dur <= 0) {
+        this.say('The stick cracks.');
+        this.audio.cue?.('stick', 'break');
+      }
     }
   }
 
   shoot(def) {
     const ammoIndex = this.state.inv.findIndex((slot) => slot.id === 'ammo' && slot.count > 0);
-    if (ammoIndex < 0) {
-      this.say('Empty.');
-      return;
-    }
+      if (ammoIndex < 0) {
+        this.say('The cylinder is empty.');
+        this.audio.cue?.('pistol', 'empty');
+        return;
+      }
     this.state.inv[ammoIndex].count -= 1;
     if (this.state.inv[ammoIndex].count <= 0) this.removeAt(ammoIndex);
     const p = this.state.player;
     p.atk = def.cool;
     this.audio.shot();
     this.makeNoise(def.noise, 1.05);
-    this.shake = 1;
+    this.director.bump(9, Math.cos(p.facing), Math.sin(p.facing));
     let best = null;
     let bestD = Infinity;
     for (const enemy of this.state.enemies) {
@@ -856,7 +960,7 @@ export class Game {
       enemy.stunUntil = this.time + (enemy.kind === 'grin' ? 3.2 : 2.2);
       stunned += 1;
     }
-    this.say(stunned ? 'The bulb pops. It flinches.' : 'The bulb pops on an empty room.');
+    this.say(stunned ? 'The bulb pops. It flinches.' : 'The bulb pops. The room is empty.');
   }
 
   inArc(enemy, range, arc) {
@@ -887,7 +991,9 @@ export class Game {
       enemy.speed = Math.min(150, ENEMY.grin.speed + enemy.risen * 8);
       enemy.state = 'chase';
       this.say('It falls. The smile stays.');
-      this.audio.stinger();
+      if (!this.scare('grin-down', { story: true, face: false, weight: 0.7 }) && this.director.fired.has('grin-down')) {
+        this.audio.dread?.();
+      }
       return;
     }
     enemy.alive = false;
@@ -901,13 +1007,13 @@ export class Game {
     p.hp = Math.max(0, p.hp - amount);
     p.iframes = TUNING.meleeIFrames;
     p.stamina = Math.max(0, p.stamina - 18);
-    this.shake = 1;
     this.hurtFlash = 0.28;
     this.audio.hurt();
     this.rumble(0.7, 140);
     const dx = p.x - from.x;
     const dy = p.y - from.y;
     const mag = Math.hypot(dx, dy) || 1;
+    this.director.bump(11, dx / mag, dy / mag);
     this.tryMove(p, (dx / mag) * 16, (dy / mag) * 16, 9);
     if (p.hp <= 0) this.die();
     else this.say(from.kind === 'grin' ? 'The smile is on you.' : 'Something touches you.', 4);
@@ -916,21 +1022,38 @@ export class Game {
   die() {
     this.state.dead = true;
     this.state.screen = { type: 'dead' };
-    this.audio.stinger();
-    this.spook('grin');
+    this.captions.clear();
+    this.caption = null;
+    this.scare('death', {
+      story: true,
+      face: true,
+      preempt: true,
+      weight: 1,
+      buildup: 0.18,
+      silence: 0.08,
+      aftermath: 1.2,
+    });
   }
 
   win() {
     if (this.state.dead) return;
     this.state.won = true;
     this.state.screen = { type: 'ending' };
+    this.captions.clear();
+    this.caption = null;
+    this.director.requestTransition('ending', {
+      calm: true,
+      once: true,
+      reduce: !!this.settings.reduceFlash,
+    });
+    this.audio.resolve?.();
     try { localStorage.removeItem(SAVE_KEY); } catch { /* a private window can refuse */ }
   }
 
   use() {
     if (!this.state || this.state.dead || this.state.won) return;
     if (this.state.screen) return;
-    if (this.state.flags.finale && this.nearCar(28)) return;
+    if (this.state.flags.finale && this.nearCar(CAR_LEAVE)) return;
     const hit = this.nearest();
     if (!hit) return;
     hit.apply();
@@ -958,12 +1081,8 @@ export class Game {
     }
     for (const door of this.world.doors) {
       const st = this.state.doors[door.id];
-      let label = st.open ? (door.sticky ? 'Open doorway' : 'Close door') : 'Open door';
-      if (!st.open && door.lock === 'power' && !this.state.flags.powerOn && !st.unlocked) label = 'Dead motor';
-      else if (!st.open && door.lock && door.lock !== 'power' && !st.unlocked) {
-        label = this.has(door.lock) ? 'Unlock' : 'Locked door';
-      }
-      consider((door.x + 0.5) * TILE, (door.y + 0.5) * TILE, label, () => this.useDoor(door));
+      const point = interactPoint(door, st);
+      consider(point.x, point.y, this.doorLabel(door, st), () => this.useDoor(door));
     }
     if (this.nearCar(18)) {
       const label = this.state.flags.finale ? 'Get in' : 'The car';
@@ -974,12 +1093,35 @@ export class Game {
 
   prompt() {
     if (!this.state || this.state.screen || this.state.dead) return null;
-    if (this.state.flags.finale && this.nearCar(28)) {
+    if (this.state.flags.finale && this.nearCar(CAR_LEAVE)) {
       return { text: 'HOLD E TO GO', fill: this.state.hold / TUNING.holdTime };
     }
     const hit = this.nearest();
     if (!hit) return null;
     return { text: `E  ${hit.label}`, fill: 0 };
+  }
+
+  doorOther(door) {
+    const rooms = [];
+    for (const [dx, dy] of DIRS) {
+      const id = roomAt(door.x + dx, door.y + dy);
+      if (id && !rooms.includes(id)) rooms.push(id);
+    }
+    const other = rooms.find((id) => id !== this.state.room) || rooms[0];
+    return other && ROOMS[other] ? ROOMS[other].name : 'Door';
+  }
+
+  doorLabel(door, st) {
+    const name = this.doorOther(door);
+    if (!st.open) {
+      if (door.lock === 'power' && !this.state.flags.powerOn && !st.unlocked) return 'Yard door, dead';
+      if (door.lock && door.lock !== 'power' && !st.unlocked) {
+        return this.has(door.lock) ? `Unlock ${name}` : `${name}, locked`;
+      }
+      return name;
+    }
+    if (door.sticky) return 'Yard door, open';
+    return 'Close door';
   }
 
   nearCar(pad) {
@@ -994,40 +1136,166 @@ export class Game {
 
   useDoor(door) {
     const st = this.state.doors[door.id];
-    if (!st.open) {
-      if (door.lock === 'power' && !this.state.flags.powerOn && !st.unlocked) {
+    const plan = planDoorUse(door, st, {
+      has: (id) => this.has(id),
+      powerOn: !!this.state.flags.powerOn,
+    });
+    if (plan.action === 'rattle') {
+      st.rattle = Math.max(st.rattle, 0.42);
+      st.rattleSent = 0;
+      if (plan.say === 'no-power') {
         this.say('The motor is dead. Seat the fuse in the car.');
         return;
       }
-      if (door.lock && door.lock !== 'power' && !st.unlocked) {
-        if (!this.has(door.lock)) {
-          const lines = {
-            'key-her': 'Her door. Locked.',
-            'key-base': 'The basement. Locked. Cold air under the door.',
-            'key-shed': 'The shed is locked.',
-          };
-          this.say(lines[door.lock] || 'Locked.');
-          return;
-        }
-        this.consume(door.lock);
-        st.unlocked = true;
-        st.open = true;
-        this.audio.door();
-        this.makeNoise(72, 0.35);
-        this.say('The lock gives.');
-        return;
-      }
+      const lines = {
+        'key-her': 'Her door. Locked.',
+        'key-base': 'The basement. Locked. Cold air under the door.',
+        'key-shed': 'The shed is locked.',
+      };
+      this.say(lines[door.lock] || 'Locked.');
+      return;
+    }
+    if (plan.action === 'refuse') {
+      this.say('The yard door is up. Leave it.');
+      return;
+    }
+    if (plan.action === 'unlock') {
+      this.consume(plan.consume);
+      st.unlocked = true;
       st.open = true;
-      this.audio.door();
-      this.makeNoise(60, 0.3);
+      this.audio.cue?.(plan.consume, 'use');
+      this.makeNoise(72, 0.35);
+      this.say('The lock gives.');
       return;
     }
-    if (door.sticky) {
-      this.say('The door is up. Leave it.');
+    if (plan.action === 'open') {
+      st.open = true;
+      this.makeNoise(plan.noise || 60, 0.3);
       return;
     }
+    if (!this.clearOf(door)) {
+      this.say('The door meets you.');
+      return;
+    }
+    this.nudgeDrops(door);
     st.open = false;
-    this.audio.door();
+  }
+
+  normalizeDoors() {
+    for (const door of this.world.doors) {
+      const st = this.state.doors[door.id];
+      if (!st) continue;
+      if (typeof st.angle !== 'number' || Number.isNaN(st.angle)) st.angle = st.open ? 1 : 0;
+      st.angle = Math.max(0, Math.min(1, st.angle));
+      st.vel = 0;
+      st.rattle = 0;
+      st.rattleSent = 0;
+      st.slam = false;
+      st.pendingSlam = false;
+      st.latched = st.angle < 0.05;
+      st.arrivedOpen = st.angle > 0.95;
+      st.frame = Math.round(st.angle * SWING_FRAMES);
+      syncDoorMotion(door, st);
+    }
+  }
+
+  updateDoors(dt) {
+    const reduce = !!this.settings.reduceFlash;
+    for (const door of this.world.doors) {
+      const st = this.state.doors[door.id];
+      if (!st) continue;
+      const wasShut = st.block === 'tile' || (door.kind === 'overhead' && bodyBlocked(door, st, (door.x + 0.5) * TILE, (door.y + 0.5) * TILE, 8));
+      const events = stepDoor(door, st, dt, { reduce });
+      const shut = st.block === 'tile' || (door.kind === 'overhead' && bodyBlocked(door, st, (door.x + 0.5) * TILE, (door.y + 0.5) * TILE, 8));
+      if (!wasShut && shut) this.ejectDoor(door);
+      if (!events.length) continue;
+      const pan = this.pan((door.x + 0.5) * TILE, (door.y + 0.5) * TILE);
+      const dist = Math.hypot((door.x + 0.5) * TILE - this.state.player.x, (door.y + 0.5) * TILE - this.state.player.y);
+      const gain = dist < 48 ? 1 : Math.max(0.18, 1 - (dist - 48) / 380);
+      for (const ev of events) this.playDoorEvent(ev, pan, gain);
+    }
+  }
+
+  playDoorEvent(ev, pan, gain) {
+    const audio = this.audio;
+    const strength = (ev.intensity ?? 1) * gain;
+    if (ev.type === 'creak') audio.doorCreak?.(pan, strength);
+    else if (ev.type === 'latch') audio.latch?.(pan);
+    else if (ev.type === 'slam') {
+      audio.slam?.(pan);
+      if (gain > 0.45) this.director.bump(8 * gain, pan, 0.15);
+    } else if (ev.type === 'thud') audio.thud?.(pan);
+    else if (ev.type === 'rattle' || ev.type === 'motor-rattle') audio.rattle?.(pan);
+    else if (ev.type === 'motor') audio.motorTick?.(pan, strength);
+    else if (ev.type === 'motor-stop') audio.motor?.(pan);
+  }
+
+  ejectDoor(door) {
+    const ents = [this.state.player, ...this.state.enemies];
+    for (const ent of ents) {
+      if (Math.floor(ent.x / TILE) !== door.x || Math.floor(ent.y / TILE) !== door.y) continue;
+      let best = null;
+      for (const side of door.passage || []) {
+        const x = (side.x + 0.5) * TILE;
+        const y = (side.y + 0.5) * TILE;
+        const dist = Math.hypot(ent.x - x, ent.y - y);
+        if (!best || dist < best.dist) best = { x, y, dist };
+      }
+      if (!best) continue;
+      ent.x = best.x;
+      ent.y = best.y;
+    }
+  }
+
+  clearOf(door) {
+    const p = this.state.player;
+    if (Math.floor(p.x / TILE) !== door.x || Math.floor(p.y / TILE) !== door.y) return true;
+    let best = null;
+    for (const [dx, dy] of DIRS) {
+      const x = (door.x + dx + 0.5) * TILE;
+      const y = (door.y + dy + 0.5) * TILE;
+      if (this.tileBlocks(x, y)) continue;
+      const dist = Math.hypot(x - p.x, y - p.y);
+      if (!best || dist < best.dist) best = { x, y, dist };
+    }
+    if (!best) return false;
+    p.x = best.x;
+    p.y = best.y;
+    return true;
+  }
+
+  nudgeDrops(door) {
+    for (const drop of this.state.dropped) {
+      if (Math.floor(drop.x / TILE) !== door.x || Math.floor(drop.y / TILE) !== door.y) continue;
+      drop.x = this.state.player.x;
+      drop.y = this.state.player.y;
+    }
+  }
+
+  dropSpot() {
+    const p = this.state.player;
+    const tries = [
+      [Math.cos(p.facing) * 18, Math.sin(p.facing) * 18],
+      [0, 0],
+      [16, 0],
+      [-16, 0],
+      [0, 16],
+      [0, -16],
+    ];
+    for (const [dx, dy] of tries) {
+      const x = p.x + dx;
+      const y = p.y + dy;
+      if (!this.tileBlocks(x, y)) return { x, y };
+    }
+    return { x: p.x, y: p.y };
+  }
+
+  feedback(id, x, y, verb) {
+    if (!id) return;
+    this.audio.cue?.(id, verb);
+    if (!this.state.fx) this.state.fx = [];
+    this.state.fx.push({ id, x, y, age: 0, life: verb === 'take' ? 0.34 : 0.26 });
+    if (this.state.fx.length > 6) this.state.fx.shift();
   }
 
   useProp(prop) {
@@ -1036,19 +1304,19 @@ export class Game {
       this.state.player.lightOn = true;
       this.state.player.battery = Math.max(this.state.player.battery, 82);
       this.state.taken[prop.id] = true;
-      this.audio.pickup();
-      this.say('Flashlight. F toggles it. It will not last.');
+      this.feedback('flashlight', (prop.x + 0.5) * TILE, (prop.y + 0.5) * TILE, 'take');
+      this.say('Flashlight. It will not last.');
       return;
     }
     if (prop.kind === 'battery') {
       if (this.state.player.battery >= 99) {
-        this.say('The flashlight is already full.');
+        this.say(this.state.hasLight ? 'The flashlight is already full.' : 'Those can wait until you have the light.');
         return;
       }
       this.state.player.battery = Math.min(100, this.state.player.battery + 55);
       this.state.taken[prop.id] = true;
-      this.audio.pickup();
-      this.say('You change the batteries.');
+      this.feedback('battery', (prop.x + 0.5) * TILE, (prop.y + 0.5) * TILE, 'take');
+      this.say(this.state.hasLight ? 'Fresh batteries. The beam steadies.' : 'Batteries. They wait for the flashlight.');
       return;
     }
     if (prop.kind === 'pickup') {
@@ -1057,7 +1325,7 @@ export class Game {
         return;
       }
       this.state.taken[prop.id] = true;
-      this.audio.pickup();
+      this.feedback(prop.item, (prop.x + 0.5) * TILE, (prop.y + 0.5) * TILE, 'take');
       this.say(`${ITEMS[prop.item].name}.`);
       this.storyItem(prop.item);
       return;
@@ -1081,21 +1349,26 @@ export class Game {
     if (prop.kind === 'stash') {
       this.state.selected = 0;
       this.state.screen = { type: 'stash' };
+      this.audio.cue?.('bin', 'use');
       return;
     }
     if (prop.kind === 'car') this.openCar();
-    if (prop.kind === 'board') this.state.screen = { type: 'board' };
+    if (prop.kind === 'board') {
+      this.state.screen = { type: 'board' };
+      this.audio.cue?.('clipboard', 'use');
+    }
   }
 
   search(prop) {
     const items = this.state.containers[prop.id];
     if (!items?.length) {
-      this.say('Empty.');
+      this.say('Nothing left in it.');
       return;
     }
     const next = items[0];
     if (next.note) {
       items.shift();
+      this.audio.cue?.(prop.id === 'cabinet' ? 'cabinet' : 'gearbag', 'use');
       this.openNote(next.note);
       return;
     }
@@ -1104,7 +1377,8 @@ export class Game {
       return;
     }
     items.shift();
-    this.audio.pickup();
+    this.audio.cue?.(prop.id === 'cabinet' ? 'cabinet' : 'gearbag', 'use');
+    this.feedback(next.item, (prop.x + 0.5) * TILE, (prop.y + 0.5) * TILE, 'take');
     this.say(`${ITEMS[next.item].name}.`);
     this.storyItem(next.item);
   }
@@ -1112,68 +1386,80 @@ export class Game {
   openNote(id) {
     this.state.flags.read[id] = true;
     this.state.screen = { type: 'note', id };
-    this.audio.pickup();
+    this.audio.cue?.(`note-${id}`, 'use');
   }
 
   openInspect(id) {
     if (id === 'tv') {
       this.state.flags.tv += 1;
       if (this.state.flags.tv === 1) {
-        this.spook('grin');
+        this.scare('tv', { story: true, face: true, weight: 1 });
         this.say('The smile is in the glass.');
       } else {
         this.hurt(8, { kind: 'grin', x: this.state.player.x + 8, y: this.state.player.y });
-        this.spook('grin');
         if (this.state.dead) return;
+        if (this.state.flags.tv === 2) this.scare('tv-again', { story: true, face: true, weight: 0.85 });
         this.say('You looked again.');
       }
     }
     if (id === 'mirror' && !this.state.flags.mirror) {
       this.state.flags.mirror = true;
-      this.spook('grin');
+      this.scare('mirror', { story: true, face: true, weight: 0.9 });
     }
     this.state.screen = { type: 'inspect', id };
+    this.audio.cue?.(`look-${id}`, 'use');
   }
 
   openCar() {
     if (this.state.flags.finale) return;
     this.state.screen = { type: 'car' };
+    this.audio.cue?.('handle', 'use');
   }
 
   storyItem(id) {
     const flags = this.state.flags;
     if (id === 'key-base' && !flags.tookBaseKey) {
       flags.tookBaseKey = true;
-      this.say('The sweater is warm. The breathing on the bed is not.');
-      this.audio.stinger();
+      this.say('The sweater is warm. The bed is breathing.');
+      this.scare('base-key', { story: true, face: false, weight: 0.55, buildup: 0.45 });
     }
     if (id === 'key-car' && !flags.tookCarKeys) {
       flags.tookCarKeys = true;
-      if (this.state.doors.her) this.state.doors.her.open = false;
-      this.say('Her door slams. Something in the dining room answers.');
-      this.audio.door();
+      if (this.state.doors.her) {
+        const door = this.world.doors.find((item) => item.id === 'her');
+        const st = this.state.doors.her;
+        if (!door || this.clearOf(door)) {
+          st.open = false;
+          st.slam = true;
+          if (st.angle <= 0.02) st.pendingSlam = true;
+        }
+      }
+      this.say('Her door slams. The dining room answers.');
     }
     if (id === 'fuse' && !flags.tookFuse) {
       flags.tookFuse = true;
       flags.darker = true;
-      this.say('The emergency lights die. Somewhere, a smile opens.');
-      this.audio.stinger();
-      this.spook('grin');
+      this.say('The house goes dark. Somewhere, a smile opens.');
+      this.scare('fuse-dark', { story: true, face: true, weight: 1 });
     }
     if (id === 'gas' && !flags.tookGas) {
       flags.tookGas = true;
       this.makeNoise(420, 1.3);
       this.say('The can sloshes. It hears you.');
-      this.audio.stinger();
+      this.scare('gas', { story: true, face: false, weight: 0.65 });
     }
   }
 
   install(part) {
     if (!this.state || this.state.flags.finale) return;
+    if (!this.nearCar(18)) {
+      this.say('That goes in the car.');
+      return;
+    }
     const installed = this.state.installed;
     if (part === 'photo') {
       if (!installed.fuse || !installed.keys || !installed.gas) {
-        this.say("The car is still dead. A picture won't drive it.");
+        this.say('The car is still dead. A picture will not drive it.');
         return;
       }
       const index = this.state.inv.findIndex((slot) => slot.id === 'camera');
@@ -1188,25 +1474,24 @@ export class Game {
     }
     const need = { fuse: 'fuse', keys: 'key-car', gas: 'gas' };
     if (installed[part]) {
-      this.say('Already in.');
+      this.say('Already in the car.');
       return;
     }
     if (!this.has(need[part])) {
-      this.say("You don't have it on you.");
+      this.say('It is not in your hands.');
       return;
     }
     this.consume(need[part]);
     installed[part] = true;
-    this.audio.pickup();
+    this.feedback(need[part], this.state.player.x, this.state.player.y, 'use');
     if (part === 'fuse') {
       this.state.flags.powerOn = true;
       this.state.doors.yard.open = true;
       this.state.doors.yard.unlocked = true;
       this.makeNoise(150, 0.7);
-      this.audio.door();
       this.say('The motor grinds. The yard door stays up.');
     } else if (part === 'keys') this.say('The key turns. The dash stays dark.');
-    else this.say('The can empties into the tank. The gauge climbs off E.');
+    else this.say('The can empties into the tank. The needle climbs off E.');
   }
 
   beginFinale() {
@@ -1225,98 +1510,126 @@ export class Game {
     this.save(true);
     this.say('The shutter sounds like a door. Get in.');
     this.audio.shutter();
-    this.audio.stinger();
+    this.director.requestTransition('finale', {
+      heavy: true,
+      once: true,
+      reduce: !!this.settings.reduceFlash,
+    });
   }
 
   useSave() {
     const index = this.state.inv.findIndex((slot) => slot.id === 'film' && slot.count > 0);
     if (index < 0) {
       this.say('No film. The bench takes one slide.');
+      this.audio.cue?.('film', 'empty');
       return;
     }
+    const backup = this.state.inv.map((slot) => ({ ...slot }));
+    const equipped = this.state.equipped;
+    const selected = this.state.selected;
     const slot = this.state.inv[index];
     slot.count -= 1;
     if (slot.count <= 0) this.removeAt(index);
-    if (this.save(false)) {
-      this.audio.shutter();
-      this.spook('white');
+    if (!this.save(false)) {
+      this.state.inv = backup;
+      this.state.equipped = equipped;
+      this.state.selected = selected;
+      return;
+    }
+    this.audio.cue?.('film', 'use');
+    this.spook('white');
+  }
+
+  spaceFor(id) {
+    const def = ITEMS[id];
+    if (!def) return 0;
+    if (!def.stack) return this.state.inv.length < TUNING.slots ? 1 : 0;
+    let room = 0;
+    for (const slot of this.state.inv) {
+      if (slot.id === id) room += Math.max(0, def.stack - (slot.count || 0));
+    }
+    room += (TUNING.slots - this.state.inv.length) * def.stack;
+    return room;
+  }
+
+  commit(id, count, extra = null) {
+    const def = ITEMS[id];
+    let left = count;
+    if (def.stack) {
+      for (const slot of this.state.inv) {
+        if (slot.id !== id || (slot.count || 0) >= def.stack) continue;
+        const moved = Math.min(def.stack - slot.count, left);
+        slot.count += moved;
+        left -= moved;
+        if (left <= 0) return;
+      }
+    }
+    while (left > 0 && this.state.inv.length < TUNING.slots) {
+      const n = def.stack ? Math.min(def.stack, left) : left;
+      this.state.inv.push({
+        id,
+        count: def.stack ? n : extra?.count || n,
+        dur: extra?.dur ?? def.dur ?? null,
+        flashes: extra?.flashes ?? def.flashes ?? null,
+      });
+      if (this.state.equipped < 0 && (def.type === 'weapon' || def.type === 'camera')) {
+        this.state.equipped = this.state.inv.length - 1;
+      }
+      left -= def.stack ? n : left;
+      if (!def.stack) break;
     }
   }
 
   give(id, count = 1) {
-    const def = ITEMS[id];
-    if (!def) return false;
-    if (def.stack) {
-      const slot = this.state.inv.find((item) => item.id === id && item.count < def.stack);
-      if (slot) {
-        slot.count = Math.min(def.stack, slot.count + count);
-        return true;
-      }
-    }
-    if (this.state.inv.length >= TUNING.slots) return false;
-    this.state.inv.push({
-      id,
-      count,
-      dur: def.dur ?? null,
-      flashes: def.flashes ?? null,
-    });
-    if (this.state.equipped < 0 && (def.type === 'weapon' || def.type === 'camera')) {
-      this.state.equipped = this.state.inv.length - 1;
-    }
+    if (this.spaceFor(id) < count) return false;
+    this.commit(id, count);
     return true;
   }
 
   giveSlot(slot) {
     const def = ITEMS[slot.id];
-    if (def?.stack) {
-      const have = this.state.inv.find((item) => item.id === slot.id && item.count < def.stack);
-      if (have) {
-        have.count = Math.min(def.stack, have.count + slot.count);
-        return true;
+    const count = slot.count || 1;
+    if (!def || this.spaceFor(slot.id) < count) return false;
+    if (!def.stack) {
+      this.state.inv.push(slot);
+      if (this.state.equipped < 0 && (def.type === 'weapon' || def.type === 'camera')) {
+        this.state.equipped = this.state.inv.length - 1;
       }
+      return true;
     }
-    if (this.state.inv.length >= TUNING.slots) return false;
-    this.state.inv.push(slot);
-    if (this.state.equipped < 0 && (def?.type === 'weapon' || def?.type === 'camera')) {
-      this.state.equipped = this.state.inv.length - 1;
-    }
+    this.commit(slot.id, count, slot);
     return true;
   }
 
   pickupDrop(drop) {
     const slot = drop.slot;
     const def = ITEMS[slot.id];
-    if (def?.stack) {
-      const have = this.state.inv.find((item) => item.id === slot.id && item.count < def.stack);
-      if (have) {
-        const room = def.stack - have.count;
-        const moved = Math.min(room, slot.count);
-        have.count += moved;
-        slot.count -= moved;
-        if (slot.count <= 0) this.state.dropped = this.state.dropped.filter((item) => item !== drop);
-        this.audio.pickup();
-        this.say(`${def.name}.`);
-        return;
-      }
-    }
-    if (this.state.inv.length >= TUNING.slots) {
+    const count = slot.count || 1;
+    if (this.spaceFor(slot.id) <= 0) {
       this.handsFull();
       return;
     }
-    this.state.inv.push(slot);
-    this.state.dropped = this.state.dropped.filter((item) => item !== drop);
-    if (this.state.equipped < 0 && (def?.type === 'weapon' || def?.type === 'camera')) {
-      this.state.equipped = this.state.inv.length - 1;
+    if (!def?.stack) {
+      this.state.inv.push(slot);
+      this.state.dropped = this.state.dropped.filter((item) => item !== drop);
+      if (this.state.equipped < 0 && (def?.type === 'weapon' || def?.type === 'camera')) {
+        this.state.equipped = this.state.inv.length - 1;
+      }
+    } else {
+      const moved = Math.min(count, this.spaceFor(slot.id));
+      this.commit(slot.id, moved, slot);
+      slot.count -= moved;
+      if (slot.count <= 0) this.state.dropped = this.state.dropped.filter((item) => item !== drop);
     }
-    this.audio.pickup();
-    this.say(`${def.name}.`);
+    this.feedback(slot.id, drop.x, drop.y, 'take');
+    this.say(`${def?.name || 'Item'}.`);
   }
 
   handsFull() {
     if (this.state.flags.toldFull) this.say('Your hands are full.');
     else {
       this.state.flags.toldFull = true;
-      this.say('Your hands are full. The garage bin holds the rest.');
+      this.say('Your hands are full. The bin in the garage can take the rest.');
     }
   }
 
@@ -1365,33 +1678,45 @@ export class Game {
       finale: this.state.flags.finale,
       room: this.state.room,
       tookBaseKey: this.state.flags.tookBaseKey,
+      herOpen: !!this.state.doors.her?.unlocked,
+      shedOpen: !!this.state.doors.shed?.unlocked,
     });
   }
 
   toggleInv() {
     if (!this.state || this.state.dead || this.state.won) return;
-    if (this.state.screen?.type === 'inventory') this.state.screen = null;
-    else {
+    if (this.state.screen?.type === 'inventory') {
+      this.state.screen = null;
+      this.audio.ui?.('close');
+    } else {
       this.state.selected = Math.min(this.state.selected, Math.max(0, this.state.inv.length - 1));
       this.state.screen = { type: 'inventory' };
+      this.audio.ui?.('open');
     }
   }
 
   openMap() {
     if (!this.state || this.state.screen) return;
     this.state.screen = { type: 'map' };
+    this.audio.ui?.('open');
   }
 
   openPause() {
     if (!this.state || this.state.dead || this.state.won) return;
-    if (this.state.screen?.type === 'pause') this.state.screen = null;
-    else this.state.screen = { type: 'pause' };
+    if (this.state.screen?.type === 'pause') {
+      this.state.screen = null;
+      this.audio.ui?.('close');
+    } else {
+      this.state.screen = { type: 'pause' };
+      this.audio.ui?.('heavy');
+    }
   }
 
   closeScreen() {
     if (!this.state?.screen) return;
     if (this.state.screen.type === 'dead' || this.state.screen.type === 'ending') return;
     this.state.screen = null;
+    this.audio.ui?.('close');
   }
 
   nudgeSel(dir) {
@@ -1409,13 +1734,14 @@ export class Game {
       this.state.player.hp = Math.min(100, this.state.player.hp + def.heal);
       slot.count -= 1;
       if (slot.count <= 0) this.removeAt(index);
-      this.audio.pickup();
+      this.feedback(slot.id, this.state.player.x, this.state.player.y, 'use');
       this.say('The shaking eases. A little.');
       return;
     }
     if (def.type === 'weapon' || def.type === 'camera') {
       this.state.equipped = index;
-      this.say(`${def.name} ready.`);
+      this.audio.cue?.(slot.id, 'use');
+      this.say(`${def.name}, in your hands.`);
       return;
     }
     if (def.type === 'tape') {
@@ -1426,6 +1752,7 @@ export class Game {
       }
       stick.dur = ITEMS.stick.dur;
       this.removeAt(index);
+      this.feedback('tape', this.state.player.x, this.state.player.y, 'use');
       this.say('The stick is solid again.');
       return;
     }
@@ -1442,11 +1769,18 @@ export class Game {
         const dy = this.state.player.y - grin.y;
         const distance = Math.hypot(dx, dy) || 1;
         if (distance > 90) this.tryMove(grin, (dx / distance) * 64, (dy / distance) * 64, grin.radius);
-        this.say('It got closer.');
-        this.audio.stinger();
-      } else this.say('The face is closer than the trees.');
+        this.say('It is closer now.');
+        this.scare('grin-closer', {
+          once: false,
+          face: true,
+          weight: 0.85,
+          buildup: 0.28,
+          silence: 0.08,
+          aftermath: 0.8,
+        });
+      } else this.say('In the picture, the face is closer than the trees.');
     } else if (flags.cameraLooks === 2) this.say('The smile is closer than it was.');
-    else this.say('Ben, on the trail. Something in the background is wrong.');
+    else this.say("A hat. A trail. That isn't Ben. The trees behind him are wrong.");
   }
 
   dropSelected() {
@@ -1455,14 +1789,14 @@ export class Game {
     if (!slot) return;
     this.state.inv.splice(index, 1);
     this.fixIndex(index);
-    const p = this.state.player;
+    const spot = this.dropSpot();
     this.state.dropped.push({
       id: `d${this.dropN++}`,
-      x: p.x + Math.cos(p.facing) * 16,
-      y: p.y + Math.sin(p.facing) * 16,
+      x: spot.x,
+      y: spot.y,
       slot,
     });
-    this.say('Dropped.');
+    this.say('You set it down.');
   }
 
   storeSelected() {
@@ -1534,15 +1868,44 @@ export class Game {
       humVol: this.state.flags.finale ? 0.02 : 0.012 * (0.35 + hum),
       humPan: this.pan(humX, humY),
       distorted: !!this.state.flags.tookBaseKey,
+      room: this.state.room,
+      reduce: !!this.settings.reduceFlash,
+      time: this.time,
     });
-    if (danger > 0.22) this.audio.heart(danger);
+    this.danger = danger;
+    if (danger > 0.22 && this.director.mode === 'idle') this.audio.heart(danger);
+  }
+
+  captionMotion() {
+    if (this.settings.reduceFlash) return false;
+    try {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+    } catch { /* tests and private windows can lack matchMedia */ }
+    return true;
+  }
+
+  showRoom(name) {
+    if (!name) {
+      this.roomBanner = null;
+      return;
+    }
+    const words = String(name).trim().split(/\s+/).filter(Boolean).length || 1;
+    const hold = Math.max(1.7, 1.05 + words * 0.45);
+    this.roomBanner = { name, from: this.uiTime, until: this.uiTime + hold };
   }
 
   pushCaption(text, kind, priority) {
-    if (kind === 'ambient' && !this.settings.captions) return;
-    if (this.caption && this.caption.priority > priority && this.uiTime < this.caption.until) return;
-    const life = priority >= 4 ? 3.2 : priority >= 3 ? 4.6 : 2.8;
-    this.caption = { text, kind, priority, until: this.uiTime + life };
+    this.captions.push({
+      text,
+      kind,
+      priority,
+      ambient: this.settings.captions !== false,
+    });
+    const current = this.captions.current;
+    if (current && current.age === 0) {
+      current.opacity = this.captionMotion() ? 0 : 1;
+    }
+    this.caption = current;
   }
 
   say(text, priority = 4) {
@@ -1568,6 +1931,52 @@ export class Game {
       weakMagnitude: magnitude * 0.65,
       strongMagnitude: magnitude,
     }).catch(() => {});
+  }
+
+  plantEnemy(enemy, dt) {
+    const prev = enemy.phase || 0;
+    const next = prev + dt * CUE.enemy.rate;
+    enemy.phase = next;
+    if (!phaseMarksCrossed(prev, next, ENEMY_STEP_MARKS)) return;
+    const heard = this.distVol(enemy, 220);
+    if (heard <= 0.05) return;
+    this.audio.foot(floorName(this.tileAt(enemy.x, enemy.y)), 0.22 * heard, this.pan(enemy.x, enemy.y));
+  }
+
+  scare(id, options = {}) {
+    return this.director.requestScare(id, {
+      reduce: !!this.settings.reduceFlash,
+      ...options,
+    });
+  }
+
+  playDirector(events) {
+    for (const ev of events) {
+      if (ev.type === 'scare-build') {
+        this.audio.scareBuild?.({
+          duration: ev.duration,
+          weight: ev.weight,
+          reduce: ev.reduce,
+        });
+      } else if (ev.type === 'scare-silence') {
+        this.audio.scareSilence?.();
+      } else if (ev.type === 'scare-hit') {
+        this.audio.scareHit?.({
+          weight: ev.weight,
+          reduce: ev.reduce,
+          face: ev.face,
+          delay: 0,
+        });
+      } else if (ev.type === 'transition-start' && !ev.calm) {
+        this.audio.scareBuild?.({
+          duration: (ev.duration || CUE.transition.duration) * 0.42,
+          weight: (ev.weight || 0.4) * 0.55,
+          reduce: ev.reduce,
+        });
+      } else if (ev.type === 'transition-sub' && !ev.calm) {
+        this.audio.cut?.({ weight: ev.heavy ? ev.weight : (ev.weight || 0.4) * 0.65 });
+      }
+    }
   }
 
   spook(kind) {
@@ -1596,9 +2005,4 @@ export class Game {
     this.state.room = '';
     this.updateRoom();
   }
-}
-
-function glitch(text) {
-  return text.replace(/[aeiou]/gi, (ch, i) => (i % 5 === 0 ? (ch === ch.toUpperCase() ? 'A' : 'a') : ch))
-    .replace(/m/g, 'n');
 }

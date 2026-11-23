@@ -12,12 +12,14 @@
   <link rel="stylesheet" href="css/game.css">
 </head>
 <body>
+  <main id="shell">
   <div id="app">
     <div id="stage">
       <div id="world">
-        <canvas id="view" width="416" height="224" aria-label="Don't Look, the house"></canvas>
+        <canvas id="view" width="416" height="224" tabindex="-1" aria-label="Don't Look, the house"></canvas>
         <div id="scan"></div>
         <div id="vignette"></div>
+        <div id="blackout"></div>
         <div id="hurt"></div>
         <div id="whiteflash"></div>
         <div id="grinflash" hidden><img src="assets/grin.jpg" alt=""></div>
@@ -33,7 +35,8 @@
           <span id="prompt-text"></span>
           <span id="prompt-bar"></span>
         </div>
-        <div id="subtitle" aria-live="polite"></div>
+        <p class="visually-hidden">Captions</p>
+        <div id="subtitle" aria-live="polite" aria-atomic="true"></div>
       </div>
     </div>
     <div id="dock" hidden>
@@ -71,85 +74,57 @@
     </div>
   </div>
 
+  <div id="boot">
+    <canvas id="cine" aria-hidden="true"></canvas>
+    <div id="plate" aria-live="polite" aria-relevant="additions text">
+      <p id="plate-kicker" class="kicker"></p>
+      <div id="plate-body"></div>
+    </div>
+    <div id="title">
+      <div class="title-inner">
+        <p class="kicker">A house, after the photo</p>
+        <h1 id="game-title">Don’t Look</h1>
+        <p class="tag">Chris was only driving home.</p>
+        <div class="choices">
+          <button type="button" id="begin" class="primary" disabled>Waking the house</button>
+          <button type="button" id="continue" hidden>Continue</button>
+          <button type="button" id="hold-night">Hold still</button>
+        </div>
+        <p class="tag">Six slots. Four parts. The car is in the garage.</p>
+        <div class="settings">
+          <label for="opt-flash"><input type="checkbox" data-setting="reduceFlash" id="opt-flash"> Less flicker</label>
+          <label for="opt-captions"><input type="checkbox" data-setting="captions" id="opt-captions" checked> Captions</label>
+          <label for="opt-volume">Volume <input type="range" data-setting="volume" id="opt-volume" min="0" max="1" step="0.05" value="0.85"></label>
+          <label for="opt-touch"><input type="checkbox" data-setting="touch" id="opt-touch"> Touch controls</label>
+        </div>
+        <ul class="controls">
+          <li>WASD move</li>
+          <li>Mouse aims</li>
+          <li>Shift run</li>
+          <li>C sneak</li>
+          <li>Space dodge</li>
+          <li>F light</li>
+          <li>E use</li>
+          <li>J hit</li>
+          <li>I bag</li>
+          <li>G drop</li>
+          <li>M map</li>
+          <li>Esc pause</li>
+          <li>Gamepad</li>
+        </ul>
+        <p class="fine">Flashes can be shortened. The house still goes dark. Played in this browser. Nothing you do is sent anywhere.</p>
+      </div>
+    </div>
+    <div id="intro-controls" hidden>
+      <label for="intro-volume">Volume <input type="range" data-setting="volume" id="intro-volume" min="0" max="1" step="0.05" value="0.85"></label>
+      <button type="button" id="skip">Skip</button>
+    </div>
+  </div>
+  </main>
+
   <div id="overlay" hidden role="dialog" aria-modal="true" aria-label="Menu">
     <div id="backdrop"></div>
     <div id="card" tabindex="-1"></div>
-  </div>
-
-  <div id="title">
-    <img class="bg" src="assets/grin.jpg" alt="">
-    <div class="shade"></div>
-    <div class="title-inner">
-      <p class="kicker">A house, after the photo</p>
-      <h1>Don’t Look</h1>
-      <p class="tag">Chris was only driving home.</p>
-      <div class="choices">
-        <button type="button" id="begin" class="primary" disabled>Waking the house</button>
-        <button type="button" id="continue" hidden>Continue</button>
-      </div>
-      <p class="tag">Six slots. Four parts. The car is in the garage.</p>
-      <div class="settings">
-        <label><input type="checkbox" data-setting="reduceFlash" id="opt-flash"> Less flicker</label>
-        <label><input type="checkbox" data-setting="captions" id="opt-captions" checked> Captions</label>
-        <label>Volume <input type="range" data-setting="volume" id="opt-volume" min="0" max="1" step="0.05" value="0.85"></label>
-        <label><input type="checkbox" data-setting="touch" id="opt-touch"> Touch controls</label>
-      </div>
-      <p class="controls">
-        <span>WASD move</span>
-        <span>Mouse aims</span>
-        <span>Shift run</span>
-        <span>C sneak</span>
-        <span>Space dodge</span>
-        <span>F light</span>
-        <span>E use</span>
-        <span>J hit</span>
-        <span>I bag</span>
-        <span>M map</span>
-        <span>Esc pause</span>
-        <span>Gamepad</span>
-      </p>
-      <p class="fine">Flashes can be shortened. The house still goes dark. Played in this browser. Nothing you do is sent anywhere.</p>
-    </div>
-  </div>
-
-  <div id="intro" hidden>
-    <section id="scene-phone">
-      <div class="phone">
-        <header>Messages</header>
-        <article class="bubble">
-          <span class="avatar mark" aria-hidden="true">B</span>
-          <div>
-            <p class="who">Ben</p>
-            <p>chris</p>
-            <p>i was messing with the trail photo. i opened something. a void.</p>
-            <p>do not open it.</p>
-          </div>
-        </article>
-        <button type="button" id="open-photo" class="attachment">
-          <img src="assets/evan.jpg" alt="" class="face-evan">
-          <span>IMG_4041 — open</span>
-        </button>
-        <article class="bubble">
-          <img class="avatar face-trail" src="assets/teammate.jpg" alt="">
-          <div>
-            <p>don’t open it.</p>
-            <p>i looked. i’m fine.</p>
-          </div>
-        </article>
-      </div>
-    </section>
-    <section id="scene-glitch" hidden>
-      <img id="glitch-photo" src="assets/evan.jpg" alt="" class="face-evan">
-    </section>
-    <section id="scene-arrive" hidden>
-      <div class="rearview"><img src="assets/chris.jpg" alt="" class="face-chris"></div>
-      <div class="arrive-copy">
-        <p class="kicker">Same road</p>
-        <p class="lead">You wake in the driver seat. Same road. Wrong color. The phone is dead. Mom’s house is ahead. Every window is dark. You put the car in the garage. It doesn’t turn over.</p>
-        <button type="button" id="go-inside" class="primary">Go inside</button>
-      </div>
-    </section>
-    <button type="button" id="skip">Skip</button>
   </div>
 
   <div id="gallery" hidden></div>

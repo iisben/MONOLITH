@@ -1,25 +1,30 @@
 import { ITEMS, INSPECTIONS, NOTES, TUNING } from './data.mjs';
+import { createIntro } from './intro.mjs';
 import { createAudio } from './audio.mjs';
 import { SAVE_KEY, Game } from './game.mjs';
 import { loadCast, portrait } from './photos.mjs';
 import { drawMap } from './render.mjs';
+import { artIds, spriteCanvas } from './art.mjs';
 
 const params = new URLSearchParams(location.search);
 const audio = createAudio();
 const canvas = document.querySelector('#view');
+const worldEl = document.querySelector('#world');
+const blackoutEl = document.querySelector('#blackout');
 const game = new Game(canvas, audio);
 if (params.has('debug')) window.__game = game;
 
 const SETTINGS_KEY = 'dont-look-settings';
 const PARTS = [
-  { id: 'fuse', item: 'fuse', name: 'Fuse', detail: 'Powers the yard door' },
-  { id: 'keys', item: 'key-car', name: 'Keys', detail: 'Ignition' },
-  { id: 'gas', item: 'gas', name: 'Gas', detail: 'Tank' },
-  { id: 'photo', item: 'camera', name: 'Photo', detail: 'Of the car, not the face' },
+  { id: 'fuse', item: 'fuse', name: 'Fuse', detail: 'Yard door motor', verb: 'Seat' },
+  { id: 'keys', item: 'key-car', name: 'Keys', detail: 'Ignition', verb: 'Turn' },
+  { id: 'gas', item: 'gas', name: 'Gas', detail: 'The tank was on E', verb: 'Pour' },
+  { id: 'photo', item: 'camera', name: 'Photo', detail: 'The car, not the face', verb: 'Photograph' },
 ];
 
+const app = document.querySelector('#app');
+const boot = document.querySelector('#boot');
 const title = document.querySelector('#title');
-const intro = document.querySelector('#intro');
 const overlay = document.querySelector('#overlay');
 const card = document.querySelector('#card');
 const dock = document.querySelector('#dock');
@@ -27,6 +32,7 @@ const gallery = document.querySelector('#gallery');
 const beginBtn = document.querySelector('#begin');
 
 const keys = new Set();
+const latch = new Set();
 const padMem = { down: new Set(), use: false };
 const stick = { active: false, x: 0, y: 0, pointer: -1 };
 let touchSneak = false;
@@ -37,7 +43,6 @@ let lastFrame = 0;
 let sig = '';
 let screenType = '';
 let portraitBand = '';
-let introTimers = [];
 
 const slotsEl = document.querySelector('#slots');
 for (let i = 0; i < TUNING.slots; i += 1) {
@@ -53,8 +58,26 @@ for (let i = 0; i < TUNING.slots; i += 1) {
   slotsEl.appendChild(cell);
 }
 
+const opening = createIntro({
+  canvas: document.querySelector('#cine'),
+  boot,
+  title,
+  plate: document.querySelector('#plate'),
+  kicker: document.querySelector('#plate-kicker'),
+  body: document.querySelector('#plate-body'),
+  controls: document.querySelector('#intro-controls'),
+  skipBtn: document.querySelector('#skip'),
+  holdBtn: document.querySelector('#hold-night'),
+  audio,
+  getSettings: () => game.settings,
+  onPrepare: prepareArrival,
+  onLive: arriveLive,
+});
+
 loadSettings();
 applySettings();
+app.inert = true;
+opening.startTitle();
 bindInput();
 refreshTitle();
 
@@ -63,6 +86,7 @@ beginBtn.disabled = false;
 beginBtn.textContent = 'Begin the drive';
 refreshTitle();
 if (params.has('photos')) buildGallery();
+if (params.has('items')) buildItemGallery();
 if (params.has('skip')) beginPlay(true);
 
 function loadSettings() {
@@ -130,53 +154,63 @@ function refreshTitle() {
   document.querySelector('#continue').hidden = !hasSave();
 }
 
-function later(fn, ms) {
-  const id = setTimeout(fn, ms);
-  introTimers.push(id);
+function releaseInput() {
+  latch.clear();
+  for (const code of keys) latch.add(code);
+  keys.clear();
+  game.input.x = 0;
+  game.input.y = 0;
+  game.input.run = false;
+  game.input.sneak = false;
+  game.input.use = false;
+  resetTouch();
+  endStick();
+  seedPad();
 }
 
-function clearIntro() {
-  for (const id of introTimers) clearTimeout(id);
-  introTimers = [];
-}
-
-function showScene(name) {
-  for (const id of ['phone', 'glitch', 'arrive']) {
-    document.querySelector(`#scene-${id}`).hidden = id !== name;
+function seedPad() {
+  const list = navigator.getGamepads?.();
+  padMem.down.clear();
+  padMem.use = false;
+  if (!list) return;
+  for (const candidate of list) {
+    if (!candidate?.connected) continue;
+    candidate.buttons.forEach((button, index) => {
+      if (button.pressed) padMem.down.add(index);
+    });
   }
+  padMem.use = padMem.down.has(0);
 }
 
-function startIntro() {
-  audio.unlock();
-  clearIntro();
-  title.hidden = true;
-  intro.hidden = false;
-  gallery.hidden = true;
-  const photo = document.querySelector('#glitch-photo');
-  photo.src = 'assets/evan.jpg';
-  photo.classList.remove('hit');
-  showScene('phone');
+function prepareArrival() {
+  releaseInput();
+  game.newGame();
+  game.armArrival();
+  document.body.classList.add('arriving');
+  dock.hidden = false;
+  fit();
+  game.draw();
 }
 
-function openPhoto() {
-  audio.unlock();
-  showScene('glitch');
-  const photo = document.querySelector('#glitch-photo');
-  const reduce = !!game.settings.reduceFlash;
-  later(() => {
-    photo.classList.add('hit');
-    if (!reduce) photo.src = 'assets/grin.jpg';
-  }, reduce ? 80 : 360);
-  later(() => showScene('arrive'), reduce ? 420 : 1100);
+function arriveLive() {
+  releaseInput();
+  play();
+  canvas.focus();
 }
 
 function beginPlay(fresh) {
   audio.unlock();
-  clearIntro();
-  intro.hidden = true;
-  title.hidden = true;
+  releaseInput();
+  opening.shutdown();
+  boot.hidden = true;
   gallery.hidden = true;
-  if (fresh) game.newGame();
+  app.inert = false;
+  document.body.classList.remove('arriving');
+  if (fresh) {
+    game.newGame();
+    game.armArrival();
+    game.draw();
+  }
   play();
 }
 
@@ -188,25 +222,34 @@ function continueGame() {
   } catch {
     try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
     refreshTitle();
-    startIntro();
+    mode = 'intro';
+    gallery.hidden = true;
+    opening.startSequence();
   }
 }
 
 function backToTitle() {
   mode = 'title';
-  document.body.classList.remove('playing');
+  releaseInput();
+  document.body.classList.remove('playing', 'arriving');
   dock.hidden = true;
   overlay.hidden = true;
-  intro.hidden = true;
-  title.hidden = false;
+  app.inert = true;
   screenType = '';
   sig = '';
   refreshTitle();
-  audio.mix({ danger: 0.02, humVol: 0.006, humPan: 0, distorted: false });
+  opening.startTitle({ warm: true });
+  beginBtn.focus();
+}
+
+function resetTouch() {
+  touchSneak = false;
+  touchRun = false;
 }
 
 function wakeFromBench() {
   audio.unlock();
+  resetTouch();
   if (hasSave()) {
     try {
       game.hydrate(JSON.parse(localStorage.getItem(SAVE_KEY)));
@@ -225,8 +268,11 @@ function play() {
   portraitBand = '';
   sig = '';
   screenType = '';
+  document.body.classList.remove('arriving');
   document.body.classList.add('playing');
   dock.hidden = false;
+  app.inert = false;
+  boot.hidden = true;
   fit();
   requestAnimationFrame(fit);
   if (!loopOn) {
@@ -376,6 +422,10 @@ function onPress(event) {
   if (event.target.closest('button, input, textarea') && event.code !== 'Escape') return;
   const screen = game.state?.screen;
   if (event.code === 'Escape') {
+    if (mode === 'intro') {
+      opening.skip();
+      return;
+    }
     if (!game.state || mode !== 'play') return;
     if (screen?.type === 'dead' || screen?.type === 'ending') return;
     if (screen) game.closeScreen();
@@ -417,19 +467,23 @@ function onPress(event) {
 function bindInput() {
   window.addEventListener('keydown', (event) => {
     audio.unlock();
+    if (mode === 'title' || mode === 'intro') opening.armAudio();
     if (event.code === 'Space' || event.code === 'Tab') event.preventDefault();
     if (event.code.startsWith('Arrow') && event.target.tagName !== 'INPUT') event.preventDefault();
+    if (latch.has(event.code)) return;
     const fresh = !keys.has(event.code);
     keys.add(event.code);
     if (!fresh || event.repeat) return;
     onPress(event);
   });
   window.addEventListener('keyup', (event) => {
+    latch.delete(event.code);
     keys.delete(event.code);
     if (event.code === 'KeyE') game.input.use = false;
   });
   window.addEventListener('blur', () => {
     keys.clear();
+    latch.clear();
     game.input.use = false;
     endStick();
   });
@@ -442,11 +496,14 @@ function bindInput() {
     if (event.target?.dataset?.setting === 'volume') settingChanged(event.target);
   });
 
-  beginBtn.addEventListener('click', startIntro);
+  beginBtn.addEventListener('click', () => {
+    if (beginBtn.disabled || mode === 'intro') return;
+    mode = 'intro';
+    gallery.hidden = true;
+    opening.startSequence();
+  });
   document.querySelector('#continue').addEventListener('click', continueGame);
-  document.querySelector('#open-photo').addEventListener('click', openPhoto);
-  document.querySelector('#go-inside').addEventListener('click', () => beginPlay(true));
-  document.querySelector('#skip').addEventListener('click', () => beginPlay(true));
+  boot.addEventListener('pointerdown', () => opening.armAudio());
   document.querySelector('#backdrop').addEventListener('click', () => {
     const type = game.state?.screen?.type;
     if (!type || type === 'dead' || type === 'ending') return;
@@ -610,7 +667,16 @@ function syncHud() {
   for (let i = 0; i < cells.length; i += 1) {
     const slot = state.inv[i];
     const cell = cells[i];
-    cell.textContent = slot ? shortName(slot) : '';
+    if (slot) {
+      paintSlot(cell, slot);
+    } else {
+      if (cell.dataset.sig) {
+        cell.dataset.sig = '';
+        clear(cell);
+      }
+      cell.removeAttribute('title');
+      cell.setAttribute('aria-label', `Empty slot ${i + 1}`);
+    }
     cell.classList.toggle('equipped', i === state.equipped);
     cell.classList.toggle('on', !!state.screen && i === state.selected && !!slot);
   }
@@ -625,11 +691,25 @@ function syncHud() {
 
   const hint = document.querySelector('#hint');
   if (state.hasLight) hint.textContent = '';
-  else if (document.body.classList.contains('touch')) hint.textContent = 'Stick moves · Use acts · Bag holds six';
-  else hint.textContent = 'WASD move · mouse aims · E use · I bag — six slots';
+  else if (document.body.classList.contains('touch')) hint.textContent = 'Stick to move. Use for what is in front of you. Six slots.';
+  else hint.textContent = 'WASD moves. Mouse aims. E uses. I opens the bag. Six slots.';
 
   const banner = game.roomBanner;
-  document.querySelector('#room-name').textContent = banner && game.uiTime < banner.until ? banner.name : '';
+  const roomEl = document.querySelector('#room-name');
+  if (banner && game.uiTime < banner.until) {
+    if (roomEl.textContent !== banner.name) roomEl.textContent = banner.name;
+    const age = game.uiTime - (banner.from || 0);
+    const left = banner.until - game.uiTime;
+    let opacity = 1;
+    if (game.captionMotion()) {
+      if (age < 0.16) opacity = Math.max(0, age / 0.16);
+      else if (left < 0.28) opacity = Math.max(0, left / 0.28);
+    }
+    roomEl.style.opacity = String(opacity);
+  } else if (roomEl.textContent) {
+    roomEl.textContent = '';
+    roomEl.style.opacity = '0';
+  }
   document.querySelector('#objective').textContent = game.objective();
   for (const node of document.querySelectorAll('#pips span')) {
     node.classList.toggle('on', !!state.installed[node.dataset.part]);
@@ -647,15 +727,24 @@ function syncHud() {
   }
 
   const subtitle = document.querySelector('#subtitle');
-  if (game.caption) {
+  const caption = game.caption;
+  if (caption?.text) {
+    if (subtitle.textContent !== caption.text) subtitle.textContent = caption.text;
+    subtitle.dataset.kind = caption.kind || 'say';
+    subtitle.style.opacity = String(caption.opacity ?? 1);
     subtitle.hidden = false;
-    subtitle.dataset.kind = game.caption.kind;
-    subtitle.textContent = game.caption.text;
-  } else {
-    subtitle.hidden = true;
+  } else if (subtitle.textContent || !subtitle.hidden) {
     subtitle.textContent = '';
+    subtitle.style.opacity = '0';
+    subtitle.hidden = true;
   }
 
+  const fx = game.director?.view;
+  if (fx && worldEl) {
+    worldEl.style.setProperty('--vig-clear', fx.clear);
+    worldEl.style.setProperty('--vig-ink', fx.ink);
+    if (blackoutEl) blackoutEl.style.opacity = String(fx.black);
+  }
   document.querySelector('#hurt').style.opacity = String(Math.min(0.65, game.hurtFlash || 0));
   document.querySelector('#whiteflash').style.opacity = String((game.flash || 0) * (game.settings.reduceFlash ? 0.2 : 0.8));
   const grin = document.querySelector('#grinflash');
@@ -686,14 +775,53 @@ function weaponLine() {
   return def.name;
 }
 
-function shortName(slot) {
+function slotLabel(slot) {
   const def = ITEMS[slot.id];
-  if (!def) return '?';
-  const first = def.name.split(' ')[0];
-  if (slot.flashes != null) return `Cam ${slot.flashes}`;
-  if (slot.dur != null && slot.dur <= 0) return 'Broken';
-  if ((slot.count || 1) > 1) return `${first} ${slot.count}`;
-  return first;
+  if (!def) return 'Unknown item';
+  if (slot.flashes != null) return `${def.name} ${slot.flashes}`;
+  if (slot.dur != null) return `${def.name} ${Math.max(0, slot.dur)}`;
+  if ((slot.count || 1) > 1) return `${def.name} ${slot.count}`;
+  return def.name;
+}
+
+function slotBadge(slot) {
+  if (slot.flashes != null) return String(slot.flashes);
+  if (slot.dur != null) return String(Math.max(0, slot.dur));
+  if ((slot.count || 1) > 1) return String(slot.count);
+  return '';
+}
+
+function paintSlot(cell, slot) {
+  const label = slotLabel(slot);
+  const broken = slot.dur != null && slot.dur <= 0;
+  const sig = `${slot.id}|${slot.count || 1}|${slot.dur ?? ''}|${slot.flashes ?? ''}|${broken ? 1 : 0}`;
+  if (cell.dataset.sig !== sig) {
+    cell.dataset.sig = sig;
+    clear(cell);
+    const art = spriteCanvas(slot.id, { broken });
+    if (art) {
+      art.setAttribute('aria-hidden', 'true');
+      cell.appendChild(art);
+    }
+    const badge = slotBadge(slot);
+    if (badge) {
+      const mark = el('span', 'count', badge);
+      mark.setAttribute('aria-hidden', 'true');
+      cell.appendChild(mark);
+    }
+  }
+  cell.title = label;
+  cell.setAttribute('aria-label', label);
+}
+
+function stillOf(id, broken = false) {
+  const fig = el('figure', 'still');
+  const art = spriteCanvas(id, { plate: true, broken });
+  if (art) {
+    art.setAttribute('aria-hidden', 'true');
+    fig.appendChild(art);
+  }
+  return fig;
 }
 
 function buildOverlay() {
@@ -721,9 +849,10 @@ function buildOverlay() {
   else if (type === 'dead') buildDead();
   else if (type === 'ending') buildEnding();
   if (type !== 'dead' && type !== 'ending') {
-    const toast = el('p', 'toast');
-    toast.id = 'menu-toast';
-    card.appendChild(toast);
+  const toast = el('p', 'toast');
+  toast.id = 'menu-toast';
+  toast.setAttribute('aria-hidden', 'true');
+  card.appendChild(toast);
   }
   if (changed) card.focus();
 }
@@ -736,7 +865,8 @@ function buildNote(id) {
     fig.appendChild(portrait(note.photo, { crop: 'bust', size: 160, clean: true }));
     card.appendChild(fig);
   }
-  const paper = el('div', id === 'ray' ? 'paper scratched' : 'paper');
+  const paper = el('div', `paper paper-${id}`);
+  card.appendChild(stillOf(`note-${id}`));
   writeLines(paper, note.body);
   card.appendChild(paper);
   card.appendChild(actions([btn('Close', () => game.closeScreen())]));
@@ -745,6 +875,7 @@ function buildNote(id) {
 function buildInspect(id) {
   const info = INSPECTIONS[id] || { title: 'Look', body: '' };
   card.appendChild(el('h2', '', info.title));
+  card.appendChild(stillOf(`look-${id}`));
   if (info.photos?.length) {
     const row = el('div', 'photos');
     const corruptMom = id === 'family' && game.state.flags.tookFuse;
@@ -773,14 +904,15 @@ function buildInspect(id) {
 
 function buildInventory() {
   card.appendChild(el('h2', '', 'Hands'));
-  card.appendChild(el('p', 'muted', `${game.state.inv.length} of ${TUNING.slots} slots. Heals are used from here.`));
-  if (!game.state.inv.length) card.appendChild(el('p', '', 'Empty. The house is not.'));
+  card.appendChild(el('p', 'muted', `${game.state.inv.length} of ${TUNING.slots} slots. Bandages and pills are used from here.`));
+  if (!game.state.inv.length) card.appendChild(el('p', '', 'Nothing in your hands.'));
   else card.appendChild(itemList(game.state.inv, game.state.selected, (index) => {
     game.state.selected = index;
   }));
   const slot = game.state.inv[game.state.selected];
   if (slot) {
     const def = ITEMS[slot.id];
+    card.appendChild(stillOf(slot.id, slot.dur != null && slot.dur <= 0));
     card.appendChild(el('h2', '', def?.name || 'Item'));
     for (const line of slotFacts(slot)) card.appendChild(el('p', '', line));
     if (slot.id === 'camera') {
@@ -803,12 +935,12 @@ function buildInventory() {
 
 function buildStash() {
   card.appendChild(el('h2', '', 'Parts bin'));
-  card.appendChild(el('p', 'muted', 'The bin keeps what your hands cannot. The car takes what you are holding.'));
+  card.appendChild(el('p', 'muted', 'The bin keeps what your hands cannot. The car only takes what you are holding.'));
   const split = el('div', 'split');
   const left = el('div');
   const right = el('div');
   left.appendChild(el('p', 'muted', 'Hands'));
-  if (!game.state.inv.length) left.appendChild(el('p', '', 'Empty.'));
+  if (!game.state.inv.length) left.appendChild(el('p', '', 'Nothing in your hands.'));
   else {
     left.appendChild(itemList(game.state.inv, game.state.selected, (index) => {
       game.state.selected = index;
@@ -820,10 +952,10 @@ function buildStash() {
     left.appendChild(row);
   }
   right.appendChild(el('p', 'muted', 'Bin'));
-  if (!game.state.stash.length) right.appendChild(el('p', '', 'Empty.'));
+  if (!game.state.stash.length) right.appendChild(el('p', '', 'Nothing in the bin.'));
   game.state.stash.forEach((slot, index) => {
     const def = ITEMS[slot.id];
-    right.appendChild(btn(def?.name || 'Item', () => game.takeStash(index), 'row'));
+    right.appendChild(itemButton(slot, def?.name || 'Item', 'row', () => game.takeStash(index)));
   });
   split.appendChild(left);
   split.appendChild(right);
@@ -847,15 +979,14 @@ function buildCar(interactive) {
   card.appendChild(mom);
   card.appendChild(el('p', '', 'Mom is in the passenger seat. She does not look up.'));
   card.appendChild(el('p', 'slip', "Don't answer me"));
-  if (interactive) card.appendChild(el('p', 'muted', 'The car takes what is in your hands.'));
+  if (interactive) card.appendChild(el('p', 'muted', 'The car only takes what is in your hands.'));
   for (const part of PARTS) {
     const row = el('div', game.state.installed[part.id] ? 'part on' : 'part');
     row.appendChild(el('div', 'name', part.name));
     const where = el('div', 'where', `${part.detail}. ${partPlace(part)}`);
     row.appendChild(where);
     if (interactive && !game.state.installed[part.id] && game.itemLoc(part.item) === 'inv') {
-      const label = part.id === 'photo' ? 'Photograph' : 'Seat';
-      row.appendChild(btn(label, () => game.install(part.id)));
+      row.appendChild(btn(part.verb, () => game.install(part.id)));
     }
     card.appendChild(row);
   }
@@ -879,7 +1010,7 @@ function buildMap() {
   map.height = 280;
   card.appendChild(map);
   drawMap(map.getContext('2d'), game, map.width, map.height);
-  card.appendChild(el('p', 'muted', 'Amber is shut. Red is locked. Dim rooms are next door, not yet walked.'));
+  card.appendChild(el('p', 'muted', 'A dull mark is an open door. Amber is shut. Red is locked. Faded rooms are next door, and you have not walked them.'));
   card.appendChild(actions([btn('Close', () => game.closeScreen())]));
 }
 
@@ -921,7 +1052,7 @@ function buildPause() {
     btn('Resume', () => game.closeScreen(), 'primary'),
     btn('Title screen', backToTitle),
   ]));
-  card.appendChild(el('p', 'muted', 'The title keeps a slide, if you took one.'));
+  card.appendChild(el('p', 'muted', 'The title can continue from the bench, if you spent a slide.'));
 }
 
 function buildDead() {
@@ -937,8 +1068,8 @@ function buildDead() {
     ? 'The bench still has you.'
     : 'There was no slide in the bench.'));
   const buttons = [];
-  if (hasSave()) buttons.push(btn('Wake at the bench', wakeFromBench, 'primary'));
-  else buttons.push(btn('Start the drive again', wakeFromBench, 'primary'));
+  if (hasSave()) buttons.push(btn('Return to the slide', wakeFromBench, 'primary'));
+  else buttons.push(btn('Start again', wakeFromBench, 'primary'));
   buttons.push(btn('Title screen', backToTitle));
   copy.appendChild(actions(buttons));
   card.appendChild(copy);
@@ -976,15 +1107,30 @@ function cameraFace() {
 function slotFacts(slot) {
   const def = ITEMS[slot.id];
   const lines = [];
-  if ((slot.count || 1) > 1) lines.push(`Carrying ${slot.count}.`);
-  if (slot.dur != null) lines.push(slot.dur > 0 ? `Durability ${slot.dur}.` : 'Broken.');
-  if (slot.flashes != null) lines.push(`Bulbs ${slot.flashes}. The plate is for the car.`);
+  if ((slot.count || 1) > 1) lines.push(`${slot.count} of them.`);
+  if (slot.dur != null) {
+    lines.push(slot.dur > 0 ? `${slot.dur} swings left in it.` : 'The shaft is cracked. It needs tape.');
+  }
+  if (slot.flashes != null) lines.push(`${slot.flashes} bulbs left. The plate is for the car.`);
   if (def?.ammo) {
     const ammo = game.state.inv.find((item) => item.id === 'ammo');
-    lines.push(`Rounds ${ammo ? ammo.count : 0}.`);
+    lines.push(`${ammo ? ammo.count : 0} rounds on you.`);
   }
   if (def?.desc) lines.push(def.desc);
   return lines;
+}
+
+function itemButton(slot, label, className, onClick) {
+  const node = btn('', onClick, className);
+  node.setAttribute('aria-label', label);
+  const art = spriteCanvas(slot.id, { broken: slot.dur != null && slot.dur <= 0 });
+  if (art) {
+    art.setAttribute('aria-hidden', 'true');
+    node.appendChild(art);
+  }
+  const name = el('span', '', label);
+  node.appendChild(name);
+  return node;
 }
 
 function itemList(items, selected, onPick) {
@@ -993,7 +1139,8 @@ function itemList(items, selected, onPick) {
     const def = ITEMS[slot.id];
     const mark = index === game.state.equipped ? ' · held' : '';
     const count = (slot.count || 1) > 1 ? ` ${slot.count}` : '';
-    list.appendChild(btn(`${index + 1}  ${def?.name || 'Item'}${count}${mark}`, () => onPick(index), index === selected ? 'row on' : 'row'));
+    const label = `${def?.name || 'Item'}${count}${mark}`;
+    list.appendChild(itemButton(slot, `${index + 1}  ${label}`, index === selected ? 'row on' : 'row', () => onPick(index)));
   });
   return list;
 }
@@ -1054,6 +1201,25 @@ function buildGallery() {
       fig.appendChild(el('figcaption', '', `${id} ${crop}`));
       grid.appendChild(fig);
     }
+  }
+  gallery.appendChild(grid);
+  gallery.appendChild(btn('Close', () => { gallery.hidden = true; }));
+}
+
+function buildItemGallery() {
+  clear(gallery);
+  gallery.hidden = false;
+  gallery.appendChild(el('h2', '', 'Things in the house'));
+  const grid = el('div', 'gallery-grid');
+  for (const id of artIds()) {
+    const fig = el('figure');
+    const art = spriteCanvas(id, { plate: true });
+    if (art) {
+      art.setAttribute('aria-hidden', 'true');
+      fig.appendChild(art);
+    }
+    fig.appendChild(el('figcaption', '', id));
+    grid.appendChild(fig);
   }
   gallery.appendChild(grid);
   gallery.appendChild(btn('Close', () => { gallery.hidden = true; }));
