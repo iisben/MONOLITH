@@ -115,7 +115,7 @@ export function render(game) {
         const door = world.doorAt.get(`${x},${y}`);
         const open = state.doors[door.id].open;
         paintFloor(ctx, door.floor, x, y, roomAt(x, y), sx, sy);
-        if (!open) drawDoor(ctx, sx, sy, door, state);
+        drawDoor(ctx, sx, sy, door, state, world, x, y);
         continue;
       }
       paintFloor(ctx, tile, x, y, roomAt(x, y), sx, sy);
@@ -157,6 +157,10 @@ export function render(game) {
   game.fx?.draw(ctx, ox, oy);
   drawMotes(ctx, game, ox, oy);
   ctx.restore();
+  if (game.veil > 0.02) {
+    ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.55, game.veil)})`;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
   if (game.settings.post !== false) {
     ctx.fillStyle = 'rgba(36, 22, 14, 0.1)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
@@ -195,9 +199,29 @@ function drawFurniture(ctx, piece, ox, oy, state, game) {
   ctx.globalAlpha = 1;
 }
 
-function drawDoor(ctx, sx, sy, door, state) {
-  const locked = door.lock && !state.doors[door.id].unlocked && !(door.lock === 'power' && state.flags.powerOn);
-  ctx.drawImage(doorSprite(door.id, !!locked), sx, sy);
+function drawDoor(ctx, sx, sy, door, state, world, x, y) {
+  const st = state.doors[door.id];
+  const locked = door.lock && !st.unlocked && !(door.lock === 'power' && state.flags.powerOn);
+  const swing = st.swing ?? (st.open ? 1 : 0);
+  const rattle = st.rattle > 0 ? Math.round(Math.sin(st.rattle * 48) * 1) : 0;
+  const leaf = doorSprite(door.id, !!locked);
+  const across = (world.tiles[y]?.[x - 1] > 0) && (world.tiles[y]?.[x + 1] > 0);
+  if (swing > 0.82) {
+    ctx.drawImage(trimSprite(), sx + (across ? 0 : TILE - 5), sy + (across ? TILE - 5 : 0), across ? TILE : 5, across ? 5 : TILE);
+    return;
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(sx, sy, TILE, TILE);
+  ctx.clip();
+  if (swing < 0.08) {
+    ctx.drawImage(leaf, sx + rattle, sy, TILE, TILE);
+  } else {
+    ctx.translate(across ? sx + 2 : sx + TILE / 2, across ? sy + TILE / 2 : sy + 2);
+    ctx.rotate((across ? -1 : 1) * swing * 1.05);
+    ctx.drawImage(leaf, 0, across ? -TILE / 2 : 0, TILE - 2, TILE - 2);
+  }
+  ctx.restore();
 }
 
 function drawProp(ctx, prop, ox, oy, state, time = 0) {
@@ -207,6 +231,10 @@ function drawProp(ctx, prop, ox, oy, state, time = 0) {
   const x = Math.round((prop.x + 0.5) * TILE - ox);
   const y = Math.round((prop.y + 0.5) * TILE - oy);
   const lift = Math.round(Math.sin(time * 2.2 + prop.x * 0.4) * 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(x, y + 2, 8, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
   ctx.drawImage(markSprite(prop), x - 12, y - 16 + lift);
 }
 
@@ -218,6 +246,31 @@ function drawGlint(ctx, x, y, color, time) {
   void color;
 }
 
+function drawShadow(ctx, sx, sy, game, wx, wy, isPlayer) {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+  ctx.beginPath();
+  ctx.ellipse(sx, sy + 6, 10, 3.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const p = game.state.player;
+  let lx = p.x;
+  let ly = p.y;
+  if (isPlayer && p.lightOn && game.state.hasLight) {
+    lx = p.x + Math.cos(p.facing) * 28;
+    ly = p.y + Math.sin(p.facing) * 28;
+  }
+  const ang = Math.atan2(wy - ly, wx - lx);
+  const stretch = Math.min(16, 7 + Math.hypot(wx - lx, wy - ly) * 0.03);
+  const flick = 0.78 + 0.22 * Math.abs(Math.sin(game.time * 2.6));
+  ctx.save();
+  ctx.translate(sx, sy + 4);
+  ctx.rotate(ang);
+  ctx.fillStyle = `rgba(0, 0, 0, ${0.24 * flick})`;
+  ctx.beginPath();
+  ctx.ellipse(stretch * 0.55, 0, stretch, 3.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawPlayer(ctx, player, ox, oy, game) {
   const time = game.time;
   const x = Math.round(player.x - ox);
@@ -226,6 +279,7 @@ function drawPlayer(ctx, player, ox, oy, game) {
   const rate = player.running ? 14 : player.sneaking ? 6 : 9;
   const frame = player.moving ? Math.floor(time * rate) % 4 : 0;
   const bob = player.moving ? (frame % 2) : 0;
+  drawShadow(ctx, x, y, game, player.x, player.y, true);
   const body = actorSprite('chris', frame);
   ctx.drawImage(body, x - 20, y - 40 - bob);
   const slot = game.state.inv[game.state.equipped];
@@ -264,6 +318,7 @@ function drawEnemy(ctx, enemy, ox, oy, game) {
   else if (enemy.kind === 'grin') id = 'grin';
   const body = actorSprite(id, frame);
   const light = game.lightAt(enemy.x, enemy.y);
+  drawShadow(ctx, x, y, game, enemy.x, enemy.y, false);
   ctx.save();
   ctx.translate(x, y);
   ctx.drawImage(body, -20, -36);
