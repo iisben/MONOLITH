@@ -76,8 +76,11 @@ const opening = createIntro({
 
 loadSettings();
 applySettings();
-app.inert = true;
-opening.startTitle();
+if (params.has('skip')) boot.hidden = true;
+else {
+  app.inert = true;
+  opening.startTitle();
+}
 bindInput();
 refreshTitle();
 
@@ -212,6 +215,7 @@ function beginPlay(fresh) {
     game.draw();
   }
   play();
+  canvas.focus();
 }
 
 function continueGame() {
