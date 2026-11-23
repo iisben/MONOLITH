@@ -46,6 +46,7 @@ export class Game {
       ambience: 0.8,
       shake: !calm,
       post: true,
+      detail: true,
     };
     this.mouseAim = false;
     this.fx = createFx();
@@ -127,6 +128,7 @@ export class Game {
       seen: { mud: true },
       room: 'mud',
       decals: [],
+      traces: [],
       noises: [],
       screen: null,
       hold: 0,
@@ -302,6 +304,7 @@ export class Game {
     this.cam.x = clamp(p.x - VIEW_W / 2, 0, COLS * TILE - VIEW_W);
     this.cam.y = clamp(p.y - VIEW_H / 2, 0, ROWS * TILE - VIEW_H);
     this.cam.ready = true;
+    this.cam.zoom = 1;
   }
 
   update(dt) {
@@ -312,6 +315,8 @@ export class Game {
     this.grinFlash = Math.max(0, this.grinFlash - frame * 1.15);
     this.hurtFlash = Math.max(0, this.hurtFlash - frame * 1.6);
     this.shake = this.settings.shake === false ? 0 : Math.max(0, this.shake - frame * 2.2);
+    this.kickX = (this.kickX || 0) * Math.max(0, 1 - frame * 7);
+    this.kickY = (this.kickY || 0) * Math.max(0, 1 - frame * 7);
     if (this.caption && this.uiTime > this.caption.until) this.caption = null;
     if (this.state.screen || this.state.dead || this.state.won) {
       this.audio.mix({ danger: 0.05, humVol: 0.004, humPan: 0, distorted: false });
@@ -333,8 +338,18 @@ export class Game {
     }
   }
 
+  leaveTrace(kind, x, y) {
+    const list = this.state.traces || (this.state.traces = []);
+    list.push({ kind, x, y, life: kind === 'foot' ? 6.5 : 11, age: 0 });
+    if (list.length > 40) list.shift();
+  }
+
   stepSim(step) {
     this.time += step;
+    if (this.state.traces) {
+      for (const trace of this.state.traces) trace.age += step;
+      this.state.traces = this.state.traces.filter((trace) => trace.age < trace.life);
+    }
     this.updatePlayer(step);
     this.state.noises = this.state.noises.filter((noise) => noise.until > this.time);
     this.updateRoom();
@@ -401,7 +416,8 @@ export class Game {
         if (p.step <= 0) {
           p.step = interval;
           this.audio.foot(floorName(this.tileAt(p.x, p.y)), sneak ? 0.25 : run ? 1 : 0.55);
-          this.fx.burst(p.x, p.y + 4, '#6b5344', 2, 18);
+          this.leaveTrace('foot', p.x, p.y + 5);
+          this.fx.burst(p.x, p.y + 4, '#6b5344', 5, 22);
           this.makeNoise(sneak ? 14 : run ? 100 : 46, 0.28);
         }
         if (run) p.stamina = Math.max(0, p.stamina - TUNING.runDrain * dt);
@@ -513,7 +529,7 @@ export class Game {
       enemy.groan = (enemy.kind === 'grin' ? 3.5 : 5) + Math.random() * 4;
       const heard = this.distVol(enemy, enemy.kind === 'grin' ? 460 : 300);
       if (heard > 0.04) {
-        this.audio.moan(this.pan(enemy.x, enemy.y), heard, enemy.kind);
+        this.audio.moan(this.pan(enemy.x, enemy.y), heard, enemy.kind, enemy.id);
         const visible = this.beamTouches(enemy) || distance < 36;
         if (!visible) {
           const word = enemy.kind === 'grin' ? 'Breathing' : 'Something shifts';
@@ -689,12 +705,16 @@ export class Game {
 
   updateCamera(dt) {
     const p = this.state.player;
-    const look = 26;
+    const speed = Math.hypot(p.vx || 0, p.vy || 0);
+    const look = 30 + Math.min(16, speed * 0.07);
     const tx = clamp(p.x + Math.cos(p.facing) * look - VIEW_W / 2, 0, COLS * TILE - VIEW_W);
     const ty = clamp(p.y + Math.sin(p.facing) * look - VIEW_H / 2, 0, ROWS * TILE - VIEW_H);
-    const k = Math.min(1, dt * 10);
+    const k = Math.min(1, dt * (p.running ? 6.5 : 8.5));
     this.cam.x += (tx - this.cam.x) * k;
     this.cam.y += (ty - this.cam.y) * k;
+    const want = this.settings.detail === false ? 1 : this.shake > 0.45 ? 1.045 : p.running ? 1.03 : 1;
+    const zoom = this.cam.zoom || 1;
+    this.cam.zoom = zoom + (want - zoom) * Math.min(1, dt * 3.5);
   }
 
   tryMove(ent, dx, dy, radius) {
@@ -766,9 +786,10 @@ export class Game {
     let ambient = distance < feet ? (1 - distance / feet) ** 1.4 * 0.92 : 0;
     const blocked = !this.los(p.x, p.y, wx, wy);
     if (blocked) return distance < 16 ? ambient : 0;
-    if (!this.state.hasLight || !p.lightOn || p.battery <= 0) return ambient;
+    const lamp = this.lampLight(wx, wy);
+    if (!this.state.hasLight || !p.lightOn || p.battery <= 0) return Math.min(1, Math.max(ambient, lamp));
     const diff = Math.abs(angDiff(Math.atan2(dy, dx), p.facing));
-    if (diff > TUNING.cone && distance > feet) return ambient;
+    if (diff > TUNING.cone && distance > feet) return Math.min(1, Math.max(ambient, lamp));
     const fall = Math.max(0, 1 - distance / TUNING.lightRange);
     const cone = diff < TUNING.cone ? 1 - diff / TUNING.cone : 0;
     let beam = fall * (0.22 + 0.78 * cone);
@@ -776,7 +797,24 @@ export class Game {
       const flick = this.settings.reduceFlash ? 0.72 : 0.45 + 0.55 * Math.abs(Math.sin(this.time * 26));
       beam *= flick;
     }
-    return Math.min(1, Math.max(ambient, beam));
+    return Math.min(1, Math.max(ambient, beam, lamp));
+  }
+
+  lampLight(wx, wy) {
+    const lamps = [
+      { x: 5.4 * TILE, y: 32.5 * TILE, r: 52, s: 0.4 },
+      { x: 10.2 * TILE, y: 34.1 * TILE, r: 40, s: 0.2 },
+      { x: 27.4 * TILE, y: 33.4 * TILE, r: 36, s: 0.3, pulse: true },
+    ];
+    let best = 0;
+    for (const lamp of lamps) {
+      const distance = Math.hypot(wx - lamp.x, wy - lamp.y);
+      if (distance > lamp.r || !this.los(lamp.x, lamp.y, wx, wy)) continue;
+      let strength = (1 - distance / lamp.r) ** 1.35 * lamp.s;
+      if (lamp.pulse) strength *= 0.72 + 0.28 * Math.abs(Math.sin(this.time * 2.6));
+      if (strength > best) best = strength;
+    }
+    return best;
   }
 
   beamTouches(enemy) {
@@ -873,7 +911,7 @@ export class Game {
       this.say(slot.id === 'stick' ? 'The shaft is cracked. It needs tape.' : 'Nothing left of it.');
     }
     p.atk = def.cool;
-    this.audio.swing();
+    this.audio.swing(slot?.id || 'fist');
     this.makeNoise(def.noise || 20, 0.25);
     for (const enemy of this.state.enemies) {
       if (!enemy.alive || enemy.downUntil > this.time) continue;
@@ -959,8 +997,11 @@ export class Game {
     const dy = enemy.y - p.y;
     const mag = Math.hypot(dx, dy) || 1;
     this.tryMove(enemy, (dx / mag) * 14, (dy / mag) * 14, enemy.radius);
-    this.audio.hit();
-    this.fx.burst(enemy.x, enemy.y, '#e4c07a', 7, 48);
+    this.audio.hit(enemy.kind);
+    this.leaveTrace('hit', enemy.x, enemy.y);
+    this.kickX = (this.kickX || 0) + (dx / mag) * 4;
+    this.kickY = (this.kickY || 0) + (dy / mag) * 3;
+    this.fx.burst(enemy.x, enemy.y, '#e4c07a', 10, 70);
     if (this.settings.shake !== false) this.hitStop = 0.035;
     if (enemy.hp > 0) return;
     if (enemy.kind === 'grin') {
@@ -1097,13 +1138,13 @@ export class Game {
         this.consume(door.lock);
         st.unlocked = true;
         st.open = true;
-        this.audio.door();
+        this.audio.door(door.id);
         this.makeNoise(72, 0.35);
         this.say('The lock gives.');
         return;
       }
       st.open = true;
-      this.audio.door();
+      this.audio.door(door.id);
       this.makeNoise(60, 0.3);
       return;
     }
@@ -1112,7 +1153,7 @@ export class Game {
       return;
     }
     st.open = false;
-    this.audio.door();
+    this.audio.door(door.id);
   }
 
   useProp(prop) {
@@ -1121,7 +1162,7 @@ export class Game {
       this.state.player.lightOn = true;
       this.state.player.battery = Math.max(this.state.player.battery, 82);
       this.state.taken[prop.id] = true;
-      this.audio.pickup();
+      this.audio.pickup('flashlight');
       this.say('Flashlight. F toggles it. It will not last.');
       return;
     }
@@ -1132,7 +1173,7 @@ export class Game {
       }
       this.state.player.battery = Math.min(100, this.state.player.battery + 55);
       this.state.taken[prop.id] = true;
-      this.audio.pickup();
+      this.audio.pickup('battery');
       this.say('You change the batteries.');
       return;
     }
@@ -1142,7 +1183,7 @@ export class Game {
         return;
       }
       this.state.taken[prop.id] = true;
-      this.audio.pickup();
+      this.audio.pickup(prop.item);
       this.say(`${ITEMS[prop.item].name}.`);
       this.storyItem(prop.item);
       return;
@@ -1189,7 +1230,7 @@ export class Game {
       return;
     }
     items.shift();
-    this.audio.pickup();
+    this.audio.pickup(next.item);
     this.say(`${ITEMS[next.item].name}.`);
     this.storyItem(next.item);
   }
@@ -1197,7 +1238,7 @@ export class Game {
   openNote(id) {
     this.state.flags.read[id] = true;
     this.state.screen = { type: 'note', id };
-    this.audio.pickup();
+    this.audio.pickup('note');
   }
 
   openInspect(id) {
@@ -1379,7 +1420,7 @@ export class Game {
         have.count += moved;
         slot.count -= moved;
         if (slot.count <= 0) this.state.dropped = this.state.dropped.filter((item) => item !== drop);
-        this.audio.pickup();
+        this.audio.pickup(slot.id);
         this.say(`${def.name}.`);
         return;
       }
@@ -1393,7 +1434,7 @@ export class Game {
     if (this.state.equipped < 0 && (def?.type === 'weapon' || def?.type === 'camera')) {
       this.state.equipped = this.state.inv.length - 1;
     }
-    this.audio.pickup();
+    this.audio.pickup(slot.id);
     this.say(`${def.name}.`);
   }
 
