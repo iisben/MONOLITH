@@ -18,6 +18,7 @@
         <canvas id="view" width="416" height="224" aria-label="Don't Look, the house"></canvas>
         <div id="scan"></div>
         <div id="vignette"></div>
+        <div id="grain"></div>
         <div id="hurt"></div>
         <div id="whiteflash"></div>
         <div id="grinflash" hidden><img src="assets/grin.jpg" alt=""></div>
@@ -41,9 +42,9 @@
         <div id="portrait"></div>
         <div id="vitals">
           <div id="condition">FINE</div>
-          <div class="stat"><span>HP</span><span class="meter"><span id="hp"></span></span></div>
-          <div class="stat"><span>ST</span><span class="meter stam"><span id="stam"></span></span></div>
-          <div class="stat"><span>LT</span><span class="meter light"><span id="light"></span></span></div>
+          <div class="stat"><span>HP</span><span class="meter"><i id="hp-ghost"></i><i id="hp"></i></span></div>
+          <div class="stat"><span>ST</span><span class="meter stam"><i id="stam-ghost"></i><i id="stam"></i></span></div>
+          <div class="stat"><span>LT</span><span class="meter light"><i id="light-ghost"></i><i id="light"></i></span></div>
         </div>
         <div id="loadout">
           <div id="slots"></div>
@@ -78,6 +79,7 @@
 
   <div id="title">
     <img class="bg" src="assets/grin.jpg" alt="">
+    <canvas id="title-drift" width="416" height="224" aria-hidden="true"></canvas>
     <div class="shade"></div>
     <div class="title-inner">
       <p class="kicker">A house, after the photo</p>
@@ -92,6 +94,12 @@
         <label><input type="checkbox" data-setting="reduceFlash" id="opt-flash"> Less flicker</label>
         <label><input type="checkbox" data-setting="captions" id="opt-captions" checked> Captions</label>
         <label>Volume <input type="range" data-setting="volume" id="opt-volume" min="0" max="1" step="0.05" value="0.85"></label>
+        <label>Music <input type="range" data-setting="music" id="opt-music" min="0" max="1" step="0.05" value="0.85"></label>
+        <label>Effects <input type="range" data-setting="sfx" id="opt-sfx" min="0" max="1" step="0.05" value="0.9"></label>
+        <label>Room <input type="range" data-setting="ambience" id="opt-amb" min="0" max="1" step="0.05" value="0.8"></label>
+        <label><input type="checkbox" data-setting="shake" id="opt-shake" checked> Screen shake</label>
+        <label><input type="checkbox" data-setting="post" id="opt-post" checked> Grade</label>
+        <label><input type="checkbox" data-setting="detail" id="opt-detail" checked> Fine detail</label>
         <label><input type="checkbox" data-setting="touch" id="opt-touch"> Touch controls</label>
       </div>
       <p class="controls">
@@ -106,23 +114,34 @@
         <span>I bag</span>
         <span>M map</span>
         <span>Esc pause</span>
-        <span>Gamepad</span>
+        <span>Gamepad A use</span>
+        <span>B dodge</span>
+        <span>X hit</span>
+        <span>Y light</span>
       </p>
       <p class="fine">Flashes can be shortened. The house still goes dark. Played in this browser. Nothing you do is sent anywhere.</p>
     </div>
   </div>
 
   <div id="intro" hidden>
-    <section id="scene-phone">
+    <section id="scene-road">
+      <div class="headlights"></div>
+      <div class="arrive-copy">
+        <p class="kicker">After the game</p>
+        <p class="lead">You are driving home. The stick is in the back. Mom's house is twenty minutes out. The phone lights up in the cup holder.</p>
+        <button type="button" id="read-text" class="primary">Read it</button>
+      </div>
+    </section>
+    <section id="scene-phone" hidden>
       <div class="phone">
         <header>Messages</header>
         <article class="bubble">
           <span class="avatar mark" aria-hidden="true">B</span>
           <div>
             <p class="who">Ben</p>
-            <p>chris</p>
-            <p>i was messing with the trail photo. i opened something. a void.</p>
-            <p>do not open it.</p>
+            <p>Chris.</p>
+            <p>I was messing with the trail photo of Evan. I opened something. A void.</p>
+            <p>Do not open it.</p>
           </div>
         </article>
         <button type="button" id="open-photo" class="attachment">
@@ -132,8 +151,9 @@
         <article class="bubble">
           <img class="avatar face-trail" src="assets/teammate.jpg" alt="">
           <div>
-            <p>don’t open it.</p>
-            <p>i looked. i’m fine.</p>
+            <p class="who">From the bag</p>
+            <p>Don't open it.</p>
+            <p>I looked. I'm fine.</p>
           </div>
         </article>
       </div>
@@ -145,7 +165,7 @@
       <div class="rearview"><img src="assets/chris.jpg" alt="" class="face-chris"></div>
       <div class="arrive-copy">
         <p class="kicker">Same road</p>
-        <p class="lead">You wake in the driver seat. Same road. Wrong color. The phone is dead. Mom’s house is ahead. Every window is dark. You put the car in the garage. It doesn’t turn over.</p>
+        <p class="lead">You wake in the driver's seat. Same road. Wrong color. The phone is dead. Mom's house is ahead, and every window is dark. You put the car in the garage. It does not turn over.</p>
         <button type="button" id="go-inside" class="primary">Go inside</button>
       </div>
     </section>

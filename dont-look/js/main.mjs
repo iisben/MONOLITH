@@ -1,3 +1,4 @@
+import { itemSprite, moteSprite } from './atlas.mjs';
 import { ITEMS, INSPECTIONS, NOTES, TUNING } from './data.mjs';
 import { createAudio } from './audio.mjs';
 import { SAVE_KEY, Game } from './game.mjs';
@@ -69,12 +70,12 @@ function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
     if (!saved || typeof saved !== 'object') return;
-    if (typeof saved.captions === 'boolean') game.settings.captions = saved.captions;
-    if (typeof saved.reduceFlash === 'boolean') game.settings.reduceFlash = saved.reduceFlash;
-    if (typeof saved.volume === 'number' && saved.volume >= 0 && saved.volume <= 1) {
-      game.settings.volume = saved.volume;
+    for (const key of ['captions', 'reduceFlash', 'shake', 'post', 'detail', 'touch']) {
+      if (typeof saved[key] === 'boolean') game.settings[key] = saved[key];
     }
-    if (typeof saved.touch === 'boolean') game.settings.touch = saved.touch;
+    for (const key of ['volume', 'music', 'sfx', 'ambience']) {
+      if (typeof saved[key] === 'number' && saved[key] >= 0 && saved[key] <= 1) game.settings[key] = saved[key];
+    }
   } catch { /* a private window can refuse */ }
 }
 
@@ -83,7 +84,13 @@ function writeSettings() {
     const payload = {
       captions: game.settings.captions,
       reduceFlash: game.settings.reduceFlash,
+      shake: game.settings.shake !== false,
+      post: game.settings.post !== false,
+      detail: game.settings.detail !== false,
       volume: game.settings.volume,
+      music: game.settings.music,
+      sfx: game.settings.sfx,
+      ambience: game.settings.ambience,
     };
     if (typeof game.settings.touch === 'boolean') payload.touch = game.settings.touch;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(payload));
@@ -97,19 +104,20 @@ function touchPreferred() {
 
 function applySettings() {
   audio.setVolume(game.settings.volume);
+  audio.setBuses({
+    music: game.settings.music ?? 0.85,
+    sfx: game.settings.sfx ?? 0.9,
+    ambience: game.settings.ambience ?? 0.8,
+  });
   document.body.classList.toggle('reduce', !!game.settings.reduceFlash);
+  document.body.classList.toggle('nopost', game.settings.post === false);
   document.body.classList.toggle('touch', touchPreferred());
-  for (const node of document.querySelectorAll('[data-setting="reduceFlash"]')) {
-    node.checked = !!game.settings.reduceFlash;
-  }
-  for (const node of document.querySelectorAll('[data-setting="captions"]')) {
-    node.checked = game.settings.captions !== false;
-  }
-  for (const node of document.querySelectorAll('[data-setting="touch"]')) {
-    node.checked = touchPreferred();
-  }
-  for (const node of document.querySelectorAll('[data-setting="volume"]')) {
-    if (document.activeElement !== node) node.value = String(game.settings.volume);
+  for (const node of document.querySelectorAll('[data-setting]')) {
+    const key = node.dataset.setting;
+    if (node.type === 'checkbox') node.checked = key === 'touch' ? touchPreferred() : game.settings[key] !== false && !!game.settings[key];
+    if (node.type === 'range' && document.activeElement !== node && game.settings[key] != null) {
+      node.value = String(game.settings[key]);
+    }
   }
 }
 
@@ -117,7 +125,7 @@ function settingChanged(target) {
   const key = target?.dataset?.setting;
   if (!key) return;
   if (target.type === 'checkbox') game.settings[key] = target.checked;
-  if (target.type === 'range') game.settings.volume = Number(target.value);
+  if (target.type === 'range') game.settings[key] = Number(target.value);
   writeSettings();
   applySettings();
 }
@@ -141,7 +149,7 @@ function clearIntro() {
 }
 
 function showScene(name) {
-  for (const id of ['phone', 'glitch', 'arrive']) {
+  for (const id of ['road', 'phone', 'glitch', 'arrive']) {
     document.querySelector(`#scene-${id}`).hidden = id !== name;
   }
 }
@@ -155,7 +163,8 @@ function startIntro() {
   const photo = document.querySelector('#glitch-photo');
   photo.src = 'assets/evan.jpg';
   photo.classList.remove('hit');
-  showScene('phone');
+  showScene('road');
+  audio.mix({ danger: 0.08, humVol: 0.01, humPan: 0, distorted: false });
 }
 
 function openPhoto() {
@@ -439,11 +448,16 @@ function bindInput() {
   });
   document.addEventListener('change', (event) => settingChanged(event.target));
   document.addEventListener('input', (event) => {
-    if (event.target?.dataset?.setting === 'volume') settingChanged(event.target);
+    if (event.target?.dataset?.setting && event.target.type === 'range') settingChanged(event.target);
   });
 
   beginBtn.addEventListener('click', startIntro);
   document.querySelector('#continue').addEventListener('click', continueGame);
+  document.querySelector('#read-text').addEventListener('click', () => {
+    audio.unlock();
+    audio.ui();
+    showScene('phone');
+  });
   document.querySelector('#open-photo').addEventListener('click', openPhoto);
   document.querySelector('#go-inside').addEventListener('click', () => beginPlay(true));
   document.querySelector('#skip').addEventListener('click', () => beginPlay(true));
@@ -589,9 +603,9 @@ function syncHud() {
   const condition = document.querySelector('#condition');
   condition.textContent = band === 'fine' ? 'FINE' : band === 'hurt' ? 'HURT' : 'CRITICAL';
   condition.className = band;
-  document.querySelector('#hp').style.width = `${hp}%`;
-  document.querySelector('#stam').style.width = `${player.stamina}%`;
-  document.querySelector('#light').style.width = state.hasLight ? `${player.battery}%` : '0%';
+  trail('hp', hp);
+  trail('stam', player.stamina);
+  trail('light', state.hasLight ? player.battery : 0);
 
   const frameEl = document.querySelector('#portrait');
   frameEl.className = band;
@@ -611,6 +625,8 @@ function syncHud() {
     const slot = state.inv[i];
     const cell = cells[i];
     cell.textContent = slot ? shortName(slot) : '';
+    const icon = slot ? iconFor(slot.id) : '';
+    cell.style.backgroundImage = icon ? `url("${icon}")` : '';
     cell.classList.toggle('equipped', i === state.equipped);
     cell.classList.toggle('on', !!state.screen && i === state.selected && !!slot);
   }
@@ -773,8 +789,8 @@ function buildInspect(id) {
 
 function buildInventory() {
   card.appendChild(el('h2', '', 'Hands'));
-  card.appendChild(el('p', 'muted', `${game.state.inv.length} of ${TUNING.slots} slots. Heals are used from here.`));
-  if (!game.state.inv.length) card.appendChild(el('p', '', 'Empty. The house is not.'));
+  card.appendChild(el('p', 'muted', `${game.state.inv.length} of ${TUNING.slots} slots. Use a bandage or the pills from here.`));
+  if (!game.state.inv.length) card.appendChild(el('p', '', 'Your hands are empty.'));
   else card.appendChild(itemList(game.state.inv, game.state.selected, (index) => {
     game.state.selected = index;
   }));
@@ -803,7 +819,7 @@ function buildInventory() {
 
 function buildStash() {
   card.appendChild(el('h2', '', 'Parts bin'));
-  card.appendChild(el('p', 'muted', 'The bin keeps what your hands cannot. The car takes what you are holding.'));
+  card.appendChild(el('p', 'muted', 'The bin keeps what your hands cannot. The car only takes what you are holding.'));
   const split = el('div', 'split');
   const left = el('div');
   const right = el('div');
@@ -847,7 +863,7 @@ function buildCar(interactive) {
   card.appendChild(mom);
   card.appendChild(el('p', '', 'Mom is in the passenger seat. She does not look up.'));
   card.appendChild(el('p', 'slip', "Don't answer me"));
-  if (interactive) card.appendChild(el('p', 'muted', 'The car takes what is in your hands.'));
+  if (interactive) card.appendChild(el('p', 'muted', 'Put a part in while it is in your hands.'));
   for (const part of PARTS) {
     const row = el('div', game.state.installed[part.id] ? 'part on' : 'part');
     row.appendChild(el('div', 'name', part.name));
@@ -879,7 +895,7 @@ function buildMap() {
   map.height = 280;
   card.appendChild(map);
   drawMap(map.getContext('2d'), game, map.width, map.height);
-  card.appendChild(el('p', 'muted', 'Amber is shut. Red is locked. Dim rooms are next door, not yet walked.'));
+  card.appendChild(el('p', 'muted', 'Amber is a closed door. Red is locked. Dim rooms are next door, and you have not walked them yet.'));
   card.appendChild(actions([btn('Close', () => game.closeScreen())]));
 }
 
@@ -898,30 +914,27 @@ function buildPause() {
     ['Bag', 'I or Tab'],
     ['Map', 'M'],
     ['Drop', 'G, from the bag'],
+    ['Gamepad', 'Stick move, A use, B dodge, X hit, Y light'],
   ];
   for (const [name, how] of lines) list.appendChild(el('span', '', `${name} ${how}`));
   card.appendChild(list);
   const settings = el('div', 'settings');
   settings.appendChild(check('Less flicker', 'reduceFlash', !!game.settings.reduceFlash));
+  settings.appendChild(check('Screen shake', 'shake', game.settings.shake !== false));
+  settings.appendChild(check('Grade', 'post', game.settings.post !== false));
+  settings.appendChild(check('Fine detail', 'detail', game.settings.detail !== false));
   settings.appendChild(check('Captions', 'captions', game.settings.captions !== false));
   settings.appendChild(check('Touch controls', 'touch', touchPreferred()));
-  const volume = document.createElement('label');
-  volume.appendChild(document.createTextNode('Volume '));
-  const range = document.createElement('input');
-  range.type = 'range';
-  range.min = '0';
-  range.max = '1';
-  range.step = '0.05';
-  range.value = String(game.settings.volume);
-  range.dataset.setting = 'volume';
-  volume.appendChild(range);
-  settings.appendChild(volume);
+  settings.appendChild(slider('Volume', 'volume'));
+  settings.appendChild(slider('Music', 'music'));
+  settings.appendChild(slider('Effects', 'sfx'));
+  settings.appendChild(slider('Room', 'ambience'));
   card.appendChild(settings);
   card.appendChild(actions([
     btn('Resume', () => game.closeScreen(), 'primary'),
     btn('Title screen', backToTitle),
   ]));
-  card.appendChild(el('p', 'muted', 'The title keeps a slide, if you took one.'));
+  card.appendChild(el('p', 'muted', 'The title keeps your last slide, if you took one.'));
 }
 
 function buildDead() {
@@ -934,7 +947,7 @@ function buildDead() {
   const copy = el('div', 'end-copy');
   copy.appendChild(el('h2', '', 'You looked too long'));
   copy.appendChild(el('p', 'lead', hasSave()
-    ? 'The bench still has you.'
+    ? 'The bench still has a slide of you.'
     : 'There was no slide in the bench.'));
   const buttons = [];
   if (hasSave()) buttons.push(btn('Wake at the bench', wakeFromBench, 'primary'));
@@ -959,7 +972,7 @@ function buildEnding() {
     copy.appendChild(mirror);
   }
   copy.appendChild(el('h2', '', 'The color comes back'));
-  copy.appendChild(el('p', 'lead', 'Mom is in the passenger seat. She doesn’t ask what you saw. The camera is face-down on the dash.'));
+  copy.appendChild(el('p', 'lead', 'Mom is in the passenger seat. She does not ask what you saw. The camera is face-down on the dash.'));
   copy.appendChild(el('p', 'slip', 'Don’t look back'));
   copy.appendChild(actions([btn('Leave it', backToTitle, 'primary')]));
   card.appendChild(copy);
@@ -998,6 +1011,20 @@ function itemList(items, selected, onPick) {
   return list;
 }
 
+function slider(label, key) {
+  const node = document.createElement('label');
+  node.appendChild(document.createTextNode(`${label} `));
+  const range = document.createElement('input');
+  range.type = 'range';
+  range.min = '0';
+  range.max = '1';
+  range.step = '0.05';
+  range.value = String(game.settings[key] ?? 0.8);
+  range.dataset.setting = key;
+  node.appendChild(range);
+  return node;
+}
+
 function check(label, key, checked) {
   const node = document.createElement('label');
   const input = document.createElement('input');
@@ -1026,6 +1053,7 @@ function btn(label, onClick, className) {
   node.type = 'button';
   node.addEventListener('click', () => {
     audio.unlock();
+    audio.ui();
     onClick();
   });
   return node;
@@ -1041,6 +1069,44 @@ function el(tag, className, text) {
 function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
+
+function trail(key, value) {
+  const store = game.trails || (game.trails = {});
+  if (store[key] == null || value >= store[key]) store[key] = value;
+  else store[key] = Math.max(value, store[key] - 0.65);
+  const ghost = document.querySelector(`#${key}-ghost`);
+  if (ghost) ghost.style.width = `${store[key]}%`;
+  const bar = document.querySelector(`#${key}`);
+  if (bar) bar.style.width = `${value}%`;
+}
+
+const icons = new Map();
+function iconFor(id) {
+  if (icons.has(id)) return icons.get(id);
+  let url = '';
+  try { url = itemSprite(id).toDataURL(); } catch { url = ''; }
+  icons.set(id, url);
+  return url;
+}
+
+function driftTitle(now = 0) {
+  const title = document.querySelector('#title');
+  const canvas = document.querySelector('#title-drift');
+  if (canvas && title && !title.hidden) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const mote = moteSprite();
+    for (let i = 0; i < 28; i += 1) {
+      const x = (i * 47 + now * 0.012) % canvas.width;
+      const y = (40 + i * 23 + Math.sin(now * 0.001 + i) * 18) % canvas.height;
+      ctx.globalAlpha = 0.2 + (i % 5) * 0.08;
+      ctx.drawImage(mote, x, y, 10, 10);
+    }
+    ctx.globalAlpha = 1;
+  }
+  requestAnimationFrame(driftTitle);
+}
+requestAnimationFrame(driftTitle);
 
 function buildGallery() {
   clear(gallery);
