@@ -22,15 +22,22 @@ html, body {
 button, input, label { font: inherit; color: inherit; }
 
 button {
-  background: transparent;
+  background:
+    linear-gradient(180deg, rgba(255, 244, 210, 0.08), transparent 42%),
+    #1a140e;
   color: #e4c07a;
   border: 1px solid #8c7350;
+  box-shadow: inset 0 1px 0 rgba(255, 244, 210, 0.18), inset 0 0 0 1px rgba(40, 28, 18, 0.8);
   padding: 0.55em 0.9em;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
   touch-action: manipulation;
+  transition: transform 0.12s ease, background 0.12s ease;
 }
+
+button:hover,
+button:focus-visible { transform: translateY(-1px); }
 
 button:hover,
 button:focus-visible {
@@ -289,22 +296,33 @@ body.nopost #grain { display: none; }
 }
 
 .meter {
+  position: relative;
   display: block;
   width: 108px;
   height: 8px;
-  background: #241c16;
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 4px),
+    #241c16;
   border: 1px solid #3a3024;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.65);
 }
 
-.meter > span {
-  display: block;
-  height: 100%;
+.meter > i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
   width: 0;
-  background: #9d2f2a;
 }
 
-.meter.stam > span { background: #8eb4c4; }
-.meter.light > span { background: #e4c07a; }
+.meter > i.ghost,
+#hp-ghost,
+#stam-ghost,
+#light-ghost { background: rgba(228, 192, 122, 0.28); }
+
+#hp { background: linear-gradient(180deg, #c45048, #6e221c); }
+#stam { background: linear-gradient(180deg, #b7d0da, #5e8896); }
+#light { background: linear-gradient(180deg, #f0d7a0, #a67c3a); }
 
 #loadout { min-width: 0; }
 
@@ -315,12 +333,15 @@ body.nopost #grain { display: none; }
 }
 
 button.slot {
-  height: 36px;
-  padding: 2px 3px;
-  font-size: 10px;
+  height: 44px;
+  padding: 16px 2px 2px;
+  font-size: 9px;
   letter-spacing: 0;
   text-transform: none;
   color: #d7cbb6;
+  background-repeat: no-repeat;
+  background-position: center 2px;
+  background-size: 18px 18px;
 }
 
 button.slot.equipped { box-shadow: inset 0 -2px 0 #e4c07a; }
@@ -409,10 +430,13 @@ body.touch #touch { width: 100%; justify-content: space-between; }
   width: min(460px, calc(100vw - 28px));
   max-height: min(78dvh, 640px);
   overflow: auto;
-  background: #171410;
-  border: 1px solid #3a3024;
+  background:
+    linear-gradient(180deg, rgba(228, 192, 122, 0.07), transparent 90px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.015) 0 1px, transparent 1px 5px),
+    #171410;
+  border: 1px solid #5a4634;
   padding: 18px 18px 14px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), inset 0 0 0 1px #2a2118, inset 0 1px 0 rgba(255, 244, 210, 0.12);
 }
 
 #card h2 {
@@ -606,12 +630,23 @@ canvas.portrait {
   padding: 32px 20px 48px;
 }
 
+#title-drift {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.45;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
 #title h1 {
   font-weight: normal;
   font-size: clamp(42px, 8vw, 78px);
   letter-spacing: 0.16em;
   margin: 0 0 8px;
   padding-left: 0.16em;
+  text-shadow: 0 2px 0 #1a140e, 0 12px 30px rgba(0, 0, 0, 0.65);
 }
 
 .kicker {

@@ -42,9 +42,9 @@
         <div id="portrait"></div>
         <div id="vitals">
           <div id="condition">FINE</div>
-          <div class="stat"><span>HP</span><span class="meter"><span id="hp"></span></span></div>
-          <div class="stat"><span>ST</span><span class="meter stam"><span id="stam"></span></span></div>
-          <div class="stat"><span>LT</span><span class="meter light"><span id="light"></span></span></div>
+          <div class="stat"><span>HP</span><span class="meter"><i id="hp-ghost"></i><i id="hp"></i></span></div>
+          <div class="stat"><span>ST</span><span class="meter stam"><i id="stam-ghost"></i><i id="stam"></i></span></div>
+          <div class="stat"><span>LT</span><span class="meter light"><i id="light-ghost"></i><i id="light"></i></span></div>
         </div>
         <div id="loadout">
           <div id="slots"></div>
@@ -79,6 +79,7 @@
 
   <div id="title">
     <img class="bg" src="assets/grin.jpg" alt="">
+    <canvas id="title-drift" width="416" height="224" aria-hidden="true"></canvas>
     <div class="shade"></div>
     <div class="title-inner">
       <p class="kicker">A house, after the photo</p>
@@ -98,6 +99,7 @@
         <label>Room <input type="range" data-setting="ambience" id="opt-amb" min="0" max="1" step="0.05" value="0.8"></label>
         <label><input type="checkbox" data-setting="shake" id="opt-shake" checked> Screen shake</label>
         <label><input type="checkbox" data-setting="post" id="opt-post" checked> Grade</label>
+        <label><input type="checkbox" data-setting="detail" id="opt-detail" checked> Fine detail</label>
         <label><input type="checkbox" data-setting="touch" id="opt-touch"> Touch controls</label>
       </div>
       <p class="controls">

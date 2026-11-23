@@ -1,3 +1,4 @@
+import { itemSprite, moteSprite } from './atlas.mjs';
 import { ITEMS, INSPECTIONS, NOTES, TUNING } from './data.mjs';
 import { createAudio } from './audio.mjs';
 import { SAVE_KEY, Game } from './game.mjs';
@@ -69,7 +70,7 @@ function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
     if (!saved || typeof saved !== 'object') return;
-    for (const key of ['captions', 'reduceFlash', 'shake', 'post', 'touch']) {
+    for (const key of ['captions', 'reduceFlash', 'shake', 'post', 'detail', 'touch']) {
       if (typeof saved[key] === 'boolean') game.settings[key] = saved[key];
     }
     for (const key of ['volume', 'music', 'sfx', 'ambience']) {
@@ -85,6 +86,7 @@ function writeSettings() {
       reduceFlash: game.settings.reduceFlash,
       shake: game.settings.shake !== false,
       post: game.settings.post !== false,
+      detail: game.settings.detail !== false,
       volume: game.settings.volume,
       music: game.settings.music,
       sfx: game.settings.sfx,
@@ -595,9 +597,9 @@ function syncHud() {
   const condition = document.querySelector('#condition');
   condition.textContent = band === 'fine' ? 'FINE' : band === 'hurt' ? 'HURT' : 'CRITICAL';
   condition.className = band;
-  document.querySelector('#hp').style.width = `${hp}%`;
-  document.querySelector('#stam').style.width = `${player.stamina}%`;
-  document.querySelector('#light').style.width = state.hasLight ? `${player.battery}%` : '0%';
+  trail('hp', hp);
+  trail('stam', player.stamina);
+  trail('light', state.hasLight ? player.battery : 0);
 
   const frameEl = document.querySelector('#portrait');
   frameEl.className = band;
@@ -617,6 +619,8 @@ function syncHud() {
     const slot = state.inv[i];
     const cell = cells[i];
     cell.textContent = slot ? shortName(slot) : '';
+    const icon = slot ? iconFor(slot.id) : '';
+    cell.style.backgroundImage = icon ? `url("${icon}")` : '';
     cell.classList.toggle('equipped', i === state.equipped);
     cell.classList.toggle('on', !!state.screen && i === state.selected && !!slot);
   }
@@ -912,6 +916,7 @@ function buildPause() {
   settings.appendChild(check('Less flicker', 'reduceFlash', !!game.settings.reduceFlash));
   settings.appendChild(check('Screen shake', 'shake', game.settings.shake !== false));
   settings.appendChild(check('Grade', 'post', game.settings.post !== false));
+  settings.appendChild(check('Fine detail', 'detail', game.settings.detail !== false));
   settings.appendChild(check('Captions', 'captions', game.settings.captions !== false));
   settings.appendChild(check('Touch controls', 'touch', touchPreferred()));
   settings.appendChild(slider('Volume', 'volume'));
@@ -1058,6 +1063,44 @@ function el(tag, className, text) {
 function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
+
+function trail(key, value) {
+  const store = game.trails || (game.trails = {});
+  if (store[key] == null || value >= store[key]) store[key] = value;
+  else store[key] = Math.max(value, store[key] - 0.65);
+  const ghost = document.querySelector(`#${key}-ghost`);
+  if (ghost) ghost.style.width = `${store[key]}%`;
+  const bar = document.querySelector(`#${key}`);
+  if (bar) bar.style.width = `${value}%`;
+}
+
+const icons = new Map();
+function iconFor(id) {
+  if (icons.has(id)) return icons.get(id);
+  let url = '';
+  try { url = itemSprite(id).toDataURL(); } catch { url = ''; }
+  icons.set(id, url);
+  return url;
+}
+
+function driftTitle(now = 0) {
+  const title = document.querySelector('#title');
+  const canvas = document.querySelector('#title-drift');
+  if (canvas && title && !title.hidden) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const mote = moteSprite();
+    for (let i = 0; i < 28; i += 1) {
+      const x = (i * 47 + now * 0.012) % canvas.width;
+      const y = (40 + i * 23 + Math.sin(now * 0.001 + i) * 18) % canvas.height;
+      ctx.globalAlpha = 0.2 + (i % 5) * 0.08;
+      ctx.drawImage(mote, x, y, 10, 10);
+    }
+    ctx.globalAlpha = 1;
+  }
+  requestAnimationFrame(driftTitle);
+}
+requestAnimationFrame(driftTitle);
 
 function buildGallery() {
   clear(gallery);
