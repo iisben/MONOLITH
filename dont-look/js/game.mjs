@@ -73,7 +73,7 @@ export class Game {
   newGame() {
     const doors = {};
     for (const door of this.world.doors) {
-      doors[door.id] = { open: !!door.open, unlocked: !door.lock };
+      doors[door.id] = { open: !!door.open, unlocked: !door.lock, swing: door.open ? 1 : 0, rattle: 0 };
     }
     const containers = {};
     for (const prop of this.world.props) {
@@ -148,7 +148,7 @@ export class Game {
     this.hurtFlash = 0;
     this.mouseAim = false;
     this.snapCamera();
-    this.say("She's calling. The foyer table has a light.");
+    this.say("She's calling from inside. The foyer table has a light.");
   }
 
   makeEnemy(spawn) {
@@ -240,7 +240,7 @@ export class Game {
   save(quiet) {
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(this.serialize()));
-      if (!quiet) this.say('The slide holds the room. For now.');
+      if (!quiet) this.say('The slide holds this room. For now.');
       return true;
     } catch {
       if (!quiet) this.say("The slide won't stick in this browser.");
@@ -276,6 +276,10 @@ export class Game {
     for (const [id, door] of Object.entries(data.doors || {})) {
       if (s.doors[id]) Object.assign(s.doors[id], door);
     }
+    for (const st of Object.values(s.doors)) {
+      if (st.swing == null) st.swing = st.open ? 1 : 0;
+      if (st.rattle == null) st.rattle = 0;
+    }
     for (const saved of data.enemies || []) {
       const enemy = s.enemies.find((item) => item.id === saved.id);
       if (!enemy) continue;
@@ -296,7 +300,7 @@ export class Game {
     const roomName = ROOMS[s.room]?.name || '';
     this.roomBanner = roomName ? { name: roomName, until: this.uiTime + 1.7 } : null;
     this.snapCamera();
-    this.say('The slide lets go. You are still here.');
+    this.say('The slide lets go. You are still in the house.');
   }
 
   snapCamera() {
@@ -317,6 +321,7 @@ export class Game {
     this.shake = this.settings.shake === false ? 0 : Math.max(0, this.shake - frame * 2.2);
     this.kickX = (this.kickX || 0) * Math.max(0, 1 - frame * 7);
     this.kickY = (this.kickY || 0) * Math.max(0, 1 - frame * 7);
+    this.veil = Math.max(0, (this.veil || 0) - frame * 1.4);
     if (this.caption && this.uiTime > this.caption.until) this.caption = null;
     if (this.state.screen || this.state.dead || this.state.won) {
       this.audio.mix({ danger: 0.05, humVol: 0.004, humPan: 0, distorted: false });
@@ -346,6 +351,12 @@ export class Game {
 
   stepSim(step) {
     this.time += step;
+    for (const st of Object.values(this.state.doors)) {
+      const target = st.open ? 1 : 0;
+      const swing = st.swing ?? target;
+      st.swing = swing + (target - swing) * Math.min(1, step * 7);
+      if (st.rattle > 0) st.rattle -= step;
+    }
     if (this.state.traces) {
       for (const trace of this.state.traces) trace.age += step;
       this.state.traces = this.state.traces.filter((trace) => trace.age < trace.life);
@@ -437,7 +448,7 @@ export class Game {
       if (p.battery <= 0) {
         p.battery = 0;
         p.lightOn = false;
-        this.say('The light dies.');
+        this.say('The flashlight dies.');
       }
     }
   }
@@ -449,12 +460,15 @@ export class Game {
     const previous = this.state.room && ROOMS[this.state.room] ? ROOMS[this.state.room].name : '';
     this.state.room = id;
     this.state.seen[id] = true;
-    if (ROOMS[id].name !== previous) this.roomBanner = { name: ROOMS[id].name, until: this.uiTime + 1.7 };
+    if (ROOMS[id].name !== previous) {
+      this.roomBanner = { name: ROOMS[id].name, until: this.uiTime + 1.7 };
+      this.veil = 0.42;
+    }
     if (id === 'yard') this.state.flags.enteredYard = true;
     this.audio.zone(id);
     if (id === 'mom' && !this.state.flags.sawMom) {
       this.state.flags.sawMom = true;
-      this.ambient('Breathing. Close. Not yours.');
+      this.ambient('Breathing, close. It is not yours.');
     }
   }
 
@@ -500,6 +514,9 @@ export class Game {
         enemy.revealed = true;
         this.spook('grin');
         this.audio.stinger();
+        this.hitStop = this.settings.shake === false ? 0.02 : 0.07;
+        this.kickX = (enemy.x - this.state.player.x) * 0.05;
+        this.kickY = (enemy.y - this.state.player.y) * 0.05;
         this.say('The smile.');
       }
     } else if (enemy.state === 'chase') {
@@ -572,7 +589,7 @@ export class Game {
     if (!wake) return;
     enemy.awake = true;
     enemy.state = 'chase';
-    if (enemy.lightWake) this.ambient('Something in the kitchen moves.');
+    if (enemy.lightWake) this.ambient('Something moves in the kitchen.');
     if (enemy.id === 'yardbug') this.ambient('Something is in the yard with you.');
     if (enemy.flag === 'tookCarKeys') this.ambient('The dining room answers.');
   }
@@ -839,7 +856,7 @@ export class Game {
   toggleLight() {
     if (!this.state || this.state.screen) return;
     if (!this.state.hasLight) {
-      this.say('No light yet.');
+      this.say('You do not have a light yet.');
       return;
     }
     const p = this.state.player;
@@ -908,7 +925,7 @@ export class Game {
     let damage = def.dmg;
     if (slot && def.dur != null && slot.dur <= 0) {
       damage = 6;
-      this.say(slot.id === 'stick' ? 'The shaft is cracked. It needs tape.' : 'Nothing left of it.');
+      this.say(slot.id === 'stick' ? 'The shaft is cracked. It needs tape.' : 'There is nothing left of it.');
     }
     p.atk = def.cool;
     this.audio.swing(slot?.id || 'fist');
@@ -931,7 +948,7 @@ export class Game {
   shoot(def) {
     const ammoIndex = this.state.inv.findIndex((slot) => slot.id === 'ammo' && slot.count > 0);
     if (ammoIndex < 0) {
-      this.say('Empty.');
+      this.say('No rounds left.');
       return;
     }
     this.state.inv[ammoIndex].count -= 1;
@@ -975,7 +992,7 @@ export class Game {
       enemy.stunUntil = this.time + (enemy.kind === 'grin' ? 3.2 : 2.2);
       stunned += 1;
     }
-    this.say(stunned ? 'The bulb pops. It flinches.' : 'The bulb pops on an empty room.');
+    this.say(stunned ? 'The bulb pops. It flinches.' : 'The bulb pops. The room is empty.');
   }
 
   inArc(enemy, range, arc) {
@@ -1122,17 +1139,21 @@ export class Game {
     const st = this.state.doors[door.id];
     if (!st.open) {
       if (door.lock === 'power' && !this.state.flags.powerOn && !st.unlocked) {
-        this.say('The motor is dead. Seat the fuse in the car.');
+        this.say('The motor is dead. Put the fuse in the car.');
+        st.rattle = 0.22;
+        this.audio.creak(0);
         return;
       }
       if (door.lock && door.lock !== 'power' && !st.unlocked) {
         if (!this.has(door.lock)) {
           const lines = {
-            'key-her': 'Her door. Locked.',
-            'key-base': 'The basement. Locked. Cold air under the door.',
+            'key-her': 'Her door is locked.',
+            'key-base': 'The basement is locked. Cold air comes under the door.',
             'key-shed': 'The shed is locked.',
           };
           this.say(lines[door.lock] || 'Locked.');
+          st.rattle = 0.28;
+          this.audio.creak(0);
           return;
         }
         this.consume(door.lock);
@@ -1149,7 +1170,7 @@ export class Game {
       return;
     }
     if (door.sticky) {
-      this.say('The door is up. Leave it.');
+      this.say('The yard door is up. Leave it up.');
       return;
     }
     st.open = false;
@@ -1163,7 +1184,7 @@ export class Game {
       this.state.player.battery = Math.max(this.state.player.battery, 82);
       this.state.taken[prop.id] = true;
       this.audio.pickup('flashlight');
-      this.say('Flashlight. F toggles it. It will not last.');
+      this.say('Flashlight. Press F to toggle it. It will not last.');
       return;
     }
     if (prop.kind === 'battery') {
@@ -1216,7 +1237,7 @@ export class Game {
   search(prop) {
     const items = this.state.containers[prop.id];
     if (!items?.length) {
-      this.say('Empty.');
+      this.say('Nothing left in there.');
       return;
     }
     const next = items[0];
@@ -1270,13 +1291,13 @@ export class Game {
     const flags = this.state.flags;
     if (id === 'key-base' && !flags.tookBaseKey) {
       flags.tookBaseKey = true;
-      this.say('The sweater is warm. The breathing on the bed is not.');
+      this.say('The sweater is warm. The breathing on the bed is not hers.');
       this.audio.stinger();
     }
     if (id === 'key-car' && !flags.tookCarKeys) {
       flags.tookCarKeys = true;
       if (this.state.doors.her) this.state.doors.her.open = false;
-      this.say('Her door slams. Something in the dining room answers.');
+      this.say('Her door slams. Something in the dining room answers it.');
       this.audio.door();
     }
     if (id === 'fuse' && !flags.tookFuse) {
@@ -1289,7 +1310,7 @@ export class Game {
     if (id === 'gas' && !flags.tookGas) {
       flags.tookGas = true;
       this.makeNoise(420, 1.3);
-      this.say('The can sloshes. It hears you.');
+      this.say('The can sloshes. Something hears you.');
       this.audio.stinger();
     }
   }
@@ -1299,7 +1320,7 @@ export class Game {
     const installed = this.state.installed;
     if (part === 'photo') {
       if (!installed.fuse || !installed.keys || !installed.gas) {
-        this.say("The car is still dead. A picture won't drive it.");
+        this.say('The car is still dead. A picture will not start it.');
         return;
       }
       const index = this.state.inv.findIndex((slot) => slot.id === 'camera');
@@ -1314,11 +1335,11 @@ export class Game {
     }
     const need = { fuse: 'fuse', keys: 'key-car', gas: 'gas' };
     if (installed[part]) {
-      this.say('Already in.');
+      this.say('That is already in the car.');
       return;
     }
     if (!this.has(need[part])) {
-      this.say("You don't have it on you.");
+      this.say('You are not holding it.');
       return;
     }
     this.consume(need[part]);
@@ -1332,7 +1353,7 @@ export class Game {
       this.audio.door();
       this.say('The motor grinds. The yard door stays up.');
     } else if (part === 'keys') this.say('The key turns. The dash stays dark.');
-    else this.say('The can empties into the tank. The gauge climbs off E.');
+    else this.say('The can empties into the tank. The needle climbs off empty.');
   }
 
   beginFinale() {
@@ -1357,7 +1378,7 @@ export class Game {
   useSave() {
     const index = this.state.inv.findIndex((slot) => slot.id === 'film' && slot.count > 0);
     if (index < 0) {
-      this.say('No film. The bench takes one slide.');
+      this.say('No film. The bench needs one slide.');
       return;
     }
     const slot = this.state.inv[index];
@@ -1442,7 +1463,7 @@ export class Game {
     if (this.state.flags.toldFull) this.say('Your hands are full.');
     else {
       this.state.flags.toldFull = true;
-      this.say('Your hands are full. The garage bin holds the rest.');
+      this.say('Your hands are full. The bin in the garage will hold the rest.');
     }
   }
 
@@ -1547,7 +1568,7 @@ export class Game {
     if (def.type === 'tape') {
       const stick = this.state.inv.find((item) => item.id === 'stick');
       if (!stick) {
-        this.say('Nothing to wrap.');
+        this.say('There is no stick to wrap.');
         return;
       }
       stick.dur = ITEMS.stick.dur;
@@ -1572,7 +1593,7 @@ export class Game {
         this.audio.stinger();
       } else this.say('The face is closer than the trees.');
     } else if (flags.cameraLooks === 2) this.say('The smile is closer than it was.');
-    else this.say('Ben, on the trail. Something in the background is wrong.');
+    else this.say('Evan, on the trail. Something behind him is wrong.');
   }
 
   dropSelected() {
@@ -1668,7 +1689,9 @@ export class Game {
   pushCaption(text, kind, priority) {
     if (kind === 'ambient' && !this.settings.captions) return;
     if (this.caption && this.caption.priority > priority && this.uiTime < this.caption.until) return;
-    const life = priority >= 4 ? 3.2 : priority >= 3 ? 4.6 : 2.8;
+    const words = String(text).trim().split(/\s+/).filter(Boolean).length;
+    const read = Math.min(7.5, Math.max(2.2, 1.1 + words * 0.34));
+    const life = Math.max(read, priority >= 3 ? 3.4 : 2.2);
     this.caption = { text, kind, priority, until: this.uiTime + life };
   }
 
