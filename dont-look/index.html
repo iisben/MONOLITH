@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#100e0c">
+  <meta name="description" content="Don't Look — a short top-down horror game about driving home after a photo opens a door.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Don't Look</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect fill='%23100e0c' width='16' height='16'/%3E%3Cpath d='M3 6h2v2H3zm8 0h2v2h-2zM4 11c1.2 1 2.6 1.5 4 1.5s2.8-.5 4-1.5' stroke='%23e4c07a' fill='none'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/game.css">
+</head>
+<body>
+  <div id="app">
+    <div id="stage">
+      <div id="world">
+        <canvas id="view" width="416" height="224" aria-label="Don't Look, the house"></canvas>
+        <div id="scan"></div>
+        <div id="vignette"></div>
+        <div id="hurt"></div>
+        <div id="whiteflash"></div>
+        <div id="grinflash" hidden><img src="assets/grin.jpg" alt=""></div>
+        <div id="room-name"></div>
+        <div id="objective"></div>
+        <div id="pips">
+          <span data-part="fuse">FUSE</span>
+          <span data-part="keys">KEYS</span>
+          <span data-part="gas">GAS</span>
+          <span data-part="photo">PHOTO</span>
+        </div>
+        <div id="prompt" hidden>
+          <span id="prompt-text"></span>
+          <span id="prompt-bar"></span>
+        </div>
+        <div id="subtitle" aria-live="polite"></div>
+      </div>
+    </div>
+    <div id="dock" hidden>
+      <div id="hud">
+        <div id="portrait"></div>
+        <div id="vitals">
+          <div id="condition">FINE</div>
+          <div class="stat"><span>HP</span><span class="meter"><span id="hp"></span></span></div>
+          <div class="stat"><span>ST</span><span class="meter stam"><span id="stam"></span></span></div>
+          <div class="stat"><span>LT</span><span class="meter light"><span id="light"></span></span></div>
+        </div>
+        <div id="loadout">
+          <div id="slots"></div>
+          <div id="meta">
+            <span id="weapon"></span>
+            <span id="bagcount"></span>
+            <span id="stance"></span>
+            <span id="film"></span>
+          </div>
+          <p id="hint"></p>
+        </div>
+      </div>
+      <div id="touch">
+        <div id="stick" aria-hidden="true"><div id="knob"></div></div>
+        <div id="pad">
+          <button type="button" data-act="use">Use</button>
+          <button type="button" data-act="hit">Hit</button>
+          <button type="button" data-act="dodge">Dodge</button>
+          <button type="button" data-act="light">Light</button>
+          <button type="button" data-act="sneak" aria-pressed="false">Sneak</button>
+          <button type="button" data-act="run" aria-pressed="false">Run</button>
+          <button type="button" data-act="bag">Bag</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="overlay" hidden role="dialog" aria-modal="true" aria-label="Menu">
+    <div id="backdrop"></div>
+    <div id="card" tabindex="-1"></div>
+  </div>
+
+  <div id="title">
+    <img class="bg" src="assets/grin.jpg" alt="">
+    <div class="shade"></div>
+    <div class="title-inner">
+      <p class="kicker">A house, after the photo</p>
+      <h1>Don’t Look</h1>
+      <p class="tag">Chris was only driving home.</p>
+      <div class="choices">
+        <button type="button" id="begin" class="primary" disabled>Waking the house</button>
+        <button type="button" id="continue" hidden>Continue</button>
+      </div>
+      <p class="tag">Six slots. Four parts. The car is in the garage.</p>
+      <div class="settings">
+        <label><input type="checkbox" data-setting="reduceFlash" id="opt-flash"> Less flicker</label>
+        <label><input type="checkbox" data-setting="captions" id="opt-captions" checked> Captions</label>
+        <label>Volume <input type="range" data-setting="volume" id="opt-volume" min="0" max="1" step="0.05" value="0.85"></label>
+        <label><input type="checkbox" data-setting="touch" id="opt-touch"> Touch controls</label>
+      </div>
+      <p class="controls">
+        <span>WASD move</span>
+        <span>Mouse aims</span>
+        <span>Shift run</span>
+        <span>C sneak</span>
+        <span>Space dodge</span>
+        <span>F light</span>
+        <span>E use</span>
+        <span>J hit</span>
+        <span>I bag</span>
+        <span>M map</span>
+        <span>Esc pause</span>
+        <span>Gamepad</span>
+      </p>
+      <p class="fine">Flashes can be shortened. The house still goes dark. Played in this browser. Nothing you do is sent anywhere.</p>
+    </div>
+  </div>
+
+  <div id="intro" hidden>
+    <section id="scene-phone">
+      <div class="phone">
+        <header>Messages</header>
+        <article class="bubble">
+          <span class="avatar mark" aria-hidden="true">B</span>
+          <div>
+            <p class="who">Ben</p>
+            <p>chris</p>
+            <p>i was messing with the trail photo. i opened something. a void.</p>
+            <p>do not open it.</p>
+          </div>
+        </article>
+        <button type="button" id="open-photo" class="attachment">
+          <img src="assets/evan.jpg" alt="" class="face-evan">
+          <span>IMG_4041 — open</span>
+        </button>
+        <article class="bubble">
+          <img class="avatar face-trail" src="assets/teammate.jpg" alt="">
+          <div>
+            <p>don’t open it.</p>
+            <p>i looked. i’m fine.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+    <section id="scene-glitch" hidden>
+      <img id="glitch-photo" src="assets/evan.jpg" alt="" class="face-evan">
+    </section>
+    <section id="scene-arrive" hidden>
+      <div class="rearview"><img src="assets/chris.jpg" alt="" class="face-chris"></div>
+      <div class="arrive-copy">
+        <p class="kicker">Same road</p>
+        <p class="lead">You wake in the driver seat. Same road. Wrong color. The phone is dead. Mom’s house is ahead. Every window is dark. You put the car in the garage. It doesn’t turn over.</p>
+        <button type="button" id="go-inside" class="primary">Go inside</button>
+      </div>
+    </section>
+    <button type="button" id="skip">Skip</button>
+  </div>
+
+  <div id="gallery" hidden></div>
+  <p id="boom" hidden></p>
+  <noscript><p class="fine noscript">Don’t Look needs JavaScript. Nothing is sent anywhere.</p></noscript>
+  <script>
+    window.addEventListener('error', (event) => {
+      const boom = document.getElementById('boom');
+      if (!boom || boom.textContent) return;
+      boom.hidden = false;
+      boom.textContent = event.message || 'The house failed to load.';
+    });
+  </script>
+  <script type="module" src="js/main.mjs"></script>
+</body>
+</html>
