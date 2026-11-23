@@ -72,11 +72,13 @@ img { max-width: 100%; -webkit-user-drag: none; }
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 #stage {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   display: grid;
   place-items: center;
 }
@@ -220,6 +222,7 @@ img { max-width: 100%; -webkit-user-drag: none; }
 #subtitle[data-kind="ambient"] { color: #8c7350; }
 
 #dock {
+  flex: none;
   display: flex;
   gap: 14px;
   align-items: center;
@@ -237,8 +240,8 @@ img { max-width: 100%; -webkit-user-drag: none; }
 }
 
 #portrait {
-  width: 54px;
-  height: 64px;
+  width: 64px;
+  height: 76px;
   flex: none;
   border: 1px solid #3a3024;
   background: #241c18;
@@ -249,7 +252,7 @@ img { max-width: 100%; -webkit-user-drag: none; }
 #portrait.crit { border-color: #9d2f2a; }
 
 #portrait canvas.portrait {
-  width: 54px;
+  width: 64px;
   height: auto;
   display: block;
 }
@@ -529,8 +532,16 @@ canvas.portrait {
 .face-mom { object-position: 50% 14%; }
 .face-grin { object-position: center 18%; }
 .face-chris { object-position: 50% 8%; }
-.face-ben { object-position: 50% 29%; }
+.face-evan { object-position: center 34%; }
 .face-trail { object-position: 50% 32%; }
+
+.avatar.mark {
+  display: grid;
+  place-items: center;
+  color: #e4c07a;
+  letter-spacing: 0.08em;
+  font-size: 16px;
+}
 
 .end-copy {
   position: relative;

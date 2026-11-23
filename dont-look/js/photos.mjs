@@ -15,10 +15,10 @@ export const CAST = {
     face: { x: 0.14, y: 0.0, w: 0.7, h: 0.24 },
     bust: { x: 0.04, y: 0.0, w: 0.92, h: 0.42 },
   },
-  ben: {
-    src: '../assets/ben.jpg',
-    face: { x: 0.14, y: 0.1, w: 0.72, h: 0.38 },
-    bust: { x: 0.04, y: 0.06, w: 0.92, h: 0.55 },
+  evan: {
+    src: '../assets/evan.jpg',
+    face: { x: 0.14, y: 0.08, w: 0.72, h: 0.42 },
+    bust: { x: 0.02, y: 0.02, w: 0.96, h: 0.62 },
   },
   basement: {
     src: '../assets/basement.jpg',
@@ -64,8 +64,8 @@ function quant(value, threshold) {
   return Math.max(0, Math.min(248, Math.round(jittered / 8) * 8));
 }
 
-export function portrait(id, { crop = 'face', size = 96, corrupt = 0, grin = 0, dark = 0 } = {}) {
-  const key = [id, crop, size, corrupt.toFixed(2), grin.toFixed(2), dark.toFixed(2), images[id] ? 1 : 0].join('|');
+export function portrait(id, { crop = 'face', size = 96, corrupt = 0, grin = 0, dark = 0, clean = false } = {}) {
+  const key = [id, crop, size, corrupt.toFixed(2), grin.toFixed(2), dark.toFixed(2), clean ? 1 : 0, images[id] ? 1 : 0].join('|');
   const hit = cache.get(key);
   if (hit) return hit;
   const def = CAST[id] || CAST.grin;
@@ -88,8 +88,16 @@ export function portrait(id, { crop = 'face', size = 96, corrupt = 0, grin = 0, 
   const sy = rect.y * img.height;
   const sw = rect.w * img.width;
   const sh = rect.h * img.height;
-  ctx.imageSmoothingEnabled = false;
+  ctx.imageSmoothingEnabled = clean;
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+  if (clean && corrupt <= 0 && grin <= 0) {
+    if (dark > 0) {
+      ctx.fillStyle = `rgba(8, 10, 14, ${Math.min(0.85, dark)})`;
+      ctx.fillRect(0, 0, w, h);
+    }
+    cache.set(key, canvas);
+    return canvas;
+  }
   if (grin > 0 && images.grin) {
     ctx.globalAlpha = grin;
     ctx.drawImage(images.grin, 0, 0, w, h);

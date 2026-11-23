@@ -4,10 +4,11 @@
 // chris.jpg       player
 // mom.jpg         in the car; the voice in the house is not her
 // her.jpg         turquoise shirt; she had the car keys
-// ben.jpg         sent the picture
-// teammate.jpg    gear bag in the garage
+// evan.jpg        the hat. The trail photo Ben opened. Not Ben.
+// teammate.jpg    gear bag in the garage. Looked anyway.
 // basement.jpg    scratched photo by the tanks
 // grin.jpg        the picture. The only face the thing wears.
+// Ben sends the texts. His face is not one of these photos.
 //
 // "Her" is unnamed on purpose. Rename ROOMS.her and these lines if you want one.
 

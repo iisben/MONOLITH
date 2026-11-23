@@ -27,6 +27,7 @@ const gallery = document.querySelector('#gallery');
 const beginBtn = document.querySelector('#begin');
 
 const keys = new Set();
+const padMem = { down: new Set(), use: false };
 const stick = { active: false, x: 0, y: 0, pointer: -1 };
 let touchSneak = false;
 let touchRun = false;
@@ -152,7 +153,7 @@ function startIntro() {
   intro.hidden = false;
   gallery.hidden = true;
   const photo = document.querySelector('#glitch-photo');
-  photo.src = 'assets/teammate.jpg';
+  photo.src = 'assets/evan.jpg';
   photo.classList.remove('hit');
   showScene('phone');
 }
@@ -285,6 +286,90 @@ function gather() {
   const keySneak = keys.has('KeyC');
   game.input.run = keyRun || touchRun;
   game.input.sneak = keySneak || touchSneak;
+  applyPad();
+}
+
+function applyPad() {
+  const list = navigator.getGamepads?.();
+  game.input.pad = null;
+  if (!list || !game.state || mode !== 'play') {
+    padMem.down.clear();
+    return;
+  }
+  let pad = null;
+  for (const candidate of list) {
+    if (candidate?.connected) pad = candidate;
+  }
+  if (!pad) {
+    padMem.down.clear();
+    return;
+  }
+  game.input.pad = pad;
+  const down = new Set();
+  pad.buttons.forEach((button, index) => {
+    if (button.pressed) down.add(index);
+  });
+  const fresh = (index) => down.has(index) && !padMem.down.has(index);
+  const screen = game.state.screen;
+  if (fresh(9)) {
+    if (screen?.type !== 'dead' && screen?.type !== 'ending') {
+      if (screen) game.closeScreen();
+      else game.openPause();
+    }
+  } else if (fresh(8)) {
+    if (screen?.type === 'map') game.closeScreen();
+    else if (!screen) game.openMap();
+  }
+  const reading = screen && (screen.type === 'note' || screen.type === 'inspect' || screen.type === 'board' || screen.type === 'map');
+  if (reading && (fresh(0) || fresh(1))) game.closeScreen();
+  if (screen?.type === 'inventory' || screen?.type === 'stash') {
+    if (fresh(14)) game.nudgeSel(-1);
+    if (fresh(15)) game.nudgeSel(1);
+    if (fresh(0)) game.useSelected();
+    if (fresh(1)) game.closeScreen();
+  }
+  if (!screen) {
+    if (fresh(0)) {
+      game.input.use = true;
+      padMem.use = true;
+      game.use();
+    }
+    if (!down.has(0) && padMem.use) {
+      game.input.use = false;
+      padMem.use = false;
+    }
+    if (fresh(1)) game.dodge();
+    if (fresh(2)) game.attack();
+    if (fresh(3)) game.toggleLight();
+    const rt = (pad.buttons[7]?.value || 0) > 0.45 || (pad.axes[5] || -1) > 0.15;
+    const lt = (pad.buttons[6]?.value || 0) > 0.45 || (pad.axes[4] || -1) > 0.15;
+    if (down.has(5) || rt) game.input.run = true;
+    if (down.has(4) || lt) game.input.sneak = true;
+    const rx = pad.axes[2] || 0;
+    const ry = pad.axes[3] || 0;
+    if (Math.hypot(rx, ry) > 0.35) {
+      game.state.player.facing = Math.atan2(ry, rx);
+      game.mouseAim = true;
+    }
+    let x = 0;
+    let y = 0;
+    if (down.has(14)) x -= 1;
+    if (down.has(15)) x += 1;
+    if (down.has(12)) y -= 1;
+    if (down.has(13)) y += 1;
+    const ax = pad.axes[0] || 0;
+    const ay = pad.axes[1] || 0;
+    if (Math.hypot(ax, ay) > 0.18) {
+      x = ax;
+      y = ay;
+    }
+    if ((x || y) && !stick.active && game.input.x === 0 && game.input.y === 0) {
+      game.input.x = x;
+      game.input.y = y;
+      if (Math.hypot(rx, ry) <= 0.35) game.mouseAim = false;
+    }
+  }
+  padMem.down = down;
 }
 
 function onPress(event) {
@@ -518,7 +603,7 @@ function syncHud() {
       : band === 'crit'
         ? { corrupt: 0.8, grin: 0.25, dark: 0.18 }
         : {};
-    frameEl.appendChild(portrait('chris', { crop: 'face', size: 64, ...opts }));
+    frameEl.appendChild(portrait('chris', { crop: 'face', size: 96, clean: band === 'fine', ...opts }));
   }
 
   const cells = slotsEl.children;
@@ -648,7 +733,7 @@ function buildNote(id) {
   card.appendChild(el('h2', '', note.title));
   if (note.photo) {
     const fig = el('figure', 'photos');
-    fig.appendChild(portrait(note.photo, { crop: 'bust', size: 96 }));
+    fig.appendChild(portrait(note.photo, { crop: 'bust', size: 160, clean: true }));
     card.appendChild(fig);
   }
   const paper = el('div', id === 'ray' ? 'paper scratched' : 'paper');
@@ -667,7 +752,7 @@ function buildInspect(id) {
       const fig = el('figure');
       const opts = {
         crop: spec.crop || 'bust',
-        size: 96,
+        size: 140,
         corrupt: spec.corrupt || 0,
         grin: spec.grin || 0,
       };
@@ -675,6 +760,7 @@ function buildInspect(id) {
         opts.corrupt = 0.8;
         opts.grin = 0.55;
       }
+      opts.clean = !(opts.corrupt || opts.grin);
       fig.appendChild(portrait(spec.id, opts));
       if (spec.label) fig.appendChild(el('figcaption', '', spec.label));
       row.appendChild(fig);
@@ -881,10 +967,10 @@ function buildEnding() {
 
 function cameraFace() {
   const looks = game.state.flags.cameraLooks || 0;
-  if (looks >= 3) return portrait('grin', { crop: 'face', size: 96, corrupt: 0.12 });
-  if (looks >= 2) return portrait('ben', { crop: 'face', size: 96, grin: 0.55, corrupt: 0.35 });
-  if (looks === 1) return portrait('ben', { crop: 'face', size: 96, grin: 0.12 });
-  return portrait('ben', { crop: 'face', size: 96 });
+  if (looks >= 3) return portrait('grin', { crop: 'face', size: 160, corrupt: 0.12 });
+  if (looks >= 2) return portrait('evan', { crop: 'face', size: 160, grin: 0.55, corrupt: 0.35 });
+  if (looks === 1) return portrait('evan', { crop: 'face', size: 160, grin: 0.12 });
+  return portrait('evan', { crop: 'face', size: 160, clean: true });
 }
 
 function slotFacts(slot) {
@@ -961,7 +1047,7 @@ function buildGallery() {
   gallery.hidden = false;
   gallery.appendChild(el('h2', '', 'Faces'));
   const grid = el('div', 'gallery-grid');
-  for (const id of ['chris', 'her', 'mom', 'ben', 'basement', 'grin', 'teammate']) {
+  for (const id of ['chris', 'her', 'mom', 'evan', 'basement', 'grin', 'teammate']) {
     for (const crop of ['face', 'bust']) {
       const fig = el('figure');
       fig.appendChild(portrait(id, { crop, size: 140 }));

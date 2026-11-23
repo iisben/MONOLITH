@@ -343,6 +343,7 @@ export class Game {
     if (sneak && moving) speed = TUNING.sneak;
     else if (run) speed = TUNING.run;
     if (p.hp < 36) speed *= 0.9;
+    p.moving = moving;
     if (moving) {
       if (!this.mouseAim) p.facing = Math.atan2(y, x);
       this.tryMove(p, x * speed * dt, y * speed * dt, 9);
@@ -619,8 +620,9 @@ export class Game {
 
   updateCamera(dt) {
     const p = this.state.player;
-    const tx = clamp(p.x - VIEW_W / 2, 0, COLS * TILE - VIEW_W);
-    const ty = clamp(p.y - VIEW_H / 2, 0, ROWS * TILE - VIEW_H);
+    const look = 26;
+    const tx = clamp(p.x + Math.cos(p.facing) * look - VIEW_W / 2, 0, COLS * TILE - VIEW_W);
+    const ty = clamp(p.y + Math.sin(p.facing) * look - VIEW_H / 2, 0, ROWS * TILE - VIEW_H);
     const k = Math.min(1, dt * 10);
     this.cam.x += (tx - this.cam.x) * k;
     this.cam.y += (ty - this.cam.y) * k;
@@ -902,6 +904,7 @@ export class Game {
     this.shake = 1;
     this.hurtFlash = 0.28;
     this.audio.hurt();
+    this.rumble(0.7, 140);
     const dx = p.x - from.x;
     const dy = p.y - from.y;
     const mag = Math.hypot(dx, dy) || 1;
@@ -1532,6 +1535,7 @@ export class Game {
       humPan: this.pan(humX, humY),
       distorted: !!this.state.flags.tookBaseKey,
     });
+    if (danger > 0.22) this.audio.heart(danger);
   }
 
   pushCaption(text, kind, priority) {
@@ -1552,6 +1556,18 @@ export class Game {
   voice(text) {
     this.pushCaption(text, 'voice', 3);
     this.audio.voice();
+  }
+
+  rumble(magnitude, ms) {
+    const pad = this.input.pad;
+    const actuator = pad?.vibrationActuator || pad?.hapticActuators?.[0];
+    if (!actuator?.playEffect) return;
+    actuator.playEffect('dual-rumble', {
+      startDelay: 0,
+      duration: ms,
+      weakMagnitude: magnitude * 0.65,
+      strongMagnitude: magnitude,
+    }).catch(() => {});
   }
 
   spook(kind) {

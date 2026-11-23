@@ -124,7 +124,7 @@ export function render(game) {
 
   drawDarkness(ctx, game, ox, oy);
   drawCloseSilhouettes(ctx, game, ox, oy);
-  drawPlayer(ctx, state.player, ox, oy, game.time);
+  drawPlayer(ctx, state.player, ox, oy, game);
   drawMotes(ctx, game, ox, oy);
 
   if (game.hurtFlash > 0) {
@@ -272,27 +272,76 @@ function drawGlint(ctx, x, y, color, time) {
   ctx.fillRect(px, py, 1, 1);
 }
 
-function drawPlayer(ctx, player, ox, oy, time) {
+function drawPlayer(ctx, player, ox, oy, game) {
+  const time = game.time;
   const x = Math.round(player.x - ox);
   const y = Math.round(player.y - oy);
   if (player.iframes > 0 && Math.sin(time * 40) > 0) return;
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.fillRect(x - 5, y + 4, 10, 3);
-  ctx.fillStyle = '#b7a78a';
-  ctx.fillRect(x - 3, y + 1, 2, 4);
-  ctx.fillRect(x + 1, y + 1, 2, 4);
-  ctx.fillStyle = '#243656';
-  ctx.fillRect(x - 4, y - 5, 8, 6);
-  ctx.fillStyle = '#d5d8e0';
-  ctx.fillRect(x - 4, y - 5, 2, 6);
-  ctx.fillRect(x + 1, y - 3, 2, 4);
-  ctx.fillStyle = '#241c18';
-  ctx.fillRect(x - 3, y - 8, 6, 4);
-  ctx.strokeStyle = 'rgba(228,192,122,0.7)';
+  const rate = player.running ? 16 : player.sneaking ? 7 : 11;
+  const swing = player.moving ? Math.sin(time * rate) : 0;
+  const bob = player.moving ? Math.round(Math.abs(swing)) : 0;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
   ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(x + Math.cos(player.facing) * 10, y + Math.sin(player.facing) * 10);
+  ctx.ellipse(x, y + 7, 7, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#8a8172';
+  ctx.fillRect(x - 5, y + 1 - bob, 3, 6 + Math.round(swing * 2));
+  ctx.fillRect(x + 2, y + 1 - bob, 3, 6 - Math.round(swing * 2));
+  ctx.fillStyle = '#1c2744';
+  ctx.fillRect(x - 6, y - 7 - bob, 12, 8);
+  ctx.fillStyle = '#d5dbe6';
+  ctx.fillRect(x - 6, y - 7 - bob, 3, 8);
+  ctx.fillRect(x - 1, y - 5 - bob, 2, 6);
+  ctx.fillRect(x + 3, y - 6 - bob, 2, 5);
+  ctx.fillStyle = '#c49a78';
+  ctx.fillRect(x - 3, y - 11 - bob, 6, 5);
+  ctx.fillStyle = '#241c18';
+  ctx.fillRect(x - 4, y - 13 - bob, 8, 3);
+  const aim = 12;
+  ctx.strokeStyle = 'rgba(228,192,122,0.85)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 4);
+  ctx.lineTo(x + Math.cos(player.facing) * aim, y - 4 + Math.sin(player.facing) * aim);
   ctx.stroke();
+  drawHeld(ctx, game, x, y - bob, player);
+}
+
+function drawHeld(ctx, game, x, y, player) {
+  const slot = game.state.inv[game.state.equipped];
+  if (!slot) return;
+  const reach = slot.id === 'pistol' ? 16 : slot.id === 'stick' ? 18 : 12;
+  const fx = Math.cos(player.facing);
+  const fy = Math.sin(player.facing);
+  const tipX = x + fx * reach;
+  const tipY = y + fy * reach;
+  if (player.atk > 0) {
+    ctx.strokeStyle = 'rgba(228, 192, 122, 0.55)';
+    ctx.beginPath();
+    ctx.arc(x, y, reach - 2, player.facing - 0.8, player.facing + 0.8);
+    ctx.stroke();
+  }
+  if (slot.id === 'stick') {
+    ctx.strokeStyle = '#c4a06a';
+    ctx.beginPath();
+    ctx.moveTo(x + fx * 4, y + fy * 4);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+  } else if (slot.id === 'knife') {
+    ctx.strokeStyle = '#d5dbe6';
+    ctx.beginPath();
+    ctx.moveTo(x + fx * 5, y + fy * 5);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+  } else if (slot.id === 'pistol') {
+    ctx.fillStyle = '#1a1c20';
+    ctx.fillRect(Math.round(tipX) - 2, Math.round(tipY) - 2, 4, 3);
+  } else if (slot.id === 'camera') {
+    ctx.fillStyle = '#2a2e34';
+    ctx.fillRect(Math.round(x + fx * 8) - 3, Math.round(y + fy * 8) - 3, 6, 5);
+    ctx.fillStyle = '#9aafbc';
+    ctx.fillRect(Math.round(x + fx * 10), Math.round(y + fy * 10), 2, 2);
+  }
 }
 
 function drawEnemy(ctx, enemy, ox, oy, game) {
@@ -317,13 +366,18 @@ function drawEnemy(ctx, enemy, ox, oy, game) {
   }
   const bob = Math.sin(game.time * 8 + enemy.x) > 0 ? 0 : 1;
   if (enemy.kind === 'grin') {
+    const light = game.lightAt(enemy.x, enemy.y);
     ctx.fillStyle = '#0c0b0c';
-    ctx.fillRect(x - 3, y - 14, 6, 18);
-    ctx.fillStyle = '#f4f1ea';
-    const smile = 4 + Math.floor(Math.sin(game.time * 6) * 2 + 2);
-    ctx.fillRect(x - smile + 2, y - 4 + bob, smile, 2);
-    ctx.fillRect(x - 1, y - 8, 1, 1);
-    ctx.fillRect(x + 2, y - 7, 1, 1);
+    ctx.fillRect(x - 3, y - 6, 6, 14);
+    if (light > 0.16) {
+      const face = portrait('grin', { crop: 'face', size: 28, dark: 1 - light, corrupt: 0.15 });
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(face, x - 12, y - 26, 24, Math.round(24 * (face.height / face.width)));
+    } else {
+      ctx.fillStyle = '#f4f1ea';
+      const smile = 4 + Math.floor(Math.sin(game.time * 6) * 2 + 2);
+      ctx.fillRect(x - smile + 2, y - 10 + bob, smile, 2);
+    }
     return;
   }
   const stun = enemy.stunUntil > game.time;
@@ -391,18 +445,19 @@ function drawMotes(ctx, game, ox, oy) {
 }
 
 function drawDarkness(ctx, game, ox, oy) {
-  const cell = 8;
+  const cell = 4;
   for (let y = 0; y < VIEW_H; y += cell) {
     for (let x = 0; x < VIEW_W; x += cell) {
       const wx = ox + x + cell / 2;
       const wy = oy + y + cell / 2;
       let light = game.lightAt(wx, wy);
-      const b = BAYER[((y >> 3) & 3) * 4 + ((x >> 3) & 3)] / 16;
-      if (light < 0.9) light = light + (b - 0.5) * 0.18;
+      const b = BAYER[((y >> 2) & 3) * 4 + ((x >> 2) & 3)] / 16;
+      if (light < 0.92) light = light + (b - 0.5) * 0.035;
       const clamped = Math.max(0, Math.min(1, light));
-      const dark = (1 - clamped) ** 1.25;
-      if (dark < 0.05) continue;
-      ctx.fillStyle = `rgba(5, 6, 10, ${dark})`;
+      const dark = (1 - clamped) ** 1.15;
+      if (dark < 0.04) continue;
+      const cool = Math.round(8 + (1 - clamped) * 6);
+      ctx.fillStyle = `rgba(4, 5, ${cool}, ${dark})`;
       ctx.fillRect(x, y, cell, cell);
     }
   }

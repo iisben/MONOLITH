@@ -7,6 +7,7 @@ export function createAudio() {
   let hum = null;
   let noiseBuf = null;
   let failed = false;
+  let heartAt = 0;
 
   function ensure() {
     if (ctx) return true;
@@ -142,6 +143,7 @@ export function createAudio() {
     foot(surface, intensity) {
       const freq = { wood: 180, carpet: 140, tile: 320, concrete: 110, grass: 90 }[surface] || 160;
       burst({ dur: 0.07, freq, q: 0.9, peak: 0.045 * intensity, rate: 0.6 + intensity });
+      tone({ freq: Math.max(48, freq * 0.42), dur: 0.07, type: 'sine', peak: 0.028 * intensity });
     },
     moan(pan, volumeMul, kind) {
       tone({
@@ -166,6 +168,7 @@ export function createAudio() {
     },
     shot() {
       burst({ dur: 0.18, freq: 90, q: 0.5, peak: 0.2, type: 'lowpass', rate: 0.4 });
+      burst({ dur: 0.42, freq: 160, q: 0.45, peak: 0.07, type: 'lowpass', rate: 0.22 });
       tone({ freq: 140, dur: 0.12, type: 'square', peak: 0.05, slide: -80 });
     },
     hit() {
@@ -187,6 +190,15 @@ export function createAudio() {
     stinger() {
       tone({ freq: 196, dur: 0.45, type: 'sawtooth', peak: 0.04, slide: -20 });
       tone({ freq: 207, dur: 0.5, type: 'sine', peak: 0.035, slide: -10 });
+    },
+    heart(strength) {
+      if (!ensure()) return;
+      const now = ctx.currentTime;
+      if (heartAt > now) return;
+      const gap = 0.98 - Math.min(0.62, strength) * 0.7;
+      heartAt = now + gap;
+      tone({ freq: 62, dur: 0.07, type: 'sine', peak: 0.045 * strength });
+      tone({ freq: 44, dur: 0.11, type: 'sine', peak: 0.03 * strength, slide: -8 });
     },
     voice() {
       if (!ensure()) return;
