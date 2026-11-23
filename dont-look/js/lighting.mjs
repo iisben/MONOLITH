@@ -510,9 +510,9 @@ export function projectCasts(feetX, feetY, actor, lights, game, opts = {}) {
       if (exposed < 0.08) continue;
       dirX = dx / dist;
       dirY = dy / dist;
-      length = clamp((actor.h * dist) / light.z, 4, 72);
-      const fall = (1 - dist / light.radius) ** 1.15;
-      alpha *= light.intensity * fall * exposed * 1.15 * actor.cast;
+      length = clamp((actor.h * dist) / light.z * 1.4, 10, 72);
+      const fall = (1 - dist / light.radius) ** 0.7;
+      alpha *= Math.min(0.72, light.intensity * 2.1) * fall * exposed * actor.cast;
       soft = clamp(0.18 + (length / 72) * 0.78, 0.18, 0.95);
     } else continue;
     if (alpha < 0.025) continue;
@@ -539,7 +539,7 @@ export function projectCasts(feetX, feetY, actor, lights, game, opts = {}) {
     budget -= alpha * 0.7;
     kept.push({ ...cast, alpha });
   }
-  return kept;
+  return kept.slice(0, 2);
 }
 
 function fillPixelOval(ctx, sx, sy, rx, ry, color) {
@@ -574,13 +574,13 @@ export function drawCastShadow(ctx, sx, sy, cast, visibility = 1) {
   const alpha = cast.alpha * visibility;
   if (alpha < 0.02) return;
   const reach = Math.max(4, cast.length);
-  const step = Math.max(2, reach / 12);
+  const step = Math.max(3, reach / 8);
   for (let d = 0; d <= reach + 0.01; d += step) {
     const t = d / reach;
-    const fade = (1 - t) ** 1.35;
-    const rx = Math.max(1.2, cast.wid * (1.15 - t * 0.62));
-    const ry = Math.max(1.1, cast.wid * (0.5 - t * 0.16));
-    const ink = alpha * (0.34 + 0.66 * fade) * 0.62;
+    const fade = (1 - t) ** 1.2;
+    const rx = Math.max(1.4, cast.wid * (1.25 - t * 0.7));
+    const ry = Math.max(1.2, cast.wid * (0.58 - t * 0.2));
+    const ink = Math.min(0.78, alpha * (0.62 + 0.85 * fade));
     fillPixelOval(
       ctx,
       sx + cast.dirX * d,
