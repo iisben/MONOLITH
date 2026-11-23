@@ -78,8 +78,9 @@ const FACE = {
 };
 
 // The front door is set into the exterior wall. It does not open.
-// Frame occupies the west face of wall tile (28, 26), flush with the
-// mudroom boundary and with the top and bottom of that wall cell.
+// The leaf's east edge bites the wall face. The rest stands on the
+// mudroom tile, flush with that face, where the light can reach it.
+// A leaf buried inside the wall cell is multiplied to black.
 export const SEALED_DOORS = [
   {
     id: 'front',
@@ -87,7 +88,7 @@ export const SEALED_DOORS = [
     y: 26,
     kind: 'sealed',
     face: 'sealed',
-    frame: { x: 0, y: 0, w: 13, h: TILE },
+    frame: { x: -12, y: 0, w: 14, h: TILE },
   },
 ];
 
@@ -565,9 +566,12 @@ export function auditSealed(spec, tiles) {
   const west = tileAt(tiles, spec.x - 1, spec.y);
   if (tile !== 0) issues.push('not-wall');
   if (!isFloor(west)) issues.push('no-approach');
-  if (spec.frame.x !== 0) issues.push('west-gap');
+  const east = spec.frame.x + spec.frame.w;
+  if (east < 1 || east > 4) issues.push('wall-seam');
+  if (spec.frame.x >= -1) issues.push('hidden-in-wall');
+  if (spec.frame.x < -14) issues.push('blocks-approach');
   if (spec.frame.y !== 0 || spec.frame.y + spec.frame.h !== TILE) issues.push('vertical-gap');
-  if (spec.frame.x < 0 || spec.frame.x + spec.frame.w > TILE) issues.push('leaves-wall');
+  if (east > TILE) issues.push('leaves-wall');
   return {
     id: spec.id,
     tile: `${spec.x},${spec.y}`,
@@ -575,7 +579,7 @@ export function auditSealed(spec, tiles) {
     kind: 'sealed',
     hinge: 'n',
     swing: '—',
-    leaf: `wall x ${spec.frame.x}..${spec.frame.x + spec.frame.w} y ${spec.frame.y}..${spec.frame.y + spec.frame.h}`,
+    leaf: `face x ${spec.frame.x}..${spec.frame.x + spec.frame.w} y ${spec.frame.y}..${spec.frame.y + spec.frame.h}`,
     center: '0.00',
     flush: issues.length ? 'gap' : 'flush',
     open: 'sealed',
@@ -618,6 +622,17 @@ function polyHitsCircle(corners, cx, cy, radius) {
   return false;
 }
 
+let paintLight = 1;
+
+function approachLight(game, door) {
+  if (typeof game.lightAt !== 'function') return 1;
+  let best = 0;
+  for (const side of door.passage || []) {
+    best = Math.max(best, game.lightAt((side.x + 0.5) * TILE, (side.y + 0.5) * TILE) || 0);
+  }
+  return best;
+}
+
 function rgb(r, g, b) {
   return `rgb(${r | 0},${g | 0},${b | 0})`;
 }
@@ -627,7 +642,18 @@ function clampByte(v) {
 }
 
 function tone(base, mul, add = 0) {
-  return rgb(clampByte(base[0] * mul + add), clampByte(base[1] * mul + add), clampByte(base[2] * mul + add));
+  const s = paintLight ** 0.72;
+  return rgb(
+    clampByte(base[0] * mul * s + add * s),
+    clampByte(base[1] * mul * s + add * s),
+    clampByte(base[2] * mul * s + add * s),
+  );
+}
+
+function shadeFill(ctx, hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const s = paintLight ** 0.72;
+  ctx.fillStyle = rgb(((n >> 16) & 255) * s, ((n >> 8) & 255) * s, (n & 255) * s);
 }
 
 export function drawDoors(ctx, game, ox, oy) {
@@ -635,14 +661,14 @@ export function drawDoors(ctx, game, ox, oy) {
   for (const door of world.doors) {
     const st = state.doors[door.id];
     if (!st) continue;
-    const light = game.lightAt((door.x + 0.5) * TILE, (door.y + 0.5) * TILE);
+    const light = approachLight(game, door);
     const sx = Math.round(door.x * TILE - ox);
     const sy = Math.round(door.y * TILE - oy);
     if (door.kind === 'overhead') drawOverhead(ctx, door, st, sx, sy, light, game.time, game);
     else drawSwingDoor(ctx, door, st, sx, sy, light, game.time, game);
   }
   for (const spec of SEALED_DOORS) {
-    const light = game.lightAt((spec.x + 0.15) * TILE, (spec.y + 0.5) * TILE);
+    const light = game.lightAt(spec.x * TILE - 6, (spec.y + 0.5) * TILE);
     drawSealed(ctx, spec, Math.round(spec.x * TILE - ox), Math.round(spec.y * TILE - oy), light, game.time);
   }
 }
@@ -680,6 +706,7 @@ function leafShadowNudge(game, wx, wy) {
 }
 
 function drawSwingDoor(ctx, door, st, sx, sy, light, time, game) {
+  paintLight = Math.max(0, Math.min(1, light));
   drawFrame(ctx, door, sx, sy);
   drawSill(ctx, door, sx, sy);
   if (door.kind === 'heavy' && st.angle < 0.35) {
@@ -705,17 +732,17 @@ function drawSwingDoor(ctx, door, st, sx, sy, light, time, game) {
 function drawFrame(ctx, door, sx, sy) {
   const wood = hash(door.x, door.y) % 2 ? '#5c4e44' : '#4a3e36';
   const lip = '#c4a07a';
-  ctx.fillStyle = wood;
+  shadeFill(ctx, wood);
   if (door.axis === 'ns') {
     ctx.fillRect(sx, sy, TILE, door.jamb);
     ctx.fillRect(sx, sy + TILE - door.jamb, TILE, door.jamb);
-    ctx.fillStyle = lip;
+    shadeFill(ctx, lip);
     ctx.fillRect(sx, sy + door.jamb - 1, TILE, 1);
     ctx.fillRect(sx, sy + TILE - door.jamb, TILE, 1);
   } else {
     ctx.fillRect(sx, sy, door.jamb, TILE);
     ctx.fillRect(sx + TILE - door.jamb, sy, door.jamb, TILE);
-    ctx.fillStyle = lip;
+    shadeFill(ctx, lip);
     ctx.fillRect(sx + door.jamb - 1, sy, 1, TILE);
     ctx.fillRect(sx + TILE - door.jamb, sy, 1, TILE);
   }
@@ -881,6 +908,7 @@ function leafPixel(door, face, pose, x, y, locked, light) {
 }
 
 function drawOverhead(ctx, door, st, sx, sy, light, time, game) {
+  paintLight = Math.max(0, Math.min(1, light));
   drawFrame(ctx, door, sx, sy);
   const face = FACE.overhead;
   const south = curtainSouth(door, st.angle);
@@ -918,19 +946,24 @@ function drawOverhead(ctx, door, st, sx, sy, light, time, game) {
 }
 
 function drawSealed(ctx, spec, sx, sy, light, time) {
+  paintLight = Math.max(0, Math.min(1, light));
   const face = FACE.sealed;
   const frame = spec.frame;
-  ctx.fillStyle = '#3a3028';
-  ctx.fillRect(sx + frame.x, sy + frame.y, frame.w, frame.h);
-  ctx.fillStyle = tone(face.edge, 0.75);
-  ctx.fillRect(sx + frame.x, sy + frame.y, frame.w, 2);
-  ctx.fillRect(sx + frame.x, sy + frame.y + frame.h - 2, frame.w, 2);
-  ctx.fillRect(sx + frame.x, sy, 2, TILE);
   const breath = 0.5 + 0.5 * Math.sin(time * 1.15);
-  const leafX = sx + 3;
-  const leafY = sy + 3;
-  const leafW = 8;
-  const leafH = TILE - 6;
+  const x0 = sx + frame.x;
+  const y0 = sy + frame.y;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(x0 - 3, y0 + 2, 3, frame.h - 4);
+  ctx.fillStyle = '#3a3028';
+  ctx.fillRect(x0, y0, frame.w, frame.h);
+  ctx.fillStyle = tone(face.edge, 0.75);
+  ctx.fillRect(x0, y0, frame.w, 2);
+  ctx.fillRect(x0, y0 + frame.h - 2, frame.w, 2);
+  ctx.fillRect(x0 + frame.w - 2, y0, 2, frame.h);
+  const leafX = x0 + 1;
+  const leafY = y0 + 3;
+  const leafW = Math.max(4, frame.w - 3);
+  const leafH = frame.h - 6;
   for (let y = 0; y < leafH; y++) {
     for (let x = 0; x < leafW; x++) {
       const u = y / leafH;

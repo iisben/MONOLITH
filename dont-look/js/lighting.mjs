@@ -150,7 +150,7 @@ function tileClass(game, tx, ty) {
   if (tile === 9) {
     const door = game.world.doorAt.get(`${tx},${ty}`);
     const st = door && game.state.doors[door.id];
-    return door && st && doorSeals(door, st) ? 2 : 0;
+    return door && st && doorSeals(door, st) ? 1 : 0;
   }
   if (game.world.furniture.has(`${tx},${ty}`)) return 1;
   return 0;

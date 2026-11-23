@@ -113,8 +113,6 @@ export function render(game) {
     drawFurniture(ctx, piece, ox, oy, state, game);
   }
 
-  drawDoors(ctx, game, ox, oy);
-
   for (const decal of state.decals) {
     const sx = Math.round(decal.x - ox);
     const sy = Math.round(decal.y - oy);
@@ -152,6 +150,7 @@ export function render(game) {
   }
 
   drawLightMap(ctx, game);
+  drawDoors(ctx, game, ox, oy);
   drawCloseSilhouettes(ctx, game, ox, oy);
   drawActorShadows(ctx, game, state.player.x, state.player.y, 'player', {
     self: true,
