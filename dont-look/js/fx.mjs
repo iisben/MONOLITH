@@ -1,4 +1,6 @@
 // Fixed pool. Bursts reuse dead slots instead of allocating.
+import { puffSprite, streakSprite } from './atlas.mjs';
+
 const SIZE = 160;
 
 export function createFx() {
@@ -22,6 +24,7 @@ export function createFx() {
         part.age = 0;
         part.color = color;
         part.size = 1 + (hash(i) % 2);
+        part.streak = speed > 30;
       }
     },
     update(dt) {
@@ -39,12 +42,13 @@ export function createFx() {
       }
     },
     draw(ctx, ox, oy) {
+      const puff = puffSprite();
+      const streak = streakSprite();
       for (const part of parts) {
         if (!part.alive) continue;
         ctx.globalAlpha = Math.max(0, 1 - part.age / part.life);
-        ctx.fillStyle = part.color;
-        const s = part.size;
-        ctx.fillRect(Math.round(part.x - ox), Math.round(part.y - oy), s, s);
+        const img = part.streak ? streak : puff;
+        ctx.drawImage(img, Math.round(part.x - ox - img.width / 2), Math.round(part.y - oy - img.height / 2));
       }
       ctx.globalAlpha = 1;
     },

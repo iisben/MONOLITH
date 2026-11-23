@@ -1,5 +1,8 @@
+import {
+  actorSprite, doorSprite, floorSprite, floorStyle, footSprite, furnitureSprite,
+  markSprite, moteSprite, scorchSprite, trimSprite, wallSprite, wallStyleAt, weaponSprite,
+} from './atlas.mjs';
 import { portrait } from './photos.mjs';
-import { material } from './tex.mjs';
 import { FURNITURE, ROOMS, floorName, roomAt, TILE } from './world.mjs';
 
 export const VIEW_W = 416;
@@ -29,17 +32,23 @@ function mixHex(hex, other, t) {
 
 function paintFloor(ctx, tile, x, y, room, sx, sy) {
   const name = typeof tile === 'string' ? tile : floorName(tile);
-  const src = material(name);
-  ctx.drawImage(src, hash(x, y) % 32, hash(y, x) % 32, 32, 32, sx, sy, TILE, TILE);
-  const wash = {
-    her: 'rgba(18, 48, 44, 0.22)',
-    mom: 'rgba(20, 42, 58, 0.24)',
-    chris: 'rgba(58, 38, 22, 0.16)',
-    basement: 'rgba(8, 12, 18, 0.28)',
-  }[room];
-  if (!wash) return;
-  ctx.fillStyle = wash;
-  ctx.fillRect(sx, sy, TILE, TILE);
+  const img = floorSprite(floorStyle(name, room), hash(x, y) % 4);
+  ctx.drawImage(img, sx, sy, TILE, TILE);
+}
+
+function drawBloom(ctx, game, ox, oy) {
+  const p = game.state.player;
+  if (p.lightOn && game.state.hasLight && p.battery > 0) {
+    const gx = p.x + Math.cos(p.facing) * 36 - ox;
+    const gy = p.y + Math.sin(p.facing) * 36 - oy;
+    const grad = ctx.createRadialGradient?.(gx, gy, 4, gx, gy, 70);
+    if (grad?.addColorStop) {
+      grad.addColorStop(0, 'rgba(255, 214, 150, 0.18)');
+      grad.addColorStop(1, 'rgba(255, 214, 150, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(gx - 70, gy - 70, 140, 140);
+    }
+  }
 }
 
 function floorColor(tile, x, y, room) {
@@ -57,12 +66,21 @@ export function render(game) {
   const ctx = game.ctx;
   const { state, world, cam } = game;
   if (!state) return;
-  const shake = game.shake || 0;
-  const ox = cam.x + (shake ? (Math.random() - 0.5) * shake * 5 : 0);
-  const oy = cam.y + (shake ? (Math.random() - 0.5) * shake * 5 : 0);
+  const shake = game.settings?.shake === false ? 0 : (game.shake || 0);
+  const kickX = game.kickX || 0;
+  const kickY = game.kickY || 0;
+  const ox = cam.x + (shake ? (Math.random() - 0.5) * shake * 5 : 0) + kickX;
+  const oy = cam.y + (shake ? (Math.random() - 0.5) * shake * 5 : 0) + kickY;
+  const zoom = game.settings?.detail === false ? 1 : (cam.zoom || 1);
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#070605';
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.save();
+  if (zoom !== 1) {
+    ctx.translate(VIEW_W / 2, VIEW_H / 2);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-VIEW_W / 2, -VIEW_H / 2);
+  }
 
   const x0 = Math.max(0, Math.floor(ox / TILE) - 1);
   const y0 = Math.max(0, Math.floor(oy / TILE) - 1);
@@ -75,18 +93,17 @@ export function render(game) {
       const sx = Math.round(x * TILE - ox);
       const sy = Math.round(y * TILE - oy);
       if (tile === 0) {
-        ctx.drawImage(material('wall'), sx, sy, TILE, TILE);
-        ctx.fillStyle = '#1a1512';
-        ctx.fillRect(sx + 4, sy, TILE - 4, 1);
-        ctx.fillRect(sx, sy + 8, TILE, 1);
-        ctx.fillRect(sx, sy + 16, TILE, 1);
-        ctx.fillRect(sx, sy + 24, TILE, 1);
-        const lip = '#c4a07a';
+        const near = [];
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const id = roomAt(x + dx, y + dy);
+          if (id) near.push(id);
+        }
+        ctx.drawImage(wallSprite(wallStyleAt(near), hash(x, y) % 4), sx, sy, TILE, TILE);
+        const trim = trimSprite();
         const face = (nx, ny, rx, ry, rw, rh) => {
           const neighbor = world.tiles[ny]?.[nx];
           if (!neighbor) return;
-          ctx.fillStyle = lip;
-          ctx.fillRect(sx + rx, sy + ry, rw, rh);
+          ctx.drawImage(trim, sx + rx, sy + ry, rw, rh);
         };
         face(x, y - 1, 0, 0, TILE, 5);
         face(x, y + 1, 0, TILE - 6, TILE, 6);
@@ -102,15 +119,15 @@ export function render(game) {
         continue;
       }
       paintFloor(ctx, tile, x, y, roomAt(x, y), sx, sy);
-      ctx.fillStyle = 'rgba(0,0,0,0.22)';
-      ctx.fillRect(sx, sy + TILE - 1, TILE, 1);
-      ctx.fillRect(sx + TILE - 1, sy, 1, TILE);
-      if (hash(x, y) % 11 === 0) {
-        ctx.fillStyle = 'rgba(0,0,0,0.18)';
-        ctx.fillRect(sx + (hash(y, x) % 20), sy + (hash(x + 3, y) % 20), 3, 2);
-      }
     }
   }
+
+  for (const trace of state.traces || []) {
+    const img = trace.kind === 'foot' ? footSprite() : scorchSprite();
+    ctx.globalAlpha = Math.max(0, 1 - trace.age / trace.life) * 0.85;
+    ctx.drawImage(img, Math.round(trace.x - ox - img.width / 2), Math.round(trace.y - oy - img.height / 2));
+  }
+  ctx.globalAlpha = 1;
 
   for (const piece of FURNITURE) {
     if (piece.x + piece.w < x0 || piece.x > x1 || piece.y + piece.h < y0 || piece.y > y1) continue;
@@ -118,10 +135,8 @@ export function render(game) {
   }
 
   for (const decal of state.decals) {
-    const sx = Math.round(decal.x - ox);
-    const sy = Math.round(decal.y - oy);
-    ctx.fillStyle = 'rgba(70, 16, 14, 0.85)';
-    ctx.fillRect(sx - 7, sy - 4, 14, 8);
+    const img = scorchSprite();
+    ctx.drawImage(img, Math.round(decal.x - ox - 8), Math.round(decal.y - oy - 8));
   }
 
   for (const enemy of state.enemies) {
@@ -129,17 +144,19 @@ export function render(game) {
     drawEnemy(ctx, enemy, ox, oy, game);
   }
 
-  for (const prop of world.props) drawProp(ctx, prop, ox, oy, state);
+  for (const prop of world.props) drawProp(ctx, prop, ox, oy, state, game.time);
 
   for (const drop of state.dropped) {
     drawGlint(ctx, drop.x - ox, drop.y - oy, '#e4c07a', game.time);
   }
 
+  if (game.settings?.detail !== false && game.settings?.post !== false) drawBloom(ctx, game, ox, oy);
   drawDarkness(ctx, game, ox, oy);
   drawCloseSilhouettes(ctx, game, ox, oy);
   drawPlayer(ctx, state.player, ox, oy, game);
   game.fx?.draw(ctx, ox, oy);
   drawMotes(ctx, game, ox, oy);
+  ctx.restore();
   if (game.settings.post !== false) {
     ctx.fillStyle = 'rgba(36, 22, 14, 0.1)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
@@ -158,136 +175,47 @@ export function render(game) {
 function drawFurniture(ctx, piece, ox, oy, state, game) {
   const sx = Math.round(piece.x * TILE - ox);
   const sy = Math.round(piece.y * TILE - oy);
-  const w = piece.w * TILE;
-  const h = piece.h * TILE;
-  if (piece.kind === 'car') {
-    ctx.fillStyle = '#343a42';
-    ctx.fillRect(sx + 4, sy + 12, w - 8, h - 20);
-    ctx.fillStyle = '#14161a';
-    ctx.fillRect(sx + 10, sy + h - 14, 14, 8);
-    ctx.fillRect(sx + w - 24, sy + h - 14, 14, 8);
-    ctx.fillStyle = '#9aafbc';
-    ctx.fillRect(sx + 14, sy + 14, w * 0.3, 26);
-    ctx.fillRect(sx + w * 0.52, sy + 14, w * 0.34, 26);
-    const light = game.lightAt((piece.x + 2.2) * TILE, (piece.y + 0.85) * TILE);
-    if (light > 0.12) {
-      const face = portrait('mom', {
-        crop: 'face',
-        size: 32,
-        dark: 0.12,
-        corrupt: state.flags.tookFuse ? 0.55 : 0.06,
-        grin: state.flags.tookFuse ? 0.28 : 0,
-      });
-      const fw = 22;
-      const fh = Math.round(fw * (face.height / face.width));
-      ctx.imageSmoothingEnabled = false;
-      ctx.globalAlpha = 0.95;
-      ctx.drawImage(face, sx + w * 0.56, sy + 15, fw, Math.min(fh, 24));
-      ctx.globalAlpha = 1;
-    }
-    return;
-  }
-  const colors = {
-    bed: '#3a3338',
-    sweater: '#6f9aab',
-    couch: '#3d342c',
-    table: '#4a3828',
-    counter: '#3e4348',
-    tub: '#4a5558',
-    bench: '#3a342c',
-    tanks: '#1e3a34',
-    shelf: '#4a3828',
-  };
-  ctx.fillStyle = colors[piece.kind] || '#333';
-  ctx.fillRect(sx + 1, sy + 1, w - 2, h - 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.06)';
-  ctx.fillRect(sx + 2, sy + 2, w - 4, 3);
-  if (piece.kind === 'tanks') {
-    ctx.fillStyle = 'rgba(120, 220, 190, 0.25)';
-    for (let i = 0; i < piece.w; i++) ctx.fillRect(sx + i * TILE + 6, sy + 8, 16, h - 16);
-    if (Math.sin(game.time * 3) > 0.65 && !game.settings.reduceFlash) {
-      ctx.fillStyle = 'rgba(220,220,220,0.35)';
-      ctx.fillRect(sx + 10, sy + 14, 8, 3);
-    }
-  }
-  if (piece.kind === 'sweater') {
-    ctx.fillStyle = '#d7e4ea';
-    ctx.fillRect(sx + 8, sy + 6, w - 16, 4);
-  }
+  const sprite = furnitureSprite(piece);
+  ctx.drawImage(sprite, sx, sy);
+  if (piece.kind !== 'car') return;
+  const light = game.lightAt((piece.x + 2.2) * TILE, (piece.y + 0.85) * TILE);
+  if (light <= 0.12) return;
+  const face = portrait('mom', {
+    crop: 'face',
+    size: 32,
+    dark: 0.12,
+    corrupt: state.flags.tookFuse ? 0.55 : 0.06,
+    grin: state.flags.tookFuse ? 0.28 : 0,
+  });
+  const fw = 22;
+  const fh = Math.round(fw * (face.height / face.width));
+  ctx.imageSmoothingEnabled = false;
+  ctx.globalAlpha = 0.95;
+  ctx.drawImage(face, sx + piece.w * TILE * 0.56, sy + 15, fw, Math.min(fh, 24));
+  ctx.globalAlpha = 1;
 }
 
 function drawDoor(ctx, sx, sy, door, state) {
   const locked = door.lock && !state.doors[door.id].unlocked && !(door.lock === 'power' && state.flags.powerOn);
-  ctx.fillStyle = locked ? '#4a2a28' : '#5a4632';
-  ctx.fillRect(sx + 6, sy + 4, TILE - 12, TILE - 8);
-  ctx.fillStyle = locked ? '#e07068' : '#e4c07a';
-  ctx.fillRect(sx + TILE - 12, sy + 14, 3, 3);
+  ctx.drawImage(doorSprite(door.id, !!locked), sx, sy);
 }
 
-function drawProp(ctx, prop, ox, oy, state) {
+function drawProp(ctx, prop, ox, oy, state, time = 0) {
   if (state.taken[prop.id]) return;
+  if (prop.kind === 'car') return;
   if (prop.kind === 'container' && !(state.containers[prop.id] || []).length) return;
   const x = Math.round((prop.x + 0.5) * TILE - ox);
   const y = Math.round((prop.y + 0.5) * TILE - oy);
-  if (prop.kind === 'flashlight') {
-    ctx.fillStyle = '#d7c27a';
-    ctx.fillRect(x - 5, y - 2, 10, 4);
-    return;
-  }
-  if (prop.kind === 'battery') {
-    ctx.fillStyle = '#6f8f62';
-    ctx.fillRect(x - 4, y - 5, 8, 10);
-    return;
-  }
-  if (prop.kind === 'note') {
-    ctx.fillStyle = '#d9d0c0';
-    ctx.fillRect(x - 5, y - 6, 10, 12);
-    ctx.fillStyle = '#8a7b68';
-    ctx.fillRect(x - 3, y - 3, 6, 1);
-    return;
-  }
-  if (prop.kind === 'inspect') {
-    ctx.fillStyle = '#c4b48a';
-    ctx.fillRect(x - 6, y - 7, 12, 10);
-    ctx.fillStyle = '#1a1612';
-    ctx.fillRect(x - 4, y - 5, 8, 6);
-    return;
-  }
-  if (prop.kind === 'pickup') {
-    const color = {
-      weapon: '#c8c2b4',
-      ammo: '#c2a15a',
-      heal: '#d7d2c8',
-      film: '#222',
-      tape: '#b7b0a4',
-      key: '#e0b84e',
-      quest: '#d07a3a',
-      camera: '#22262c',
-    };
-    // Color is chosen by the caller via item type in draw; keep a warm default and a key glint.
-    ctx.fillStyle = prop.item?.startsWith('key') ? '#e0b84e' : color.quest;
-    if (prop.item === 'bandage' || prop.item === 'pills') ctx.fillStyle = '#e6e0d4';
-    if (prop.item === 'ammo') ctx.fillStyle = '#c2a15a';
-    if (prop.item === 'stick' || prop.item === 'knife' || prop.item === 'pistol') ctx.fillStyle = '#c8c2b4';
-    if (prop.item === 'film') ctx.fillStyle = '#1c1c1c';
-    if (prop.item === 'camera') ctx.fillStyle = '#2a2e34';
-    ctx.fillRect(x - 4, y - 4, 8, 8);
-    return;
-  }
-  if (prop.kind === 'save' || prop.kind === 'stash' || prop.kind === 'board') {
-    ctx.fillStyle = prop.kind === 'board' ? '#d9d0c0' : '#6a5a44';
-    ctx.fillRect(x - 6, y - 5, 12, 8);
-  }
+  const lift = Math.round(Math.sin(time * 2.2 + prop.x * 0.4) * 1);
+  ctx.drawImage(markSprite(prop), x - 12, y - 16 + lift);
 }
 
 function drawGlint(ctx, x, y, color, time) {
-  if (Math.sin(time * 3.2 + x * 0.2) < -0.35) return;
-  const px = Math.round(x);
-  const py = Math.round(y);
-  ctx.fillStyle = color;
-  ctx.fillRect(px - 1, py - 1, 3, 3);
-  ctx.fillStyle = '#fff4d2';
-  ctx.fillRect(px, py, 1, 1);
+  if (Math.sin(time * 3.2 + x * 0.2) < -0.2) return;
+  ctx.globalAlpha = 0.85;
+  ctx.drawImage(moteSprite(), Math.round(x) - 3, Math.round(y) - 3);
+  ctx.globalAlpha = 1;
+  void color;
 }
 
 function drawPlayer(ctx, player, ox, oy, game) {
@@ -295,127 +223,67 @@ function drawPlayer(ctx, player, ox, oy, game) {
   const x = Math.round(player.x - ox);
   const y = Math.round(player.y - oy);
   if (player.iframes > 0 && Math.sin(time * 40) > 0) return;
-  const rate = player.running ? 16 : player.sneaking ? 7 : 11;
-  const swing = player.moving ? Math.sin(time * rate) : 0;
-  const bob = player.moving ? Math.round(Math.abs(swing)) : 0;
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
-  ctx.beginPath();
-  ctx.ellipse(x, y + 7, 7, 3, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#8a8172';
-  ctx.fillRect(x - 5, y + 1 - bob, 3, 6 + Math.round(swing * 2));
-  ctx.fillRect(x + 2, y + 1 - bob, 3, 6 - Math.round(swing * 2));
-  ctx.fillStyle = '#1c2744';
-  ctx.fillRect(x - 6, y - 7 - bob, 12, 8);
-  ctx.fillStyle = '#d5dbe6';
-  ctx.fillRect(x - 6, y - 7 - bob, 3, 8);
-  ctx.fillRect(x - 1, y - 5 - bob, 2, 6);
-  ctx.fillRect(x + 3, y - 6 - bob, 2, 5);
-  ctx.fillStyle = '#c49a78';
-  ctx.fillRect(x - 3, y - 11 - bob, 6, 5);
-  ctx.fillStyle = '#241c18';
-  ctx.fillRect(x - 4, y - 13 - bob, 8, 3);
-  const aim = 12;
-  ctx.strokeStyle = 'rgba(228,192,122,0.85)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(x, y - 4);
-  ctx.lineTo(x + Math.cos(player.facing) * aim, y - 4 + Math.sin(player.facing) * aim);
-  ctx.stroke();
-  drawHeld(ctx, game, x, y - bob, player);
-}
-
-function drawHeld(ctx, game, x, y, player) {
+  const rate = player.running ? 14 : player.sneaking ? 6 : 9;
+  const frame = player.moving ? Math.floor(time * rate) % 4 : 0;
+  const bob = player.moving ? (frame % 2) : 0;
+  const body = actorSprite('chris', frame);
+  ctx.drawImage(body, x - 20, y - 40 - bob);
   const slot = game.state.inv[game.state.equipped];
   if (!slot) return;
-  const reach = slot.id === 'pistol' ? 16 : slot.id === 'stick' ? 18 : 12;
-  const fx = Math.cos(player.facing);
-  const fy = Math.sin(player.facing);
-  const tipX = x + fx * reach;
-  const tipY = y + fy * reach;
-  if (player.atk > 0) {
-    ctx.strokeStyle = 'rgba(228, 192, 122, 0.55)';
-    ctx.beginPath();
-    ctx.arc(x, y, reach - 2, player.facing - 0.8, player.facing + 0.8);
-    ctx.stroke();
+  const gun = weaponSprite(slot.id);
+  ctx.save();
+  ctx.translate(x, y - 10 - bob);
+  ctx.rotate(player.facing);
+  const reach = slot.id === 'stick' ? 8 : 4;
+  ctx.drawImage(gun, reach, -10);
+  if (player.atk > 0.05) {
+    ctx.globalAlpha = Math.min(0.65, player.atk * 2);
+    ctx.drawImage(gun, reach + 4, -14);
+    ctx.globalAlpha = 1;
   }
-  if (slot.id === 'stick') {
-    ctx.strokeStyle = '#c4a06a';
-    ctx.beginPath();
-    ctx.moveTo(x + fx * 4, y + fy * 4);
-    ctx.lineTo(tipX, tipY);
-    ctx.stroke();
-  } else if (slot.id === 'knife') {
-    ctx.strokeStyle = '#d5dbe6';
-    ctx.beginPath();
-    ctx.moveTo(x + fx * 5, y + fy * 5);
-    ctx.lineTo(tipX, tipY);
-    ctx.stroke();
-  } else if (slot.id === 'pistol') {
-    ctx.fillStyle = '#1a1c20';
-    ctx.fillRect(Math.round(tipX) - 2, Math.round(tipY) - 2, 4, 3);
-  } else if (slot.id === 'camera') {
-    ctx.fillStyle = '#2a2e34';
-    ctx.fillRect(Math.round(x + fx * 8) - 3, Math.round(y + fy * 8) - 3, 6, 5);
-    ctx.fillStyle = '#9aafbc';
-    ctx.fillRect(Math.round(x + fx * 10), Math.round(y + fy * 10), 2, 2);
-  }
+  ctx.restore();
 }
 
 function drawEnemy(ctx, enemy, ox, oy, game) {
   const x = Math.round(enemy.x - ox);
   const y = Math.round(enemy.y - oy);
+  const frame = Math.floor(game.time * (enemy.state === 'chase' ? 8 : 3) + enemy.x) % 4;
   if (enemy.wind > 0) {
     const ang = Math.atan2(game.state.player.y - enemy.y, game.state.player.x - enemy.x);
-    ctx.strokeStyle = '#c45048';
+    ctx.strokeStyle = 'rgba(196, 80, 72, 0.85)';
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(x, y);
-    ctx.lineTo(x + Math.cos(ang) * 16, y + Math.sin(ang) * 16);
+    ctx.lineTo(x + Math.cos(ang) * 18, y + Math.sin(ang) * 10);
     ctx.stroke();
   }
-  if (enemy.downUntil > game.time) {
-    ctx.fillStyle = '#e8e4dc';
-    ctx.fillRect(x - 6, y, 12, 2);
-    return;
+  let id = enemy.id;
+  if (enemy.downUntil > game.time) id = 'down';
+  else if (!enemy.awake && enemy.silent) id = 'sleep-mom';
+  else if (!enemy.awake && enemy.wake === 'flag') id = 'sleep-lump';
+  else if (enemy.kind === 'grin') id = 'grin';
+  const body = actorSprite(id, frame);
+  const light = game.lightAt(enemy.x, enemy.y);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.drawImage(body, -20, -36);
+  if (light > 0.4) {
+    ctx.globalAlpha = (light - 0.4) * 0.55;
+    ctx.drawImage(body, -21, -37);
+    ctx.globalAlpha = 1;
   }
-  if (!enemy.awake && enemy.silent) {
-    ctx.fillStyle = '#7eafc0';
-    ctx.fillRect(x - 7, y - 3, 14, 8);
-    ctx.fillStyle = '#d5e4ea';
-    ctx.fillRect(x - 4, y - 1, 8, 2);
-    return;
-  }
-  if (!enemy.awake && enemy.wake === 'flag') {
-    ctx.fillStyle = '#2a2724';
-    ctx.fillRect(x - 5, y - 2, 10, 6);
-    return;
-  }
-  const bob = Math.sin(game.time * 8 + enemy.x) > 0 ? 0 : 1;
-  if (enemy.kind === 'grin') {
-    const light = game.lightAt(enemy.x, enemy.y);
-    ctx.fillStyle = '#0c0b0c';
-    ctx.fillRect(x - 3, y - 6, 6, 14);
+  if (enemy.kind === 'grin' && enemy.downUntil <= game.time && enemy.awake) {
     if (light > 0.16) {
       const face = portrait('grin', { crop: 'face', size: 28, dark: 1 - light, corrupt: 0.15 });
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(face, x - 12, y - 26, 24, Math.round(24 * (face.height / face.width)));
+      ctx.drawImage(face, -12, -46, 24, Math.round(24 * (face.height / face.width)));
     } else {
+      const smile = 5 + Math.floor(Math.sin(game.time * 6) * 2 + 2);
       ctx.fillStyle = '#f4f1ea';
-      const smile = 4 + Math.floor(Math.sin(game.time * 6) * 2 + 2);
-      ctx.fillRect(x - smile + 2, y - 10 + bob, smile, 2);
+      ctx.fillRect(-smile / 2, -32, smile, 2);
     }
-    return;
   }
-  const stun = enemy.stunUntil > game.time;
-  ctx.fillStyle = stun ? '#6a6a62' : '#4e4c46';
-  ctx.fillRect(x - 4, y - 8, 8, 9);
-  ctx.fillStyle = '#2a2926';
-  ctx.fillRect(x - 5, y + bob, 3, 5);
-  ctx.fillRect(x + 2, y + (1 - bob), 3, 5);
-  if (enemy.state === 'chase') {
-    ctx.fillStyle = '#f2efe8';
-    ctx.fillRect(x - 2, y - 2, 4, 1);
-  }
+  ctx.restore();
 }
 
 function drawCloseSilhouettes(ctx, game, ox, oy) {
@@ -459,19 +327,22 @@ function drawCloseSilhouettes(ctx, game, ox, oy) {
 function drawMotes(ctx, game, ox, oy) {
   const p = game.state.player;
   if (!game.state.hasLight || !p.lightOn || p.battery <= 0) return;
-  ctx.fillStyle = 'rgba(232, 214, 170, 0.45)';
-  for (let i = 0; i < 10; i++) {
-    const a = game.time * 0.35 + i;
-    const r = 18 + ((i * 17) % 80);
-    const x = p.x + Math.cos(p.facing + Math.sin(a) * 0.35) * r - ox;
-    const y = p.y + Math.sin(p.facing + Math.sin(a + 1) * 0.35) * r - oy;
-    if (game.lightAt(p.x + (x + ox - p.x), p.y + (y + oy - p.y)) < 0.4) continue;
-    ctx.fillRect(Math.round(x), Math.round(y + Math.sin(game.time * 2 + i) * 2), 1, 1);
+  const mote = moteSprite();
+  for (let i = 0; i < 22; i += 1) {
+    const a = game.time * 0.22 + i * 0.7;
+    const r = 14 + ((i * 19) % 110);
+    const wx = p.x + Math.cos(p.facing + Math.sin(a) * 0.4) * r;
+    const wy = p.y + Math.sin(p.facing + Math.sin(a + 1) * 0.4) * r;
+    if (game.lightAt(wx, wy) < 0.35) continue;
+    const drift = Math.sin(game.time * 1.4 + i) * 3;
+    ctx.globalAlpha = 0.35 + (i % 5) * 0.1;
+    ctx.drawImage(mote, Math.round(wx - ox), Math.round(wy - oy + drift));
   }
+  ctx.globalAlpha = 1;
 }
 
 function drawDarkness(ctx, game, ox, oy) {
-  const cell = 4;
+  const cell = game.settings?.detail === false ? 8 : 2;
   for (let y = 0; y < VIEW_H; y += cell) {
     for (let x = 0; x < VIEW_W; x += cell) {
       const wx = ox + x + cell / 2;
