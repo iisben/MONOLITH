@@ -1,5 +1,7 @@
 #include "PluginProcessor.h"
-#include "PluginEditor.h"
+#if ! MONOLITH_HEADLESS_QA
+ #include "PluginEditor.h"
+#endif
 
 namespace monolith
 {
@@ -59,7 +61,11 @@ void MonolithAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
 juce::AudioProcessorEditor* MonolithAudioProcessor::createEditor()
 {
+   #if MONOLITH_HEADLESS_QA
+    return nullptr; // Headless QA binary: no editor / GUI linkage
+   #else
     return new MonolithAudioProcessorEditor (*this);
+   #endif
 }
 
 int MonolithAudioProcessor::getNumPrograms()

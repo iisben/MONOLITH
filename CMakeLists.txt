@@ -130,3 +130,49 @@ if(MSVC)
 else()
     target_compile_options(MonolithDspAudit PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# ── Phase 2: Locked 8-Gate Headless Flagship QA Harness ───────────────────────
+juce_add_console_app(MonolithQA
+    PRODUCT_NAME "MonolithQA"
+)
+
+target_sources(MonolithQA
+    PRIVATE
+        Tests/QA/MonolithQA.cpp
+        Source/PluginProcessor.cpp
+        ${MONOLITH_DSP_AND_PRESET_SOURCES}
+)
+
+target_include_directories(MonolithQA
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/Source"
+)
+
+target_compile_definitions(MonolithQA
+    PRIVATE
+        MONOLITH_HEADLESS_QA=1
+        "JucePlugin_Name=\"MONOLITH\""
+        "MONOLITH_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
+    PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_STRICT_REFCOUNTEDPOINTER=1
+)
+
+target_link_libraries(MonolithQA
+    PRIVATE
+        juce::juce_audio_processors
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(MonolithQA PRIVATE /W4 /O2)
+else()
+    target_compile_options(MonolithQA PRIVATE -Wall -Wextra -Wpedantic $<$<CONFIG:Release>:-O3>)
+endif()
+
+enable_testing()
+add_test(NAME MonolithQA COMMAND MonolithQA)

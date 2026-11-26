@@ -4,9 +4,9 @@
 | Phase | Status | Notes |
 |---|---|---|
 | 1 — Setup & Audit | PASS | Release `-O3` build clean (exit 0, 6 JUCE-only Metal deprecation warnings); legacy `MonolithDspAudit` 6/6 PASS, 10.91% RT (12v/24s, 64-spl @48k) |
-| 2 — QA Harness | — | |
+| 2 — QA Harness | PASS | `MonolithQA` (Release -O3, headless, 9 s run); baseline 9 PASS / 7 PENDING |
 
-**Next: Phase 2**
+**Next: Phase 3.1**
 
 ## Toolchain & Architecture
 - CMake 3.22+ / Ninja, C++20, JUCE 8.0.15 (FetchContent), AppleClang arm64 macOS. Targets: `MONOLITH` (AU/VST3/Standalone), `MonolithDspAudit` (console, DSP+presets only).
@@ -46,3 +46,23 @@
 - DSP/SwarmEngine.cpp : `prepare` (27-102), `getLatencySamples` (130-134), `allocateVoiceIndex` (150-190), `triggerNoteOn/Off` (192-303), `handleMidiMessage` (305-380), `processBlock` (382-732: `renderSpan` 505-677, MIDI dispatch 680-693)
 - PluginProcessor.cpp : `prepareToPlay` (22-27), `processBlock` (42-58), `handleAsyncUpdate` (113-116)
 - Tests/DspAuditTest.cpp : legacy audit (`main` 836) — keep; Phase 2 adds new QA target
+
+## Phase 2 — QA Harness & Baseline
+Run: `build/release/MonolithQA_artefacts/Release/MonolithQA [--phase 3.x | --active ids | --only ids] [--write-baseline]`. Thresholds locked in `Tests/QA/MonolithQA.cpp` `namespace lock`; preset baseline `Tests/QA/preset_baseline.csv`; CPU baseline 7.78% RT. Report → `build/monolith_qa/qa_report.txt`. Exit 1 iff an active sub-gate fails. `--phase` sets are cumulative (3.1: 1,6,7dc,8 · 3.2: +2,3morph,7dry · 3.3: +3,5,7steal · 3.4: +4,7fdn · 3.5/4: all).
+Adapters to re-point (never thresholds): `renderGlottal` (G1), `TractProbe` (G2, mirrors SwarmVoice 544-551), `naiveShaper` (G4), `measuredStageLatency` (G6c). G4a expects `DSP/ThroatDrive.h` → `ThroatShaper::{f,F1,F2,adaa1}` (static, double).
+| Gate | Baseline | Status |
+|---|---|---|
+| 1 glottal | alias C5 −91.9 / C6 −93.2 / C7 −93.2 dBc, DC −144.6, C4 h61 −51 dBc | PASS |
+| 2 formant | Ferr 1.48%, track 0.05%/0.01 dB, notch −23.5 dB, vowel RMS dev 7.86 dB (C3 /a/ −22.1 vs /i/ −9.7) | PENDING |
+| 3morph | d2 1.08× ref, +−0.2 dB energy, finite | PASS |
+| 3toggle | d2 0.40× bound (static 0.40×) | PASS |
+| 4adaa / 4alias | not implemented / −29.6 dBc, −58 dB vs 1× naive, DC −114 | PENDING |
+| 5 swarm | comb −7.7/−8.5 dB, sub corr 0.97/0.99, mono drop 0.75 dB | PASS |
+| 6block | residual −57.3 dBFS (D7) | PENDING |
+| 6rate | exact (0) | PASS |
+| 6pdc | 2x rep 4 / meas 5; 4x 6/6; drive=0 still 4 (≠0) | PENDING |
+| 7dc / 7steal | DC −84.3 dBFS / steal d2 6.23× ref | PENDING |
+| 7dry | tail 0, voices 0, idle 0.48% RT (marginal vs 0.5%) | PASS |
+| 7fdn | max rise −1.5 dB, end −184 dBFS, CPU 0.94× | PASS |
+| 8snap / 8cpu | 30 presets captured / 7.78% RT (830 µs) | PASS |
+Phase 3.1 blockers (gate 6 + 7dc active): fix D7 block-size dependence, integer 2x PDC (off by 1) + 0 when drive bypassed, held-chord DC. Idle CPU has ~4% headroom.
