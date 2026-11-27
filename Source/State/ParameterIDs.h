@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <memory>
 #include "../V2/TextureAssetTable.h"
+#include "SnappedBoolParameter.h"
 
 namespace monolith::params
 {
@@ -184,13 +185,13 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         juce::ParameterID { phonemeX, 1 }, "Phoneme X", normRange (0.0f, 1.0f), defaults::phonemeX));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { phonemeY, 1 }, "Phoneme Y", normRange (0.0f, 1.0f), defaults::phonemeY));
-    layout.add (std::make_unique<juce::AudioParameterBool> (
+    layout.add (std::make_unique<SnappedBoolParameter> (
         juce::ParameterID { orbitEnable, 1 }, "Orbit Enable", defaults::orbitEnable));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { orbitRate, 1 }, "Orbit Rate", normRange (0.02f, 4.0f, 0.0f, 0.4f), defaults::orbitRate));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { orbitDepth, 1 }, "Orbit Depth", normRange (0.0f, 1.0f), defaults::orbitDepth));
-    layout.add (std::make_unique<juce::AudioParameterBool> (
+    layout.add (std::make_unique<SnappedBoolParameter> (
         juce::ParameterID { orbitSync, 1 }, "Orbit Sync", defaults::orbitSync));
 
     // Ensemble & Register
@@ -242,7 +243,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         juce::ParameterID { screwPitch, 1 }, "Screw Pitch", normRange (-12.0f, 0.0f), defaults::screwPitch));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { screwDepth, 1 }, "Screw Shadow", normRange (0.0f, 1.0f), defaults::screwDepth));
-    layout.add (std::make_unique<juce::AudioParameterBool> (
+    layout.add (std::make_unique<SnappedBoolParameter> (
         juce::ParameterID { oversampleHq, 1 }, "Drive 4x OS", defaults::oversampleHq));
 
     // Architectural Space + Freeze
@@ -258,9 +259,9 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         juce::ParameterID { spaceDamp, 1 }, "Damping", normRange (0.0f, 1.0f), defaults::spaceDamp));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { spaceShimmer, 1 }, "Dark Shimmer", normRange (0.0f, 1.0f), defaults::spaceShimmer));
-    layout.add (std::make_unique<juce::AudioParameterBool> (
+    layout.add (std::make_unique<SnappedBoolParameter> (
         juce::ParameterID { spaceFreeze, 1 }, "Spectral Freeze", defaults::spaceFreeze));
-    layout.add (std::make_unique<juce::AudioParameterBool> (
+    layout.add (std::make_unique<SnappedBoolParameter> (
         juce::ParameterID { cc64Freeze, 1 }, "CC64 Freeze", defaults::cc64Freeze));
 
     // Performance Dock & Master Macros
@@ -272,7 +273,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         juce::ParameterID { macroRot, 1 }, "ROT", normRange (0.0f, 1.0f), defaults::macroRot));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { macroAbyss, 1 }, "ABYSS", normRange (0.0f, 1.0f), defaults::macroAbyss));
-    layout.add (std::make_unique<juce::AudioParameterBool> (
+    layout.add (std::make_unique<SnappedBoolParameter> (
         juce::ParameterID { legatoEnable, 1 }, "Legato", defaults::legatoEnable));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { glideTime, 1 }, "Glide Time", normRange (0.01f, 1.5f, 0.0f, 0.4f), defaults::glideTime));
@@ -314,7 +315,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { v2XyMode, 2 }, "XY Sculptor Mode",
         juce::StringArray { "Vowel Field", "Light / Shadow", "Preset Axes" }, defaults::v2XyMode));
-    layout.add (std::make_unique<juce::AudioParameterBool> (
+    layout.add (std::make_unique<SnappedBoolParameter> (
         juce::ParameterID { v2MpeEnable, 2 }, "MPE", defaults::v2MpeEnable));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { v2MpePbRange, 2 }, "MPE Bend Range", normRange (0.0f, 48.0f, 1.0f), defaults::v2MpePbRange));
