@@ -571,13 +571,12 @@ def write_provenance_section():
         if p["params"].get("tMix", 0.0) > 0.0:
             users[int(p["params"].get("tAsset", 0))].append(f"{i + 1:02d} {p['name']}")
     dependent = sum(len(v) for v in users.values())
-    lines = [PROV_BEGIN, "## Flagship preset dependencies (Stage 5)", "",
-             f"{dependent} of {len(PRESETS)} flagship presets use the texture layer (`v2_tex_mix` > 0) and inherit the clearance status "
-             "of their asset. If an asset is replaced, re-audition these presets; if one is removed without replacement, re-run "
-             "`python3 Tools/v2_flagship_presets.py` after retuning them.", "",
-             "| Asset | Flagship presets using it | Clearance |", "|---|---|---|"]
+    lines = [PROV_BEGIN, "## Flagship preset dependencies", "",
+             f"{dependent} of {len(PRESETS)} flagship presets use the texture layer (`v2_tex_mix` > 0). If an asset changes, "
+             "re-audition these presets and re-run `MonolithPresetQA`.", "",
+             "| Asset | Flagship presets using it | Origin |", "|---|---|---|"]
     for i, n in enumerate(names):
-        lines.append(f"| {n} | {', '.join(users[i]) if users[i] else '— (unused)'} | NOT CLEARED |")
+        lines.append(f"| {n} | {', '.join(users[i]) if users[i] else '— (unused)'} | Original (synthesised) |")
     lines.append(PROV_END)
     block = "\n".join(lines)
     text = PROVENANCE.read_text(encoding="utf-8")

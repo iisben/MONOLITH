@@ -171,3 +171,17 @@ Stage 5: PASS · Next: Stage 6
 
 Stage 6: PASS
 STATUS: ALL_STAGES_COMPLETE
+
+## Stage 7 — Replace Splice Textures with Original Synthesised Audio — PASS (2026-11-27)
+Defined by the user in chat ("Replace samples"); it is not in `MONOLITH_V2_SPEC.md`.
+- **Assets:** `Tools/v2_process_assets.py` now synthesises all 8 textures (additive voices, filtered noise, generated reverb; fixed seeds) and reads no audio files. Same keys, slot order, display names, loop/pitched flags and roots, so presets and sessions need no migration. 7.66 MB; loop seam step ≤ 0.38 (< 0.6).
+- **Provenance:** `ASSET_PROVENANCE.md` regenerated: "Original (synthesised)". The Stage 2 licensing blocker is resolved **for the current files and builds only**.
+- **Presets:** no re-tune needed; no preset XML changed.
+- **Tests:** Release DspAudit 6/6 · MonolithQA v2.4 36/36 (v2reg 0.0005 dB, v2tex click 6.29 < 12) · PresetQA 20/20 at 44.1/48/96 kHz (worst TP −0.66 dBTP) · ctest 2/2 · UISnapshot OK · Debug as in Stage 6 · 0 project warnings · `Source/DSP` untouched. CSVs `Tests/QA/preset_qa_v2_stage7_*.csv`.
+- **Audibility finding (dates from Stage 5):** old-vs-new audition difference vs signal: #17 −11, #18 −17, #20 −18, #19 −28 dB; #1/2/4/8/13/16 −42…−57 dB, i.e. the texture is barely audible there at default settings (`v2_tex_mix` 0.05–0.10). The QA gates do not require an audible texture.
+- **Not done:** not listened to by a person; not reinstalled; bool-param fix (`2e624d6`) not merged. Pre-change auditions: `build/v2_qa/audition_before_stage7/`.
+
+### Warnings
+- The Splice-derived FLACs remain in **git history** (from Stage 2) and in every build made before this commit, including the installed one. Do not publish that history or ship those builds.
+
+Stage 7: PASS
