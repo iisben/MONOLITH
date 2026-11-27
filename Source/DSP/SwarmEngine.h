@@ -172,6 +172,7 @@ private:
     float smAftertouch        = 0.0f;
     float smExpr              = params::defaults::expressionLevel;
     float smSingersPerVoice   = 6.0f;
+    float smSingersReference  = 6.0f;   // uncapped singers-per-voice (budget-conserving loudness reference)
     float smColossus          = 0.0f;
     float smSpecter           = 0.0f;
     float smRot               = 0.0f;

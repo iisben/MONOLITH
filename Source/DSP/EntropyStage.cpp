@@ -221,13 +221,15 @@ void EntropyStage::processBlock (float* left,
         (void) runRoute (prevRouteMode, xfadeScratchBuffer, driveBefore);
         const float* prevL = xfadeScratchBuffer.getReadPointer (0);
         const float* prevR = xfadeScratchBuffer.getReadPointer (1);
-        const float xfadeInc = 1.0f / std::max (0.015f * srF, 16.0f);
+        // 5 ms raised-cosine route crossfade (C1-smooth at both ends) on oversampling / bypass mode toggles
+        const float xfadeInc = 1.0f / std::max (0.005f * srF, 16.0f);
 
         for (int i = 0; i < n; ++i)
         {
             osXfade = std::min (1.0f, osXfade + xfadeInc);
-            left[i]  = prevL[i] + osXfade * (scratchL[i] - prevL[i]);
-            right[i] = prevR[i] + osXfade * (scratchR[i] - prevR[i]);
+            const float w = 0.5f - 0.5f * std::cos (kPi * osXfade);
+            left[i]  = prevL[i] + w * (scratchL[i] - prevL[i]);
+            right[i] = prevR[i] + w * (scratchR[i] - prevR[i]);
         }
     }
     else

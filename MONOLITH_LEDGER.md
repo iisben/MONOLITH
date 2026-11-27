@@ -7,8 +7,9 @@
 | 2 — QA Harness | PASS | `MonolithQA` (Release -O3, headless, 9 s run); baseline 9 PASS / 7 PENDING |
 | 3.1 — Glottal & Aspiration | PASS | `--phase 3.1` exit 0; 12 PASS / 4 PENDING |
 | 3.2 — Vocal Tract / Formant | PASS (after user re-scope of gate-2 vowel RMS) | `--phase 3.2` exit 0; 13 PASS / 3 PENDING; first run rolled back (b06c863) |
+| 3.3 — Swarm / Humanization / Voice Mgmt | PASS (after user re-baseline of 8snap preset RMS) | `--phase 3.3` exit 0; 14 PASS / 2 PENDING |
 
-**Next: Phase 3.3**
+**Next: Phase 3.4**
 
 ## Toolchain & Architecture
 - CMake 3.22+ / Ninja, C++20, JUCE 8.0.15 (FetchContent), AppleClang arm64 macOS. Targets: `MONOLITH` (AU/VST3/Standalone), `MonolithDspAudit` (console, DSP+presets only).
@@ -119,3 +120,27 @@ Root cause (a conflict between locked gates, not an implementation defect):
 | inactive | 7steal 5.84→6.41× (3.3 target ≤5); 4alias / 4adaa pending (3.4) |
 Notes: full-processor vowel loudness stays source-coupled by design (C3 /a/ −22.4 vs /i/ −10.6 dB). Remaining float filters: HarmonicLayers, EntropyStage oxide/head-bump, FDN damping (3.4 scope).
 
+## Phase 3.3 — Choral Swarm, Humanization & Voice Management (PASS)
+- Steal / fast release (D10): sample-accurate 4 ms raised-cosine output ramp. A stolen voice starts its pending note only when the ramp reaches exactly 0; synthesis is split into `renderSynth` segments at the ramp end, so this is block-invariant. EntropyStage is no longer reset on steal. CC120 / legato fast release uses the same ramp, then holds the voice muted. The old C0 last-sample bridge is gone.
+- Voice management: budget-conserving loudness. Voices normalise to the uncapped singers-per-voice (`singersReference`), so a 24-singer choir split over many notes keeps its total energy (12-note cluster −5.3 dB; ≤3 notes unchanged). This was 7steal's real cause since Phase 2: the octave-higher 12-note chord drove `softSafetyLimit` (input ≈1.15). Steal clicks were never the cause; the steal-window d2 is ≈1.1× the reference.
+- Humanization (D8), layered on the existing seeded singer draws so each preset keeps its ensemble take:
+  - Tract and glottis: VTL scaling of formants and bandwidths (constant Q), F2–F5 shape ±1.8 %, tension offset ±0.04 (headroom-limited).
+  - Vibrato 4.8–6.5 Hz with staggered delay, smoothstep onset and depth ×0.85–1.15.
+  - Seeded per-note 1/f jitter (3–30 Hz, 1.0–1.7 cents rms) and shimmer (3–20 Hz, 1.6 % rms).
+  - RC attack ×0.88–1.12; onset dispersion as its own render control (`onsetDispersion01` = effective spread).
+  - An integer `noteSamples` counter replaces the float time accumulators.
+- Placement (D9): equal-power, level-only panning (no inter-channel delay); seats mirrored per voice, seeded offset ±0.12. Rejected: a 120 Hz side high-pass on the dry bus (P20 −1 dB; gate 5 already at 0.97/0.99 correlation).
+- Mode toggles: EntropyStage route crossfade 15 ms linear → 5 ms raised cosine.
+- 8snap re-baseline (user, 2026-11-26), after 3 attempts that failed on random draws only (1.87 dB P20; 1.67 / 1.61 dB P24):
+  - 6-seed study: 3.3 shifts preset level by +0.004 dB mean (rms 0.14, max 0.38); the 3.2 code itself passes on 2 of 6 seeds.
+  - `preset_baseline.csv` re-captured from 3.3; the ±1.5 dB threshold is kept. The Phase 2 copy is archived as `Tests/QA/preset_baseline_phase2.csv`.
+  - Cumulative Phase 2→3.3 drift: mean −0.50, sd 0.56 (P24 −1.61, P15 −1.33, P05 +1.15).
+
+| Gate | 3.2 → 3.3 |
+|---|---|
+| 7steal | 6.41× → 3.40× |
+| 3morph / 3toggle | d2 0.79× → 1.30× ref / 0.25× → 0.31× bound |
+| 5 | comb −5.5/−6.9 → −5.1/−7.0 dB, corr 0.97/0.99, mono drop 0.72/0.84 dB |
+| 7dc / 7dry | −123.5 → −106.7 dBFS / idle 0.49 % RT (3.2 code measures the same on this machine) |
+| 8snap / 8cpu | re-baselined, peak −1.56 dBFS / 8.59 % RT |
+Notes: the remaining 7steal margin is set by `softSafetyLimit` (memoryless tanh above 0.75) on dense chords, which is out of 3.3 scope. The 7dc change is random-draw level drive drift, 16.7 dB inside the limit.

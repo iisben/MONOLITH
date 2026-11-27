@@ -28,37 +28,51 @@ void SwarmVoice::prepare (double sampleRate, int maxBlockSize, int voiceIndex)
     sr = std::max (8000.0, sampleRate);
     preparedMaxBlock = std::max (32, maxBlockSize);
     voiceIdx = voiceIndex;
-    declickDecay = static_cast<float> (std::exp (-1.0 / (0.008 * sr)));
+    rampLen = std::max (8, static_cast<int> (std::lround (kDeclickRampSec * sr)));
 
     voiceBufL.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
     voiceBufR.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
     envBuf.assign (static_cast<size_t> (preparedMaxBlock), 0.0f);
 
+    const float voiceMirror = (voiceIndex % 2 == 0) ? 1.0f : -1.0f;
     for (int i = 0; i < kMaxSingersPerVoice; ++i)
     {
         auto& sg = singers[static_cast<size_t> (i)];
         const uint32_t base = static_cast<uint32_t> ((voiceIndex + 1) * 7919 + (i + 1) * 104729);
-        const uint32_t h0 = hashSeed (base);
-        const uint32_t h1 = hashSeed (h0);
-        const uint32_t h2 = hashSeed (h1);
-        const uint32_t h3 = hashSeed (h2);
-        const uint32_t h4 = hashSeed (h3);
+        std::array<uint32_t, 14> h {};
+        h[0] = hashSeed (base);
+        for (size_t k = 1; k < h.size(); ++k)
+            h[k] = hashSeed (h[k - 1]);
+        const auto bip = [&] (size_t k) { return seedToUnit (h[k]) * 2.0f - 1.0f; };
 
-        sg.seed = h0;
-        sg.vibratoRateHz   = 4.50f + 1.70f * seedToUnit (h0); // 4.5 - 6.2 Hz
-        sg.vibratoDelaySec = 0.22f + 0.30f * seedToUnit (h1);
-        sg.microTuneCents  = (seedToUnit (h2) * 2.0f - 1.0f) * 13.5f;
-        sg.formantJitter   = 1.0f + (seedToUnit (h3) * 2.0f - 1.0f) * 0.072f;
-        sg.staggerSec      = seedToUnit (h4) * 0.085f;
+        sg.seed = h[0];
+        sg.vibratoRateHz     = 4.80f + 1.70f * seedToUnit (h[0]);   // 4.8 - 6.5 Hz
+        sg.vibratoDelaySec   = 0.22f + 0.30f * seedToUnit (h[1]);   // staggered delayed onset
+        sg.microTuneCents    = bip (2) * 13.5f;
+        // Vocal tract length: formants AND bandwidths scale with L_ref / L_singer = 1 +/- 7.2 % (the singer's
+        // existing seeded formant offset, so every preset keeps its ensemble "take")
+        sg.vtlScale          = 1.0f + bip (3) * 0.072f;
+        sg.shapeDev[0]       = 0.0f;
+        for (size_t f = 1; f < 5; ++f)
+            sg.shapeDev[f] = bip (4 + f) * 0.018f;                    // individual tract shape, F2..F5 +/- 1.8 %
+        sg.vibratoRampSec    = 0.30f + 0.15f * seedToUnit (h[9]);
+        sg.vibratoDepthScale = 0.85f + 0.30f * seedToUnit (h[10]);
+        sg.tensionOffset     = bip (11) * 0.04f;
+        sg.attackScale       = 0.88f + 0.24f * seedToUnit (h[12]);
+        sg.onsetRank         = seedToUnit (h[4]);                       // entry slot within the dispersion window
+        sg.panOffset         = voiceMirror * bip (13) * 0.12f;
 
         sg.excDc.prepare (sr, 5.0);
-        sg.breathNoise.seed (h1 ^ 0xA3C59AC3u);
-        sg.wanderNoise.seed (h2 ^ 0x517CC1B7u);
+        sg.breathNoise.seed (h[1] ^ 0xA3C59AC3u);
+        sg.wanderNoise.seed (h[2] ^ 0x517CC1B7u);
+        sg.jitterNoise.seed (h[5] ^ 0x2C1B3C6Du);
+        sg.shimmerNoise.seed (h[6] ^ 0x297A2D39u);
     }
 
     harmonicLayers.prepare (sr);
     entropy.prepare (sr, preparedMaxBlock, static_cast<uint32_t> (voiceIndex + 1) * 2654435761u);
 
+    cachedAttackSec = -1.0f;
     reset();
 }
 
@@ -66,14 +80,11 @@ void SwarmVoice::reset() noexcept
 {
     active            = false;
     releasing         = false;
-    fastSteal         = false;
     currentMidiNote   = 60;
     targetVelocity    = 0.8f;
     smoothedVelocity  = 0.8f;
     noteAge           = 0;
-    noteElapsedSec    = 0.0f;
-    releaseElapsedSec = 0.0f;
-    silentTailSec     = 0.0f;
+    noteSamples       = 0;
     currentEnvPeak    = 0.0f;
     activeSingerCount = 0;
     ctrlCounter       = 0;
@@ -101,10 +112,11 @@ void SwarmVoice::reset() noexcept
     nasalR.reset();
     nasalCoeffDip       = -1.0f;
 
-    lastPostOutL        = 0.0f;
-    lastPostOutR        = 0.0f;
-    declickL            = 0.0f;
-    declickR            = 0.0f;
+    rampKind       = Ramp::None;
+    rampPos        = 0;
+    fadeHold       = false;
+    pendingStart   = false;
+    pendingRelease = false;
 
     std::fill (voiceBufL.begin(), voiceBufL.end(), 0.0f);
     std::fill (voiceBufR.begin(), voiceBufR.end(), 0.0f);
@@ -117,6 +129,8 @@ void SwarmVoice::reset() noexcept
         sg.wanderState  = 0.0f;
         sg.activeGain   = 0.0f;
         sg.envLevel     = 0.0f;
+        sg.jitterLp = sg.jitterSlow = sg.jitterCents = sg.jitterStep = 0.0f;
+        sg.shimmerLp = sg.shimmerSlow = sg.shimmer = sg.shimmerStep = 0.0f;
         sg.currentPanL  = 0.70710678f;
         sg.currentPanR  = 0.70710678f;
         sg.targetPanL   = 0.70710678f;
@@ -124,8 +138,10 @@ void SwarmVoice::reset() noexcept
         sg.excDc.reset();
         sg.breathNoise.resetFilter();
         sg.wanderNoise.resetFilter();
+        sg.jitterNoise.resetFilter();
+        sg.shimmerNoise.resetFilter();
         sg.tract.reset();
-        sg.tractJitter = -1.0f;
+        sg.tractSpread = -1.0f;
         sg.breathBp.reset();
         sg.onsetBpA.reset();
         sg.onsetBpB.reset();
@@ -142,31 +158,40 @@ void SwarmVoice::startNote (int midiNote, float velocity01, float currentGlideTi
 {
     (void) currentGlideTimeSec;
 
-    // If stealing/retriggering an active voice, bridge exact residual post-entropy sample smoothly over 8 ms
-    if (active)
+    if (active && ! fadeHold)
     {
-        declickL = sanitize (lastPostOutL);
-        declickR = sanitize (lastPostOutR);
-        entropy.reset();
-    }
-    else
-    {
-        declickL = 0.0f;
-        declickR = 0.0f;
-        lastPostOutL = 0.0f;
-        lastPostOutR = 0.0f;
+        // Voice steal / retrigger: fade the sounding note out with a raised-cosine ramp (continuing an
+        // in-flight fast-release ramp from its current gain), then start the new note sample-accurately
+        // at the ramp end. EntropyStage keeps running, so its oversampler / tape states drain smoothly.
+        if (rampKind == Ramp::None)
+            rampPos = 0;
+        rampKind        = Ramp::StealOut;
+        pendingStart    = true;
+        pendingRelease  = false;
+        pendingNote     = std::clamp (midiNote, 0, 127);
+        pendingVelocity = velocity01;
+        noteAge         = triggerStamp;
+        silentSamples   = 0;
+        return;
     }
 
+    beginNote (midiNote, velocity01, triggerStamp);
+}
+
+void SwarmVoice::beginNote (int midiNote, float velocity01, uint64_t triggerStamp) noexcept
+{
     active            = true;
     releasing         = false;
-    fastSteal         = false;
+    rampKind          = Ramp::None;
+    rampPos           = 0;
+    fadeHold          = false;
+    pendingStart      = false;
+    pendingRelease    = false;
     currentMidiNote   = std::clamp (midiNote, 0, 127);
     targetVelocity    = std::clamp (velocity01, 0.05f, 1.0f);
     smoothedVelocity  = targetVelocity;
     noteAge           = triggerStamp;
-    noteElapsedSec    = 0.0f;
-    releaseElapsedSec = 0.0f;
-    silentTailSec     = 0.0f;
+    noteSamples       = 0;
     currentEnvPeak    = 0.0f;
     ctrlCounter       = 0;
     silentSamples     = 0;
@@ -186,11 +211,17 @@ void SwarmVoice::startNote (int midiNote, float velocity01, float currentGlideTi
     for (int i = 0; i < kMaxSingersPerVoice; ++i)
     {
         auto& sg = singers[static_cast<size_t> (i)];
-        sg.phase        = seedToUnit (hashSeed (sg.seed + static_cast<uint32_t> (midiNote * 131 + i)));
+        sg.phase        = seedToUnit (hashSeed (sg.seed + static_cast<uint32_t> (currentMidiNote * 131 + i)));
         sg.vibratoPhase = seedToUnit (hashSeed (sg.seed + 97u)) * kTwoPi;
         sg.wanderState  = 0.0f;
         sg.envLevel     = 0.0f;
         sg.activeGain   = 0.0f;
+        // Deterministic per-note humanization: reseed the 1/f jitter / shimmer sources from (singer, note)
+        const uint32_t noteSeed = hashSeed (sg.seed ^ (static_cast<uint32_t> (currentMidiNote + 1) * 0x9E3779B9u));
+        sg.jitterNoise.seed (noteSeed);
+        sg.shimmerNoise.seed (hashSeed (noteSeed));
+        sg.jitterLp = sg.jitterSlow = sg.jitterCents = sg.jitterStep = 0.0f;
+        sg.shimmerLp = sg.shimmerSlow = sg.shimmer = sg.shimmerStep = 0.0f;
         sg.excDc.reset();
         sg.tract.reset();
         sg.breathBp.reset();
@@ -204,6 +235,21 @@ void SwarmVoice::startNote (int midiNote, float velocity01, float currentGlideTi
 void SwarmVoice::glideToNote (int midiNote, float velocity01, float glideTimeSec) noexcept
 {
     const int clampedNote = std::clamp (midiNote, 0, 127);
+
+    if (pendingStart)
+    {
+        // Steal ramp still running: the deferred note simply becomes the glide target
+        pendingNote     = clampedNote;
+        pendingVelocity = velocity01;
+        pendingRelease  = false;
+        return;
+    }
+    if (rampKind == Ramp::FastOut || fadeHold)
+    {
+        startNote (clampedNote, velocity01, glideTimeSec, noteAge);
+        return;
+    }
+
     const float newTarget = static_cast<float> (clampedNote);
     const float interval  = newTarget - currentNoteF;
 
@@ -211,8 +257,6 @@ void SwarmVoice::glideToNote (int midiNote, float velocity01, float glideTimeSec
     targetNoteF     = newTarget;
     targetVelocity  = 0.5f * targetVelocity + 0.5f * std::clamp (velocity01, 0.05f, 1.0f);
     releasing       = false;
-    fastSteal       = false;
-    silentTailSec   = 0.0f;
     silentSamples   = 0;
 
     const float srF = static_cast<float> (sr);
@@ -234,12 +278,14 @@ void SwarmVoice::stopNote (bool allowTailOff) noexcept
 
     if (allowTailOff)
     {
-        releasing         = true;
-        releaseElapsedSec = 0.0f;
+        if (pendingStart)
+            pendingRelease = true; // note-off for the deferred note: start it, then release at once
+        else
+            releasing = true;
     }
     else
     {
-        // 12 ms anti-click fast fade instead of hard 1-sample cut on DAW CC120 All Sound Off
+        // CC120 All Sound Off: 4 ms raised-cosine fade instead of a hard 1-sample cut
         forceFastRelease();
     }
 }
@@ -248,26 +294,25 @@ void SwarmVoice::forceFastRelease() noexcept
 {
     if (! active)
         return;
-    releasing = true;
-    fastSteal = true;
+    releasing      = true;
+    pendingStart   = false; // a deferred steal start is cancelled; the running ramp keeps its gain
+    pendingRelease = false;
+    if (fadeHold)
+        return;
+    if (rampKind == Ramp::None)
+        rampPos = 0;
+    rampKind = Ramp::FastOut;
 }
 
-void SwarmVoice::renderBlock (float* outL,
-                              float* outR,
-                              int numSamples,
+void SwarmVoice::renderSynth (int offset,
+                              int count,
                               const VoiceRenderParams& params,
-                              std::array<float, 5>& formantEnergyOut,
-                              float& breathEnergyOut) noexcept
+                              std::array<float, 5>& formantAcc,
+                              float& breathAcc) noexcept
 {
-    if (! active)
-        return;
-
-    const int n = std::min (numSamples, preparedMaxBlock);
-    if (n <= 0)
-        return;
-
-    const float srF    = static_cast<float> (sr);
-    const float invSrF = 1.0f / srF;
+    const float  srF    = static_cast<float> (sr);
+    const float  invSrF = 1.0f / srF;
+    const double invSrD = 1.0 / sr;
 
     const float spread        = std::clamp (params.spread01, 0.0f, 1.0f);
     const float targetExpr    = std::clamp (params.expression01, 0.0f, 1.0f);
@@ -302,15 +347,17 @@ void SwarmVoice::renderBlock (float* outL,
         targetSingerWeights[static_cast<size_t> (s)] = w;
         targetWeightSum += w;
 
+        // Haas-safe placement: equal-power level panning only (no inter-channel delay, so mono fold-down has
+        // no comb), alternating seats mirrored per voice plus a seeded per-singer seat offset.
+        auto& sg = singers[static_cast<size_t> (s)];
         float pan = 0.0f;
         if (s > 0 || targetCount > 1)
         {
-            const float sign = (s % 2 == 0) ? -1.0f : 1.0f;
+            const float sign = ((s % 2 == 0) ? -1.0f : 1.0f) * ((voiceIdx % 2 == 0) ? 1.0f : -1.0f);
             const float rank = static_cast<float> ((s / 2) + 1) / static_cast<float> ((kMaxSingersPerVoice / 2));
-            pan = sign * rank * spread;
+            pan = std::clamp ((sign * rank + sg.panOffset) * spread, -1.0f, 1.0f);
         }
         const float angle = (pan + 1.0f) * 0.25f * kPi;
-        auto& sg = singers[static_cast<size_t> (s)];
         sg.targetPanL = std::cos (angle);
         sg.targetPanR = std::sin (angle);
         if (! formantSmoothPrimed)
@@ -320,14 +367,22 @@ void SwarmVoice::renderBlock (float* outL,
         }
     }
 
-    const float targetSingerNorm = 1.0f / std::sqrt (std::max (targetWeightSum, 1.0f));
+    // Budget-conserving ensemble loudness: normalise to the ensemble size asked for, not the budget-capped
+    // count, so a 24-singer choir split across many notes keeps its total energy (no extra +6 dB that would
+    // drive the bus into the safety limiter). Identical to the per-voice unit normalisation when uncapped.
+    const float targetSingerNorm = 1.0f / std::sqrt (std::max ({ targetWeightSum, params.singersReference, 1.0f }));
     if (! formantSmoothPrimed)
         smoothedSingerNorm = targetSingerNorm;
 
-    // Envelope & per-sample smoothing rates
+    // RC envelopes (exact one-pole charge / discharge); per-singer attack humanization, cached per attack time
     const float atkTime           = std::max (params.attackSec, 0.005f);
-    const float relTime           = fastSteal ? 0.012f : std::max (params.releaseSec, 0.020f);
-    const float atkCoeff          = 1.0f - std::exp (-3.0f / (atkTime * srF));
+    const float relTime           = std::max (params.releaseSec, 0.020f);
+    if (std::abs (atkTime - cachedAttackSec) > 0.0f)
+    {
+        cachedAttackSec = atkTime;
+        for (auto& sg : singers)
+            sg.attackCoeff = 1.0f - std::exp (-3.0f / (atkTime * sg.attackScale * srF));
+    }
     const float relCoeff          = std::exp (-6.907755f / (relTime * srF));
     const float sagDecay          = std::exp (-1.0f / (0.28f * srF));
     const float wanderCoeff       = 1.0f - std::exp (-kTwoPi * 1.4f / srF);
@@ -337,6 +392,8 @@ void SwarmVoice::renderBlock (float* outL,
 
     const float onsetDurSec = 0.042f + 0.065f * (1.0f - 0.55f * targetVelocity);
     const float onsetDrive  = params.onsetAmount01 * (0.35f + 0.65f * targetVelocity);
+    // Controllable onset dispersion: each singer enters at its seeded slot within this window
+    const float dispersionSec = 0.085f * std::clamp (params.onsetDispersion01, 0.0f, 1.0f);
 
     const VocalRegister resolvedReg = PhonemeField::resolveRegister (params.regMode, currentMidiNote);
     const float totalThroatShift = params.throatShiftSt - 8.5f * std::clamp (params.screwDepth01, 0.0f, 1.0f);
@@ -345,16 +402,21 @@ void SwarmVoice::renderBlock (float* outL,
 
     const int ctrlStep = std::max (8, static_cast<int> (srF / 3000.0f));
 
-    std::fill (voiceBufL.begin(), voiceBufL.begin() + n, 0.0f);
-    std::fill (voiceBufR.begin(), voiceBufR.begin() + n, 0.0f);
-
-    float breathAcc   = 0.0f;
-    std::array<float, 5> formantAcc {};
+    // Seeded 1/f micro-jitter (~1.0-1.7 cents rms) & shimmer (~1.6 % rms) at control rate, per-sample ramped
+    const float ctrlDtSec      = static_cast<float> (ctrlStep) * invSrF;
+    const float invCtrlStep    = 1.0f / static_cast<float> (ctrlStep);
+    const float jitterLpCoeff  = 1.0f - std::exp (-kTwoPi * 30.0f * ctrlDtSec);
+    const float shimmerLpCoeff = 1.0f - std::exp (-kTwoPi * 20.0f * ctrlDtSec);
+    const float jitterDepth    = 9.0f * (0.6f + 0.4f * spread);
+    const float shimmerDepth   = 0.093f;
+    const float driftHpCoeff   = 1.0f - std::exp (-kTwoPi * 3.0f * ctrlDtSec);
 
     FormantTarget& baseTarget = ctrlTarget;
 
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < count; ++i)
     {
+        const float noteSec = static_cast<float> (static_cast<double> (noteSamples) * invSrD);
+
         if (std::abs (targetNoteF - currentNoteF) > 1.0e-4f)
             currentNoteF += glideRatePerSample * (targetNoteF - currentNoteF);
         else
@@ -435,18 +497,31 @@ void SwarmVoice::renderBlock (float* outL,
                 auto& sg = singers[static_cast<size_t> (s)];
                 if (sg.activeGain < 1.0e-5f && targetSingerWeights[static_cast<size_t> (s)] < 1.0e-5f)
                 {
-                    sg.tractJitter = -1.0f; // coefficients go stale while parked
+                    sg.tractSpread = -1.0f; // coefficients go stale while parked
                     continue;
                 }
 
-                const float jitter = 1.0f + (sg.formantJitter - 1.0f) * spread;
-                if (tractDirty || std::abs (jitter - sg.tractJitter) > 0.0f)
+                // 1/f jitter (3-30 Hz) and shimmer (3-20 Hz): slow drift stays with the existing wander, so these
+                // perturb pitch / level without re-rolling the ensemble's slow beating or feeding sub-Hz AM into drive
+                sg.jitterLp  += jitterLpCoeff * (sg.jitterNoise.nextPink() - sg.jitterLp);
+                sg.jitterSlow  += driftHpCoeff * (sg.jitterLp - sg.jitterSlow);
+                sg.shimmerLp += shimmerLpCoeff * (sg.shimmerNoise.nextPink() - sg.shimmerLp);
+                sg.shimmerSlow += driftHpCoeff * (sg.shimmerLp - sg.shimmerSlow);
+                sg.jitterStep  = ((sg.jitterLp - sg.jitterSlow) * jitterDepth - sg.jitterCents) * invCtrlStep;
+                sg.shimmerStep = ((sg.shimmerLp - sg.shimmerSlow) * shimmerDepth - sg.shimmer) * invCtrlStep;
+
+                if (tractDirty || std::abs (spread - sg.tractSpread) > 0.0f)
                 {
-                    sg.tractJitter = jitter;
+                    // Per-singer vocal tract length scales every formant AND bandwidth (constant Q), plus a small
+                    // individual tract-shape deviation on F2..F5; both widen with ensemble spread.
+                    sg.tractSpread = spread;
+                    const double vtl = 1.0 + (static_cast<double> (sg.vtlScale) - 1.0) * static_cast<double> (spread);
                     for (int f = 0; f < VocalTract::kNumFormants; ++f)
                     {
-                        const double fc = formantSmoother.freq (static_cast<size_t> (f)) * static_cast<double> (jitter);
-                        sg.tract.setFormant (f, fc, VocalTract::qFor (fc, formantSmoother.bw (static_cast<size_t> (f))), sr);
+                        const auto fi = static_cast<size_t> (f);
+                        const double scale = vtl * (1.0 + static_cast<double> (sg.shapeDev[fi] * spread));
+                        const double fc = formantSmoother.freq (fi) * scale;
+                        sg.tract.setFormant (f, fc, VocalTract::qFor (fc, formantSmoother.bw (fi) * scale), sr);
                     }
                 }
                 if (! sg.tract.isFinite())
@@ -476,9 +551,9 @@ void SwarmVoice::renderBlock (float* outL,
         smNasalDip    += fastParamCoeff * (baseTarget.nasalDip - smNasalDip);
 
         float onsetEnv = 0.0f;
-        if (! releasing && noteElapsedSec < onsetDurSec)
+        if (! releasing && noteSec < onsetDurSec)
         {
-            const float u = noteElapsedSec / onsetDurSec;
+            const float u = noteSec / onsetDurSec;
             onsetEnv = std::sin (kPi * u) * onsetDrive;
         }
 
@@ -508,9 +583,8 @@ void SwarmVoice::renderBlock (float* outL,
 
             if (! releasing)
             {
-                const float staggerThreshold = sg.staggerSec * spread;
-                if (noteElapsedSec >= staggerThreshold)
-                    sg.envLevel += atkCoeff * (1.0f - sg.envLevel);
+                if (noteSec >= sg.onsetRank * dispersionSec)
+                    sg.envLevel += sg.attackCoeff * (1.0f - sg.envLevel);
             }
             else
             {
@@ -526,25 +600,37 @@ void SwarmVoice::renderBlock (float* outL,
             sg.vibratoPhase += kTwoPi * sg.vibratoRateHz * invSrF;
             if (sg.vibratoPhase >= kTwoPi) sg.vibratoPhase -= kTwoPi;
 
-            const float vibOnsetRamp = std::clamp ((noteElapsedSec - sg.vibratoDelaySec) / 0.35f, 0.0f, 1.0f);
+            // Staggered delayed-onset vibrato with a C1-smooth (smoothstep) per-singer onset ramp
+            float vibOnsetRamp = 0.0f;
+            if (noteSec > sg.vibratoDelaySec)
+            {
+                const float u = std::min ((noteSec - sg.vibratoDelaySec) / sg.vibratoRampSec, 1.0f);
+                vibOnsetRamp = u * u * (3.0f - 2.0f * u);
+            }
             const float vibCents = std::sin (sg.vibratoPhase)
-                                 * (params.vibratoDepth01 * 28.0f)
+                                 * (params.vibratoDepth01 * 28.0f * sg.vibratoDepthScale)
                                  * vibOnsetRamp;
+
+            sg.jitterCents += sg.jitterStep;
+            sg.shimmer     += sg.shimmerStep;
 
             sg.wanderState += wanderCoeff * (sg.wanderNoise.nextPink() - sg.wanderState);
             const float wanderCents = sg.wanderState * (10.0f + 16.0f * spread);
             const float detuneCents = sg.microTuneCents * spread;
 
             const float singerFreq = std::clamp (
-                baseF0 * fastCentsToRatio (detuneCents + vibCents + wanderCents),
+                baseF0 * fastCentsToRatio (detuneCents + vibCents + wanderCents + sg.jitterCents),
                 18.0f,
                 0.42f * srF);
 
             sg.phase += singerFreq * invSrF;
             if (sg.phase >= 1.0f) sg.phase -= std::floor (sg.phase);
 
-            const float glottal  = glottalLut.sample (sg.phase, smTension, singerFreq, srF);
-            const float openGate = glottalLut.glottalOpenGate (sg.phase, smTension);
+            // Per-singer glottal tension offset, limited by the headroom on both sides so the mean stays put
+            const float tensionRoom = std::clamp (std::min (smTension, 1.0f - smTension) * 16.6667f, 0.0f, 1.0f);
+            const float sgTension = smTension + sg.tensionOffset * spread * tensionRoom;
+            const float glottal   = glottalLut.sample (sg.phase, sgTension, singerFreq, srF);
+            const float openGate  = glottalLut.glottalOpenGate (sg.phase, sgTension);
 
             const float rawPink    = sg.breathNoise.nextPink();
             const float breathFilt = sg.breathBp.processBandpass (rawPink);
@@ -591,7 +677,7 @@ void SwarmVoice::renderBlock (float* outL,
             const float f4 = static_cast<float> (t4), f5 = static_cast<float> (t5);
             const float tractOut = static_cast<float> ((t1 + t2 + t3 + t4 + t5) * VocalTract::kOutputGain);
 
-            const float singerOut = tractOut * sg.envLevel * sg.activeGain;
+            const float singerOut = tractOut * sg.envLevel * sg.activeGain * (1.0f + sg.shimmer);
             sumL += singerOut * sg.currentPanL;
             sumR += singerOut * sg.currentPanR;
 
@@ -606,7 +692,7 @@ void SwarmVoice::renderBlock (float* outL,
             }
         }
 
-        envBuf[static_cast<size_t> (i)] = sampleMaxEnv;
+        envBuf[static_cast<size_t> (offset + i)] = sampleMaxEnv;
 
         // Per-sample envelope for Sub-Abyss & Spectral Crown (zero block-boundary staircase steps!)
         const float envForLayers = std::clamp (sampleMaxEnv, 0.0f, 1.0f);
@@ -628,13 +714,77 @@ void SwarmVoice::renderBlock (float* outL,
         outSampleL += layerL * envForLayers * voiceGainScale;
         outSampleR += layerR * envForLayers * voiceGainScale;
 
-        voiceBufL[static_cast<size_t> (i)] = sanitize (outSampleL);
-        voiceBufR[static_cast<size_t> (i)] = sanitize (outSampleR);
+        // Raised-cosine de-click ramp (steal / fast release): reaches exactly 0 on its last sample
+        float rampGain = 1.0f;
+        if (fadeHold)
+        {
+            rampGain = 0.0f;
+        }
+        else if (rampKind != Ramp::None)
+        {
+            ++rampPos;
+            rampGain = 0.5f + 0.5f * std::cos (kPi * static_cast<float> (rampPos) / static_cast<float> (rampLen));
+        }
 
-        noteElapsedSec += invSrF;
-        if (releasing)
-            releaseElapsedSec += invSrF;
+        voiceBufL[static_cast<size_t> (offset + i)] = sanitize (outSampleL * rampGain);
+        voiceBufR[static_cast<size_t> (offset + i)] = sanitize (outSampleR * rampGain);
+
+        ++noteSamples;
     }
+}
+
+void SwarmVoice::renderBlock (float* outL,
+                              float* outR,
+                              int numSamples,
+                              const VoiceRenderParams& params,
+                              std::array<float, 5>& formantEnergyOut,
+                              float& breathEnergyOut) noexcept
+{
+    if (! active)
+        return;
+
+    const int n = std::min (numSamples, preparedMaxBlock);
+    if (n <= 0)
+        return;
+
+    float breathAcc = 0.0f;
+    std::array<float, 5> formantAcc {};
+
+    // Synthesis in segments split exactly at ramp completion, so a deferred (stolen) note starts on the
+    // same absolute sample regardless of host block partitioning.
+    int countFrom = 0; // samples before this index belong to a steal ramp and never count as tail silence
+    const auto completeRamp = [&] (int at) noexcept {
+        if (rampKind == Ramp::StealOut)
+        {
+            const bool releaseAtOnce = pendingRelease;
+            beginNote (pendingNote, pendingVelocity, noteAge);
+            releasing = releaseAtOnce;
+            countFrom = at;
+        }
+        else
+        {
+            rampKind = Ramp::None;
+            fadeHold = true;
+            for (auto& sg : singers)
+                sg.envLevel = 0.0f;
+        }
+    };
+
+    int pos = 0;
+    while (pos < n)
+    {
+        if (rampKind != Ramp::None && rampPos >= rampLen)
+            completeRamp (pos);
+        int seg = n - pos;
+        if (rampKind != Ramp::None)
+            seg = std::min (seg, rampLen - rampPos);
+        renderSynth (pos, seg, params, formantAcc, breathAcc);
+        pos += seg;
+    }
+    if (rampKind != Ramp::None && rampPos >= rampLen)
+        completeRamp (n);
+    if (pendingStart)
+        countFrom = n;
 
     // Count currently audible singers for telemetry
     int liveSingers = 0;
@@ -658,18 +808,13 @@ void SwarmVoice::renderBlock (float* outL,
 
     for (int i = 0; i < n; ++i)
     {
-        const float sL = sanitize (voiceBufL[static_cast<size_t> (i)] + declickL);
-        const float sR = sanitize (voiceBufR[static_cast<size_t> (i)] + declickR);
-        declickL *= declickDecay;
-        declickR *= declickDecay;
+        const float sL = sanitize (voiceBufL[static_cast<size_t> (i)]);
+        const float sR = sanitize (voiceBufR[static_cast<size_t> (i)]);
 
         outL[i] += sL;
         outR[i] += sR;
 
-        lastPostOutL = sL;
-        lastPostOutR = sR;
-
-        if (releasing && envBuf[static_cast<size_t> (i)] < 1.0e-5f && std::abs (sL) < 1.0e-5f && std::abs (sR) < 1.0e-5f)
+        if (i >= countFrom && releasing && envBuf[static_cast<size_t> (i)] < 1.0e-5f && std::abs (sL) < 1.0e-5f && std::abs (sR) < 1.0e-5f)
             ++silentSamples;
         else
             silentSamples = 0;
@@ -680,9 +825,9 @@ void SwarmVoice::renderBlock (float* outL,
         formantEnergyOut[f] += formantAcc[f] * invN;
     breathEnergyOut += breathAcc * invN * smoothedSingerNorm;
 
-    // Deactivate voice ONLY after 25 ms of per-sample silence (envelope, de-click bridge AND
+    // Deactivate voice ONLY after 25 ms of per-sample silence (envelope, de-click ramp AND
     // EntropyStage tape drain), and only on an absolute control-cell boundary (block-size invariant).
-    if (params.controlCellEnd && silentSamples >= static_cast<int> (0.025 * sr))
+    if (params.controlCellEnd && ! pendingStart && silentSamples >= static_cast<int> (0.025 * sr))
         reset();
 }
 

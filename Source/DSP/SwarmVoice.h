@@ -25,6 +25,7 @@ struct VoiceRenderParams
     float phonemeY          = 0.86f;
     VocalRegister regMode   = VocalRegister::SatbAuto;
     float singersTarget     = 6.0f;
+    float singersReference  = 1.0f;  // uncapped ensemble size per voice (loudness normalisation reference)
     float spread01          = 0.68f;
     float vibratoDepth01    = 0.36f;
     float attackSec         = 0.38f;
@@ -50,6 +51,7 @@ struct VoiceRenderParams
     float expression01      = 0.78f;
     float aftertouch01      = 0.0f;
     float glideTimeSec      = 0.14f;
+    float onsetDispersion01 = 0.68f; // ensemble entry looseness (SwarmEngine: effective spread)
 
     // Absolute control-grid flags supplied by SwarmEngine (block-size invariance)
     bool  controlCellStart  = true;  // chunk begins on an absolute control-cell boundary
@@ -59,7 +61,9 @@ struct VoiceRenderParams
 /**
     Single polyphonic voice synthesizing an ensemble of up to 8 independent
     physical-acoustic virtual singers, harmonic layers, and per-voice stereo
-    oversampled analog tape entropy with built-in C0-continuous de-click bridging.
+    oversampled analog tape entropy. Voice steals and forced fast releases use a
+    sample-accurate 4 ms raised-cosine output ramp (a stolen voice starts its new
+    note only once the old one has faded to exactly zero).
 */
 class SwarmVoice
 {
@@ -75,8 +79,8 @@ public:
     void forceFastRelease() noexcept;
 
     [[nodiscard]] bool isActive() const noexcept         { return active; }
-    [[nodiscard]] bool isReleasing() const noexcept      { return active && releasing; }
-    [[nodiscard]] int  getMidiNote() const noexcept      { return currentMidiNote; }
+    [[nodiscard]] bool isReleasing() const noexcept      { return active && releasing && ! pendingStart; }
+    [[nodiscard]] int  getMidiNote() const noexcept      { return pendingStart ? pendingNote : currentMidiNote; }
     [[nodiscard]] uint64_t getAge() const noexcept       { return noteAge; }
     [[nodiscard]] float getCurrentLevel() const noexcept { return currentEnvPeak; }
     [[nodiscard]] int  getActiveSingerCount() const noexcept { return activeSingerCount; }
@@ -98,29 +102,44 @@ public:
                       float& breathEnergyOut) noexcept;
 
 private:
+    static constexpr double kDeclickRampSec = 0.004; // raised-cosine steal / fast-release ramp
+
     struct SingerState
     {
         uint32_t seed          = 1u;
         float phase            = 0.0f;
         float vibratoPhase     = 0.0f;
-        float vibratoRateHz    = 5.2f;
-        float vibratoDelaySec  = 0.35f;
+        float vibratoRateHz    = 5.6f;   // 4.8 - 6.5 Hz
+        float vibratoDelaySec  = 0.35f;  // staggered delayed onset
+        float vibratoRampSec   = 0.35f;  // smoothstep onset length
+        float vibratoDepthScale = 1.0f;
         float microTuneCents   = 0.0f;
-        float formantJitter    = 1.0f;
+        float vtlScale         = 1.0f;   // formant scale = L_ref / L_singer (vocal tract length)
+        std::array<float, 5> shapeDev {}; // per-formant tract-shape deviation (F2..F5)
+        float tensionOffset    = 0.0f;   // per-singer glottal tension offset
+        float attackScale      = 1.0f;   // per-singer RC attack time scale
+        float attackCoeff      = 0.0f;   // cached RC attack coefficient
+        float onsetRank        = 0.0f;   // seeded entry slot within the onset-dispersion window [0, 1)
+        float panOffset        = 0.0f;   // seeded seat offset
         float currentPanL      = 0.70710678f;
         float currentPanR      = 0.70710678f;
         float targetPanL       = 0.70710678f;
         float targetPanR       = 0.70710678f;
-        float staggerSec       = 0.0f;
         float wanderState      = 0.0f;
         float activeGain       = 0.0f;
         float envLevel         = 0.0f;
 
+        // Deterministic seeded 1/f micro-jitter (cents) & shimmer (gain), control-rate + per-sample ramp
+        float jitterLp = 0.0f, jitterSlow = 0.0f, jitterCents = 0.0f, jitterStep = 0.0f;
+        float shimmerLp = 0.0f, shimmerSlow = 0.0f, shimmer = 0.0f, shimmerStep = 0.0f;
+
         DCBlocker64  excDc;          // ~5 Hz 64-bit excitation DC blocker
         PinkNoiseGen breathNoise;
         PinkNoiseGen wanderNoise;
+        PinkNoiseGen jitterNoise;
+        PinkNoiseGen shimmerNoise;
         VocalTract tract;                 // 64-bit notch-free Klatt parallel formant bank
-        float tractJitter = -1.0f;        // jitter the tract coefficients were built for (-1 = stale)
+        float tractSpread = -1.0f;        // spread the tract coefficients were built for (-1 = stale)
         Bandpass64 breathBp;              // 64-bit aspiration shaper
         Bandpass64 onsetBpA;              // 64-bit formant-tracking onset shapers
         Bandpass64 onsetBpB;
@@ -132,15 +151,13 @@ private:
 
     bool     active            = false;
     bool     releasing         = false;
-    bool     fastSteal         = false;
     int      currentMidiNote   = 60;
     float    targetVelocity    = 0.8f;
     float    smoothedVelocity  = 0.8f;
     uint64_t noteAge           = 0;
-    float    noteElapsedSec    = 0.0f;
-    float    releaseElapsedSec = 0.0f;
-    float    silentTailSec     = 0.0f;
+    int64_t  noteSamples       = 0;   // absolute samples since note start (no float time accumulation)
     float    currentEnvPeak    = 0.0f;
+    float    cachedAttackSec   = -1.0f;
     int      activeSingerCount = 0;
     int      ctrlCounter       = 0;   // absolute per-voice control-rate counter
     int      silentSamples     = 0;   // consecutive silent released samples
@@ -174,12 +191,21 @@ private:
     NasalPoleZero   nasalL, nasalR;         // per-voice nasal pole-zero pair (identity at nasalDip = 0)
     float nasalCoeffDip       = -1.0f;
 
-    // Anti-click voice steal / retrigger bridge (guarantees C0 continuity)
-    float lastPostOutL        = 0.0f;
-    float lastPostOutR        = 0.0f;
-    float declickL            = 0.0f;
-    float declickR            = 0.0f;
-    float declickDecay        = 0.997f;
+    // Raised-cosine de-click ramp: StealOut fades the old note to exactly 0, then the pending note starts
+    // sample-accurately; FastOut (CC120 / legato hand-off) fades to 0 and holds the voice muted.
+    enum class Ramp : uint8_t { None, StealOut, FastOut };
+    Ramp  rampKind            = Ramp::None;
+    int   rampPos             = 0;
+    int   rampLen             = 192;
+    bool  fadeHold            = false;
+    bool  pendingStart        = false;
+    bool  pendingRelease      = false;
+    int   pendingNote         = 60;
+    float pendingVelocity     = 0.8f;
+
+    void beginNote (int midiNote, float velocity01, uint64_t triggerStamp) noexcept;
+    void renderSynth (int offset, int count, const VoiceRenderParams& params,
+                      std::array<float, 5>& formantAcc, float& breathAcc) noexcept;
 
     std::array<SingerState, kMaxSingersPerVoice> singers {};
     HarmonicLayers harmonicLayers;

@@ -493,6 +493,7 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
         smRot             = rotTarget;
         smAbyss           = abyssTarget;
         smSingersPerVoice = 1.0f + (baseEnsSize - 1.0f) * (7.0f / 23.0f);
+        smSingersReference = smSingersPerVoice;
         smoothersPrimed   = true;
     }
 
@@ -602,12 +603,14 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
                     targetSingersPerVoice = std::clamp (std::min (desiredPerVoice, budgetCap), minStereo, 8.0f);
                 }
                 smoothToward (smSingersPerVoice, targetSingersPerVoice, sizeAlpha);
+                smoothToward (smSingersReference, std::clamp (desiredPerVoice, 1.0f, 8.0f), sizeAlpha);
 
                 VoiceRenderParams& vParams = cell.vParams;
                 vParams.phonemeX          = effPhX;
                 vParams.phonemeY          = effPhY;
                 vParams.regMode           = regMode;
                 vParams.singersTarget     = smSingersPerVoice;
+                vParams.singersReference  = smSingersReference;
                 vParams.spread01          = effSpread;
                 vParams.vibratoDepth01    = smVibrato;
                 vParams.attackSec         = baseAttack;
@@ -630,6 +633,7 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
                 vParams.expression01      = smExpr;
                 vParams.aftertouch01      = smAftertouch;
                 vParams.glideTimeSec      = glideSec;
+                vParams.onsetDispersion01 = effSpread;
 
                 cell.freeze      = uiFreeze || (cc64FreezeOn && cc64FreezeActive);
                 cell.spaceModel  = spaceModel;
