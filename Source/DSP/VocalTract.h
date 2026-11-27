@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 
 #include "PhonemeField.h"
 
@@ -51,6 +52,9 @@ public:
         c1 = bandGain - hpGain * k;
         c2 = lpGain - hpGain;
     }
+
+    struct Coeffs { double m1, m2, m3, c0, c1, c2; };
+    [[nodiscard]] Coeffs coeffs() const noexcept { return { m1, m2, m3, c0, c1, c2 }; }
 
     inline double process (double x) noexcept
     {
@@ -229,6 +233,141 @@ private:
     std::array<TptSvf64, kNumFormants> bp {};
     std::array<Allpass1st64, kNumFormants> ap {};
     std::array<double, kNumFormants> polarity { 1.0, -1.0, 1.0, 1.0, 1.0 };
+};
+
+/**
+    Structure-of-Arrays SIMD bank of kLanes notch-free Klatt tracts (one lane per swarm singer).
+    Bit-for-bit the same recurrences as VocalTract::processBranches, laid out formant-major over
+    contiguous lane arrays so each stage vectorizes across singers (2 doubles/NEON, 4/AVX).
+    Parked / silent singer lanes inside the active width ring down on zero input (masked output):
+    a settled silent singer re-enters from a decayed tract instead of a frozen one.
+*/
+class VocalTractBank
+{
+public:
+    static constexpr int kLanes = 8;
+    static constexpr int kF     = VocalTract::kNumFormants;
+
+    void reset (int lane) noexcept
+    {
+        const auto l = static_cast<size_t> (lane);
+        for (size_t k = 0; k < static_cast<size_t> (kF); ++k)
+            ic1[k][l] = ic2[k][l] = z1[k][l] = 0.0;
+    }
+
+    [[nodiscard]] bool isFinite (int lane) const noexcept
+    {
+        const auto l = static_cast<size_t> (lane);
+        for (size_t k = 0; k < static_cast<size_t> (kF); ++k)
+            if (! (std::isfinite (ic1[k][l]) && std::isfinite (ic2[k][l]) && std::isfinite (z1[k][l])))
+                return false;
+        return true;
+    }
+
+    void setFormant (int lane, int k, double fc, double q, double sr) noexcept
+    {
+        const auto l  = static_cast<size_t> (lane);
+        const auto ku = static_cast<size_t> (k);
+        TptSvf64 proto;
+        designMatchedBandpass (fc, q, sr, proto);
+        const auto c = proto.coeffs();
+        m1[ku][l] = c.m1; m2[ku][l] = c.m2; m3[ku][l] = c.m3;
+        c0[ku][l] = c.c0; c1[ku][l] = c.c1; c2[ku][l] = c.c2;
+        apC[ku][l] = (VocalTract::kRotationRatio[ku] > 0.0)
+                         ? Allpass1st64::phaseMatchedCoeff (fc, VocalTract::kRotationRatio[ku], sr) : 0.0;
+    }
+
+    /**
+        One sample for all lanes: sum[l] = (sum_k pol_k * branch_k * gain[k]) * kOutputGain for active lanes
+        (0 elsewhere); lane0Branch[k] = gained branch k of lane 0 (for formant telemetry).
+    */
+    inline void process (const double* x, const double* gain, const bool* activeMask,
+                         double* sum, double* lane0Branch, int laneCount = kLanes) noexcept
+    {
+        // Lanes >= laneCount are parked (callers pass the highest active singer + 1). Compile-time widths
+        // (2 / 4 / 8) let each formant stage fully unroll into SIMD without runtime trip / alias checks.
+        if (laneCount <= 0)      return;
+        if (laneCount <= 2)      processN<2> (x, gain, activeMask, sum, lane0Branch);
+        else if (laneCount <= 4) processN<4> (x, gain, activeMask, sum, lane0Branch);
+        else                     processN<8> (x, gain, activeMask, sum, lane0Branch);
+    }
+
+private:
+#if defined(__clang__) || defined(__GNUC__)
+    using V2 = double __attribute__ ((vector_size (16))); // 2 x f64: one NEON / SSE2 register
+#else
+    struct V2 // portable fallback (MSVC): same arithmetic, scalar pairs
+    {
+        double v[2];
+        double& operator[] (int i) noexcept { return v[i]; }
+        double operator[] (int i) const noexcept { return v[i]; }
+        friend V2 operator+ (V2 a, V2 b) noexcept { return { { a.v[0] + b.v[0], a.v[1] + b.v[1] } }; }
+        friend V2 operator- (V2 a, V2 b) noexcept { return { { a.v[0] - b.v[0], a.v[1] - b.v[1] } }; }
+        friend V2 operator* (V2 a, V2 b) noexcept { return { { a.v[0] * b.v[0], a.v[1] * b.v[1] } }; }
+    };
+#endif
+    static inline V2 ld (const double* p) noexcept { V2 r; std::memcpy (&r, p, sizeof (V2)); return r; }
+    static inline void st (double* p, V2 v) noexcept { std::memcpy (p, &v, sizeof (V2)); }
+    static inline V2 splat (double a) noexcept { V2 r; r[0] = a; r[1] = a; return r; }
+
+    /** Fused SoA kernel: all 5 formant stages for nl lanes, 2 lanes per SIMD register, states in registers per stage. */
+    template <int nl>
+    inline void processN (const double* x, const double* gain, const bool* activeMask,
+                          double* sum, double* lane0Branch) noexcept
+    {
+        // Parked lanes inside [0, nl) run on zero excitation (callers zero x) and simply ring down; their
+        // output is masked, so no per-lane branching is needed inside the kernel.
+        constexpr int kV = nl / 2;
+        V2 X[kV], acc[kV];
+        for (int v = 0; v < kV; ++v)
+        {
+            X[v]   = ld (x + 2 * v);
+            acc[v] = splat (0.0);
+        }
+
+        for (size_t k = 0; k < static_cast<size_t> (kF); ++k)
+        {
+            const V2 two = splat (2.0);
+            const V2 gk  = splat (gain[k] * VocalTract::kPolarity[k]);
+            const bool rot = VocalTract::kRotationRatio[k] > 0.0;
+            for (int v = 0; v < kV; ++v)
+            {
+                const size_t o = static_cast<size_t> (2 * v);
+                const V2 i1 = ld (&ic1[k][o]), i2 = ld (&ic2[k][o]);
+                const V2 a2 = ld (&m2[k][o]);
+                const V2 v3 = X[v] - i2;
+                const V2 v1 = ld (&m1[k][o]) * i1 + a2 * v3;
+                const V2 v2 = i2 + a2 * i1 + ld (&m3[k][o]) * v3;
+                st (&ic1[k][o], two * v1 - i1);
+                st (&ic2[k][o], two * v2 - i2);
+                V2 y = ld (&c0[k][o]) * X[v] + ld (&c1[k][o]) * v1 + ld (&c2[k][o]) * v2;
+                if (rot)
+                {
+                    const V2 ac = ld (&apC[k][o]);
+                    const V2 zz = ld (&z1[k][o]);
+                    const V2 ya = ac * y + zz;
+                    st (&z1[k][o], y - ac * ya);
+                    y = ya;
+                }
+                y = y * gk;
+                acc[v] = acc[v] + y;
+                if (v == 0)
+                    lane0Branch[k] = y[0];
+            }
+        }
+
+        const double kOut = VocalTract::kOutputGain;
+        for (int v = 0; v < kV; ++v)
+            for (int j = 0; j < 2; ++j)
+            {
+                const int l = 2 * v + j;
+                sum[l] = activeMask[l] ? acc[v][j] * kOut : 0.0;
+            }
+    }
+
+    using Lane = std::array<double, kLanes>;
+    alignas (64) std::array<Lane, kF> ic1 {}, ic2 {}, z1 {};
+    alignas (64) std::array<Lane, kF> m1 {}, m2 {}, m3 {}, c0 {}, c1 {}, c2 {}, apC {};
 };
 
 /**

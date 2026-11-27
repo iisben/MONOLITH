@@ -138,7 +138,6 @@ private:
         PinkNoiseGen wanderNoise;
         PinkNoiseGen jitterNoise;
         PinkNoiseGen shimmerNoise;
-        VocalTract tract;                 // 64-bit notch-free Klatt parallel formant bank
         float tractSpread = -1.0f;        // spread the tract coefficients were built for (-1 = stale)
         Bandpass64 breathBp;              // 64-bit aspiration shaper
         Bandpass64 onsetBpA;              // 64-bit formant-tracking onset shapers
@@ -208,6 +207,8 @@ private:
                       std::array<float, 5>& formantAcc, float& breathAcc) noexcept;
 
     std::array<SingerState, kMaxSingersPerVoice> singers {};
+    VocalTractBank tractBank;         // SoA SIMD 64-bit Klatt tracts, one lane per singer
+    static_assert (VocalTractBank::kLanes == kMaxSingersPerVoice, "one tract lane per singer");
     HarmonicLayers harmonicLayers;
     EntropyStage entropy;
 

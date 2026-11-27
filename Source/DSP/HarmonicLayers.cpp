@@ -60,10 +60,9 @@ void HarmonicLayers::processSample (float f0Hz,
         subPhase += subFreq * invSr;
         if (subPhase >= 1.0f) subPhase -= std::floor (subPhase);
 
-        const float p = kTwoPi * subPhase;
-        const float rawSub = 0.78f * std::sin (p)
-                           + 0.16f * std::sin (2.0f * p + 0.30f)
-                           + 0.06f * std::sin (3.0f * p);
+        const float rawSub = 0.78f * sinTurns (subPhase)
+                           + 0.16f * sinTurns (2.0f * subPhase + 0.30f * 0.15915494f)
+                           + 0.06f * sinTurns (3.0f * subPhase);
 
         const float sat = fastTanh (1.65f * rawSub + 0.16f) - 0.1586f;
         const float sculpted = subLp.processLowpass (subHp.processHighpass (sat));
@@ -88,10 +87,8 @@ void HarmonicLayers::processSample (float f0Hz,
             if (crownPhaseL >= 1.0f) crownPhaseL -= std::floor (crownPhaseL);
             if (crownPhaseR >= 1.0f) crownPhaseR -= std::floor (crownPhaseR);
 
-            const float wL = 0.76f * std::sin (kTwoPi * crownPhaseL)
-                           + 0.24f * std::sin (kTwoPi * 2.0f * crownPhaseL);
-            const float wR = 0.76f * std::sin (kTwoPi * crownPhaseR)
-                           + 0.24f * std::sin (kTwoPi * 2.0f * crownPhaseR);
+            const float wL = 0.76f * sinTurns (crownPhaseL) + 0.24f * sinTurns (2.0f * crownPhaseL);
+            const float wR = 0.76f * sinTurns (crownPhaseR) + 0.24f * sinTurns (2.0f * crownPhaseR);
 
             const float swell = 0.25f + 0.75f * (expression01 * expression01);
             const float crownGain = crownAmt * 0.48f * swell * nyquistFade;

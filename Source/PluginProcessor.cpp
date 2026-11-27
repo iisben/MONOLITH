@@ -6,26 +6,18 @@
 namespace monolith
 {
 
-namespace
-{
-    constexpr const char* kLatencyParams[] { params::oversampleHq, params::driveAmount, params::macroRot, params::macroColossus };
-}
-
 MonolithAudioProcessor::MonolithAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "MONOLITH_STATE", params::createParameterLayout())
 {
-    for (const char* id : kLatencyParams)
-        apvts.addParameterListener (id, this);
     presetManager.initializeAB (apvts);
+    startTimerHz (20); // PDC follows OS mode / drive engagement (0 when bypassed) via atomic parameter reads
 }
 
 MonolithAudioProcessor::~MonolithAudioProcessor()
 {
-    cancelPendingUpdate();
-    for (const char* id : kLatencyParams)
-        apvts.removeParameterListener (id, this);
+    stopTimer();
 }
 
 void MonolithAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -116,18 +108,12 @@ void MonolithAudioProcessor::copyActiveToInactiveAB()
     presetManager.copyActiveToInactive (apvts);
 }
 
-void MonolithAudioProcessor::parameterChanged (const juce::String& parameterID, float newValue)
+void MonolithAudioProcessor::timerCallback()
 {
-    (void) newValue;
     // Latency depends on OS mode and on whether the drive stage is engaged (0 when bypassed)
-    for (const char* id : kLatencyParams)
-        if (parameterID == id)
-            triggerAsyncUpdate();
-}
-
-void MonolithAudioProcessor::handleAsyncUpdate()
-{
-    setLatencySamples (engine.getLatencySamples());
+    const int latency = engine.getLatencySamples();
+    if (latency != getLatencySamples())
+        setLatencySamples (latency);
 }
 
 void MonolithAudioProcessor::getStateInformation (juce::MemoryBlock& destData)

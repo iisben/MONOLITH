@@ -140,7 +140,7 @@ void SwarmVoice::reset() noexcept
         sg.wanderNoise.resetFilter();
         sg.jitterNoise.resetFilter();
         sg.shimmerNoise.resetFilter();
-        sg.tract.reset();
+        tractBank.reset (i);
         sg.tractSpread = -1.0f;
         sg.breathBp.reset();
         sg.onsetBpA.reset();
@@ -223,7 +223,7 @@ void SwarmVoice::beginNote (int midiNote, float velocity01, uint64_t triggerStam
         sg.jitterLp = sg.jitterSlow = sg.jitterCents = sg.jitterStep = 0.0f;
         sg.shimmerLp = sg.shimmerSlow = sg.shimmer = sg.shimmerStep = 0.0f;
         sg.excDc.reset();
-        sg.tract.reset();
+        tractBank.reset (i);
         sg.breathBp.reset();
         sg.onsetBpA.reset();
         sg.onsetBpB.reset();
@@ -399,6 +399,7 @@ void SwarmVoice::renderSynth (int offset,
     const float totalThroatShift = params.throatShiftSt - 8.5f * std::clamp (params.screwDepth01, 0.0f, 1.0f);
 
     const auto& glottalLut = LfGlottalTables::instance();
+    const float log2Sr = std::log2 (std::max (srF, 8000.0f));
 
     const int ctrlStep = std::max (8, static_cast<int> (srF / 3000.0f));
 
@@ -438,7 +439,12 @@ void SwarmVoice::renderSynth (int offset,
         const float voiceGainScale = 0.70f * (0.40f + 0.60f * smoothedVelocity);
         const float screwPitchOffset = smPitchModSt + screwSagSt * params.screwDepth01;
         const float baseMidi = currentNoteF + scoopCurrentSt + screwPitchOffset;
-        const float baseF0   = std::clamp (midiToFreq (baseMidi), 18.0f, 0.42f * srF);
+        const float rawF0    = midiToFreq (baseMidi);
+        const float baseF0   = std::clamp (rawF0, 18.0f, 0.42f * srF);
+        // Exact log2 f0 from the MIDI pitch (log2 440 + (m - 69) / 12): no per-singer log2 in the glottal mip pick
+        const bool  f0InRange  = rawF0 >= 18.0f && rawF0 <= 0.42f * srF;
+        const float log2BaseF0 = f0InRange ? 8.7813597f + (baseMidi - 69.0f) * (1.0f / 12.0f)
+                                                   : std::log2 (baseF0);
 
         const bool ctrlTick = (ctrlCounter == 0);
         if (++ctrlCounter >= ctrlStep)
@@ -521,11 +527,11 @@ void SwarmVoice::renderSynth (int offset,
                         const auto fi = static_cast<size_t> (f);
                         const double scale = vtl * (1.0 + static_cast<double> (sg.shapeDev[fi] * spread));
                         const double fc = formantSmoother.freq (fi) * scale;
-                        sg.tract.setFormant (f, fc, VocalTract::qFor (fc, formantSmoother.bw (fi) * scale), sr);
+                        tractBank.setFormant (s, f, fc, VocalTract::qFor (fc, formantSmoother.bw (fi) * scale), sr);
                     }
                 }
-                if (! sg.tract.isFinite())
-                    sg.tract.reset();
+                if (! tractBank.isFinite (s))
+                    tractBank.reset (s);
 
                 const float breathFc = std::clamp (1700.0f + 950.0f * baseTarget.breathBoost + 850.0f * smTension, 600.0f, 5200.0f);
                 sg.breathBp.setParameters (breathFc, 0.80f, srF);
@@ -554,12 +560,23 @@ void SwarmVoice::renderSynth (int offset,
         if (! releasing && noteSec < onsetDurSec)
         {
             const float u = noteSec / onsetDurSec;
-            onsetEnv = std::sin (kPi * u) * onsetDrive;
+            onsetEnv = sinTurns (0.5f * u) * onsetDrive;
         }
 
         float sumL = 0.0f;
         float sumR = 0.0f;
         float sampleMaxEnv = 0.0f;
+
+        // Closed-hum onset suppression of F2..F5 is voice-wide (depends only on the onset envelope)
+        const float nasalSuppress = (onsetEnv > 1.0e-4f && params.onsetMode == OnsetMode::ClosedHum)
+                                        ? 1.0f - 0.85f * onsetEnv : 1.0f;
+
+        // SoA lanes for the SIMD tract bank: pass 1 builds per-singer excitation, pass 2 runs all
+        // tracts in lock-step, pass 3 mixes (same summation order as the former scalar loop).
+        alignas (64) double laneExc[kMaxSingersPerVoice] = {};
+        alignas (64) double laneOut[kMaxSingersPerVoice] = {};
+        bool laneOn[kMaxSingersPerVoice] = {};
+        int  laneCount = 0;
 
         // Always iterate all 8 singer slots so singers fading out on budget changes finish smoothly
         for (int s = 0; s < kMaxSingersPerVoice; ++s)
@@ -576,7 +593,7 @@ void SwarmVoice::renderSynth (int offset,
                 if (sg.activeGain > 0.0f)
                 {
                     sg.activeGain = 0.0f;
-                    sg.tract.reset();
+                    tractBank.reset (s);
                 }
                 continue;
             }
@@ -607,7 +624,7 @@ void SwarmVoice::renderSynth (int offset,
                 const float u = std::min ((noteSec - sg.vibratoDelaySec) / sg.vibratoRampSec, 1.0f);
                 vibOnsetRamp = u * u * (3.0f - 2.0f * u);
             }
-            const float vibCents = std::sin (sg.vibratoPhase)
+            const float vibCents = fastSin (sg.vibratoPhase)
                                  * (params.vibratoDepth01 * 28.0f * sg.vibratoDepthScale)
                                  * vibOnsetRamp;
 
@@ -618,10 +635,12 @@ void SwarmVoice::renderSynth (int offset,
             const float wanderCents = sg.wanderState * (10.0f + 16.0f * spread);
             const float detuneCents = sg.microTuneCents * spread;
 
-            const float singerFreq = std::clamp (
-                baseF0 * fastCentsToRatio (detuneCents + vibCents + wanderCents + sg.jitterCents),
-                18.0f,
-                0.42f * srF);
+            const float totalCents = detuneCents + vibCents + wanderCents + sg.jitterCents;
+            const float rawSingerF = baseF0 * fastCentsToRatio (totalCents);
+            const float singerFreq = std::clamp (rawSingerF, 18.0f, 0.42f * srF);
+            const bool  sgInRange   = rawSingerF >= 18.0f && rawSingerF <= 0.42f * srF;
+            const float log2SingerF = sgInRange ? log2BaseF0 + totalCents * (1.0f / 1200.0f)
+                                                                 : std::log2 (singerFreq);
 
             sg.phase += singerFreq * invSrF;
             if (sg.phase >= 1.0f) sg.phase -= std::floor (sg.phase);
@@ -629,7 +648,7 @@ void SwarmVoice::renderSynth (int offset,
             // Per-singer glottal tension offset, limited by the headroom on both sides so the mean stays put
             const float tensionRoom = std::clamp (std::min (smTension, 1.0f - smTension) * 16.6667f, 0.0f, 1.0f);
             const float sgTension = smTension + sg.tensionOffset * spread * tensionRoom;
-            const float glottal   = glottalLut.sample (sg.phase, sgTension, singerFreq, srF);
+            const float glottal   = glottalLut.sampleLog2 (sg.phase, sgTension, log2SingerF, log2Sr);
             const float openGate  = glottalLut.glottalOpenGate (sg.phase, sgTension);
 
             const float rawPink    = sg.breathNoise.nextPink();
@@ -639,7 +658,6 @@ void SwarmVoice::renderSynth (int offset,
             const float breathSig  = breathFilt * (0.25f + 0.75f * openGate) * breathAmt;
 
             float onsetAdd = 0.0f;
-            float nasalSuppress = 1.0f;
             if (onsetEnv > 1.0e-4f)
             {
                 if (params.onsetMode == OnsetMode::SoftBreath)
@@ -649,7 +667,7 @@ void SwarmVoice::renderSynth (int offset,
                 }
                 else if (params.onsetMode == OnsetMode::ClosedHum)
                 {
-                    nasalSuppress = 1.0f - 0.85f * onsetEnv;
+                    // F2..F5 suppression applied voice-wide via nasalSuppress
                 }
                 else
                 {
@@ -665,18 +683,28 @@ void SwarmVoice::renderSynth (int offset,
 
             breathAcc += std::abs (breathExc) * sg.activeGain * sg.envLevel;
 
-            // 64-bit notch-free Klatt parallel tract (nasal shaping happens on the voice sum, pole-zero pair)
-            std::array<double, VocalTract::kNumFormants> br {};
-            sg.tract.processBranches (static_cast<double> (totalExc), br);
-            const double t1 = br[0] * static_cast<double> (smFormantGain[0]);
-            const double t2 = br[1] * static_cast<double> (smFormantGain[1] * nasalSuppress);
-            const double t3 = br[2] * static_cast<double> (smFormantGain[2] * nasalSuppress);
-            const double t4 = br[3] * static_cast<double> (smFormantGain[3] * nasalSuppress);
-            const double t5 = br[4] * static_cast<double> (smFormantGain[4] * nasalSuppress);
-            const float f1 = static_cast<float> (t1), f2 = static_cast<float> (t2), f3 = static_cast<float> (t3);
-            const float f4 = static_cast<float> (t4), f5 = static_cast<float> (t5);
-            const float tractOut = static_cast<float> ((t1 + t2 + t3 + t4 + t5) * VocalTract::kOutputGain);
+            laneExc[s] = static_cast<double> (totalExc);
+            laneOn[s]  = true;
+            laneCount  = s + 1;
+        }
+        // (bank rounds laneCount up to a 2 / 4 / 8 SIMD width; parked lanes inside stay frozen)
 
+        // 64-bit notch-free Klatt parallel tracts, all singers at once (nasal pole-zero acts on the voice sum)
+        const double tractGain[VocalTract::kNumFormants] = {
+            static_cast<double> (smFormantGain[0]),
+            static_cast<double> (smFormantGain[1] * nasalSuppress),
+            static_cast<double> (smFormantGain[2] * nasalSuppress),
+            static_cast<double> (smFormantGain[3] * nasalSuppress),
+            static_cast<double> (smFormantGain[4] * nasalSuppress) };
+        double lane0Branch[VocalTract::kNumFormants] = {};
+        tractBank.process (laneExc, tractGain, laneOn, laneOut, lane0Branch, laneCount);
+
+        for (int s = 0; s < laneCount; ++s)
+        {
+            if (! laneOn[s])
+                continue;
+            const auto& sg = singers[static_cast<size_t> (s)];
+            const float tractOut  = static_cast<float> (laneOut[s]);
             const float singerOut = tractOut * sg.envLevel * sg.activeGain * (1.0f + sg.shimmer);
             sumL += singerOut * sg.currentPanL;
             sumR += singerOut * sg.currentPanR;
@@ -684,11 +712,8 @@ void SwarmVoice::renderSynth (int offset,
             if (s == 0)
             {
                 const float envScale = sg.envLevel;
-                formantAcc[0] += std::abs (f1) * envScale;
-                formantAcc[1] += std::abs (f2) * envScale;
-                formantAcc[2] += std::abs (f3) * envScale;
-                formantAcc[3] += std::abs (f4) * envScale;
-                formantAcc[4] += std::abs (f5) * envScale;
+                for (size_t k = 0; k < static_cast<size_t> (VocalTract::kNumFormants); ++k)
+                    formantAcc[k] += std::abs (static_cast<float> (lane0Branch[k])) * envScale;
             }
         }
 
@@ -723,7 +748,7 @@ void SwarmVoice::renderSynth (int offset,
         else if (rampKind != Ramp::None)
         {
             ++rampPos;
-            rampGain = 0.5f + 0.5f * std::cos (kPi * static_cast<float> (rampPos) / static_cast<float> (rampLen));
+            rampGain = 0.5f + 0.5f * fastCos (kPi * static_cast<float> (rampPos) / static_cast<float> (rampLen));
         }
 
         voiceBufL[static_cast<size_t> (offset + i)] = sanitize (outSampleL * rampGain);

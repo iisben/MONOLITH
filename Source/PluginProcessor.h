@@ -11,8 +11,7 @@ namespace monolith
 {
 
 class MonolithAudioProcessor final : public juce::AudioProcessor,
-                                     private juce::AudioProcessorValueTreeState::Listener,
-                                     private juce::AsyncUpdater
+                                     private juce::Timer
 {
 public:
     MonolithAudioProcessor();
@@ -55,8 +54,8 @@ public:
     void copyActiveToInactiveAB();
 
 private:
-    void parameterChanged (const juce::String& parameterID, float newValue) override;
-    void handleAsyncUpdate() override;
+    /** Message-thread latency poll: the audio thread never posts messages or takes a lock for PDC updates. */
+    void timerCallback() override;
 
     juce::AudioProcessorValueTreeState apvts;
     dsp::SwarmEngine engine;
@@ -64,6 +63,7 @@ private:
     PresetManager presetManager;
 
     std::atomic<double> lastKnownBpm { 120.0 };
+    static_assert (std::atomic<double>::is_always_lock_free, "host-tempo tap must be lock-free");
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MonolithAudioProcessor)
 };

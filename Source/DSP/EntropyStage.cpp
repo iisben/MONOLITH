@@ -288,10 +288,10 @@ void EntropyStage::processBlock (float* left,
             const float wowDepthSamples  = 0.0038f * srF * smTape * smTape;
             const float flutDepthSamples = 0.00055f * srF * smTape;
 
-            const float wowL = std::sin (wowPhase);
-            const float wowR = std::sin (wowPhase + 0.65f);
-            const float fltL = std::sin (flutterPhase) + 0.45f * smoothedFlutter;
-            const float fltR = std::cos (flutterPhase * 1.07f) - 0.45f * smoothedFlutter;
+            const float wowL = fastSin (wowPhase);
+            const float wowR = fastSin (wowPhase + 0.65f);
+            const float fltL = fastSin (flutterPhase) + 0.45f * smoothedFlutter;
+            const float fltR = fastCos (flutterPhase * 1.07f) - 0.45f * smoothedFlutter;
 
             const float dL = baseDelaySamples + wowDepthSamples * wowL + flutDepthSamples * fltL;
             const float dR = baseDelaySamples + wowDepthSamples * wowR + flutDepthSamples * fltR;

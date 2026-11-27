@@ -9,8 +9,9 @@
 | 3.2 — Vocal Tract / Formant | PASS (after user re-scope of gate-2 vowel RMS) | `--phase 3.2` exit 0; 13 PASS / 3 PENDING; first run rolled back (b06c863) |
 | 3.3 — Swarm / Humanization / Voice Mgmt | PASS (after user re-baseline of 8snap preset RMS) | `--phase 3.3` exit 0; 14 PASS / 2 PENDING |
 | 3.4 — Throat Drive ADAA / 64-bit FDN | PASS | `--phase 3.4` exit 0; 16 PASS / 0 PENDING |
+| 3.5 — Swarm SoA SIMD / Lock-Free Polish | PASS | `--phase 3.5` (all gates) exit 0; 16 PASS / 0 PENDING |
 
-**Next: Phase 3.5**
+**Next: Phase 4**
 
 ## Toolchain & Architecture
 - CMake 3.22+ / Ninja, C++20, JUCE 8.0.15 (FetchContent), AppleClang arm64 macOS. Targets: `MONOLITH` (AU/VST3/Standalone), `MonolithDspAudit` (console, DSP+presets only).
@@ -174,3 +175,25 @@ Notes: the remaining 7steal margin is set by `softSafetyLimit` (memoryless tanh 
 | 3toggle / 3morph | 0.31× → 0.29× bound / 1.30× → 0.78× ref |
 | 7dry / 8snap / 8cpu | idle 0.49 → 0.43 % / max dRMS 0.88 dB (#21) / 8.59 → 9.95 % RT (cap 10.50) |
 Audit: no audio-thread allocations or locks (design and assign happen in `prepare`), no float FDN or resonator states, no raw tanh added, no parameter-ID changes. CPU note: FIR + ADAA cost about 1.9 % RT at 12 voices; 8cpu margin is now 0.55 %.
+
+## Phase 3.5 — Swarm SoA SIMD, Rational Transcendentals & Lock-Free Polish (PASS)
+- Profile, 3.4 → 3.5: `sinf` 13 % → 0 and `log2f` 6 % → 0 of active samples. Per-singer scalar excitation, the FIR OS and the reverb are now the top costs.
+- `sinTurns` (range reduction + odd Taylor polynomial to x^11) replaces every per-sample sine: singer vibrato, onset envelope, Sub-Abyss / Crown layers, tape wow/flutter and the de-click ramp.
+  - Validated over 1e7 phases: max error 1.95e-7, i.e. 6e-6 cents vibrato and 3e-5 dB layer level.
+- Glottal mip pick: `sampleLog2` takes log2 f exactly from MIDI pitch + cents (log2 440 + (m−69)/12 + c/1200), with `std::log2` only when f0 is clamped.
+  - Validated: max 0.0018 cents and 1.6e-5 dB vs the `std::log2` path.
+- `VocalTractBank` (SoA SIMD): 8 singer lanes, formant-major, fused 2×f64 kernel (GCC/Clang vector extensions, scalar fallback). Compile-time widths 2/4/8 come from the highest active lane.
+  - Matches scalar `VocalTract` to 1.1e-16.
+  - Microbenchmark vs scalar: 1.2× (3 singers), 1.6× (4), 1.6× (8).
+  - Rejected: auto-vectorized split loops (0.55–0.83×; bool-mask selects and memory round-trips), and per-sample parked-lane snapshots (+0.35 % RT).
+- Silent singers: settled singers keep the existing skip. Parked lanes inside the SIMD width run on zero excitation with masked output, so a re-entering singer starts from a decayed tract instead of a frozen one.
+- Lock-free taps:
+  - Telemetry: relaxed `std::atomic` throughout, now pinned by `is_always_lock_free` static_asserts (also on the BPM tap).
+  - PDC: the APVTS listener + `AsyncUpdater` (a message post taking a lock, possibly from the audio thread under automation) is replaced by a 20 Hz message-thread `Timer`. It polls the atomic parameters and calls `setLatencySamples` only on change; `prepareToPlay` stays synchronous.
+
+| Gate | 3.4 → 3.5 |
+|---|---|
+| 8cpu | 9.95 → 8.4–8.7 % RT (5 runs; cap 10.50) |
+| 7dry / 7fdn | idle 0.43 → 0.45 % / CPU 1.00 → 1.01× (noise) |
+| 1–6, 7dc, 7steal, 8snap | unchanged to the printed digit (8snap max dRMS 0.88 dB) |
+Audit: no audio-thread allocations or locks (stack lane arrays only), no float tract states, no raw tanh added, no parameter-ID changes. The build is warning-clean apart from 1 pre-existing harness warning.

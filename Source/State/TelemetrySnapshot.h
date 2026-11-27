@@ -12,6 +12,9 @@ namespace monolith
 */
 struct TelemetrySnapshot
 {
+    static_assert (std::atomic<float>::is_always_lock_free, "telemetry taps must be lock-free");
+    static_assert (std::atomic<int>::is_always_lock_free, "telemetry taps must be lock-free");
+
     std::atomic<float> rmsL { 0.0f };
     std::atomic<float> rmsR { 0.0f };
     std::atomic<float> peakL { 0.0f };
