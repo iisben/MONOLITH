@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <vector>
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -58,7 +59,8 @@ public:
 
     TextureLayer();
 
-    void bindParameters (juce::AudioProcessorValueTreeState& apvts);
+    using ParamResolver = std::function<std::atomic<float>* (const char* paramId)>;
+    void bindParameters (juce::AudioProcessorValueTreeState& apvts, const ParamResolver& resolver = {});
     void prepare (double sampleRate, int maxBlockSize);
     void reset() noexcept;
 

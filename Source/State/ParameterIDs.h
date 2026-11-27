@@ -72,6 +72,24 @@ inline constexpr const char* v2TexHighPass  = "v2_tex_hp";
 inline constexpr const char* v2TexLowPass   = "v2_tex_lp";
 inline constexpr const char* v2TexWidth     = "v2_tex_width";
 
+// ── V2 Stage 3: XY Sculptor, MPE & expressive MIDI (append-only, control plane only) ──
+inline constexpr const char* v2XyX          = "v2_xy_x";
+inline constexpr const char* v2XyY          = "v2_xy_y";
+inline constexpr const char* v2XyMode       = "v2_xy_mode";
+inline constexpr const char* v2MpeEnable    = "v2_mpe_enable";
+inline constexpr const char* v2MpePbRange   = "v2_mpe_pb_range";
+inline constexpr const char* v2VelCurve     = "v2_vel_curve";
+inline constexpr const char* v2ExprVibrato  = "v2_expr_vibrato";
+inline constexpr const char* v2ExprEffort   = "v2_expr_effort";
+inline constexpr const char* v2ExprOpenness = "v2_expr_openness";
+inline constexpr const char* v2ExprSwell    = "v2_expr_swell";
+
+/** Controller-setup parameters: global performance settings that presets never store or reset. */
+inline bool isGlobalPerformanceParam (const juce::String& id)
+{
+    return id == v2MpeEnable || id == v2MpePbRange || id == v2VelCurve;
+}
+
 /** State schema version written into the APVTS root (absent attribute = V1 session). */
 inline constexpr const char* stateVersionAttr = "monolithStateVersion";
 inline constexpr int         stateVersion     = 2;
@@ -137,6 +155,19 @@ namespace defaults
     inline constexpr float v2TexHighPass   = 20.0f;
     inline constexpr float v2TexLowPass    = 20000.0f;
     inline constexpr float v2TexWidth      = 1.0f;
+
+    // V2 Stage 3: XY centred (0 offset), MPE off, linear velocity = bit-identical V1 behaviour.
+    // Expression depths only act on V2-only sources (MPE per-note data, CC74, CC2), never on V1 inputs.
+    inline constexpr float v2XyX           = 0.5f;
+    inline constexpr float v2XyY           = 0.5f;
+    inline constexpr int   v2XyMode        = 0; // Vowel Field
+    inline constexpr bool  v2MpeEnable     = false;
+    inline constexpr float v2MpePbRange    = 48.0f;
+    inline constexpr int   v2VelCurve      = 0; // Linear (identity)
+    inline constexpr float v2ExprVibrato   = 0.4f;
+    inline constexpr float v2ExprEffort    = 0.5f;
+    inline constexpr float v2ExprOpenness  = 0.5f;
+    inline constexpr float v2ExprSwell     = 0.5f;
 } // namespace defaults
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
@@ -274,6 +305,30 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { v2TexWidth, 2 }, "Texture Width", normRange (0.0f, 2.0f), defaults::v2TexWidth));
     }
+
+    // ── V2 Stage 3: control plane (appended after every Stage-2 ID)
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { v2XyX, 2 }, "XY Sculptor X", normRange (0.0f, 1.0f), defaults::v2XyX));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { v2XyY, 2 }, "XY Sculptor Y", normRange (0.0f, 1.0f), defaults::v2XyY));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { v2XyMode, 2 }, "XY Sculptor Mode",
+        juce::StringArray { "Vowel Field", "Light / Shadow", "Preset Axes" }, defaults::v2XyMode));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { v2MpeEnable, 2 }, "MPE", defaults::v2MpeEnable));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { v2MpePbRange, 2 }, "MPE Bend Range", normRange (0.0f, 48.0f, 1.0f), defaults::v2MpePbRange));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { v2VelCurve, 2 }, "Velocity Curve",
+        juce::StringArray { "Linear", "Soft", "Hard", "S-Curve", "Fixed" }, defaults::v2VelCurve));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { v2ExprVibrato, 2 }, "Pressure > Vibrato", normRange (0.0f, 1.0f), defaults::v2ExprVibrato));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { v2ExprEffort, 2 }, "Pressure > Effort", normRange (0.0f, 1.0f), defaults::v2ExprEffort));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { v2ExprOpenness, 2 }, "Slide > Openness", normRange (0.0f, 1.0f), defaults::v2ExprOpenness));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { v2ExprSwell, 2 }, "Pressure > Texture Swell", normRange (0.0f, 1.0f), defaults::v2ExprSwell));
 
     return layout;
 }

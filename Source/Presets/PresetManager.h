@@ -39,6 +39,9 @@ public:
     [[nodiscard]] int getCurrentPresetIndex() const noexcept { return currentIndex; }
     void setCurrentPresetIndex (int idx) noexcept;
 
+    /** Full resolved parameter list of a factory preset (baseline defaults, then overrides; one entry per ID). */
+    [[nodiscard]] std::vector<PresetParamValue> getResolvedParams (int index) const;
+
     /** Resets all APVTS parameters to baseline defaults, then applies preset overrides. */
     void applyPreset (int index, juce::AudioProcessorValueTreeState& apvts);
 

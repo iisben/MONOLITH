@@ -7,8 +7,11 @@
 #include "SwarmVoice.h"
 #include <array>
 #include <atomic>
+#include <functional>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <vector>
+
+namespace monolith::v2 { class MpeExpression; }
 
 namespace monolith::dsp
 {
@@ -27,7 +30,14 @@ public:
     static constexpr int kMaxHeldNotes       = 16;
     static constexpr int kControlSubBlockMax = 64;
 
-    void prepare (double sampleRate, int maxBlockSize, const juce::AudioProcessorValueTreeState& apvts);
+    /** V2 control-plane hook: returns a shadow atomic to read instead of the raw APVTS value (nullptr = raw). */
+    using ParamResolver = std::function<std::atomic<float>* (const char* paramId)>;
+
+    void prepare (double sampleRate, int maxBlockSize, const juce::AudioProcessorValueTreeState& apvts,
+                  const ParamResolver& resolver = {});
+
+    /** V2 per-note expression hook (MPE). nullptr = original V1 MIDI path. Set before prepare, message thread. */
+    void setExpressionHook (v2::MpeExpression* hook) noexcept { expression = hook; }
     void reset() noexcept;
 
     [[nodiscard]] int getLatencySamples() const noexcept;
@@ -124,6 +134,7 @@ private:
     ControlCell cell;
 
     CachedParamPtrs ptrs;
+    v2::MpeExpression* expression = nullptr; // control-plane hook (render math untouched)
     double   sr               = 48000.0;
     int      preparedMaxBlock = 512;
     uint64_t sampleCounter    = 0;

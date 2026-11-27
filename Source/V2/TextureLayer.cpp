@@ -112,19 +112,25 @@ size_t TextureBank::bytesResident() const noexcept
 // ============================================================================
 TextureLayer::TextureLayer() : bank (TextureBank::get()) {}
 
-void TextureLayer::bindParameters (juce::AudioProcessorValueTreeState& apvts)
+void TextureLayer::bindParameters (juce::AudioProcessorValueTreeState& apvts, const ParamResolver& resolver)
 {
     using namespace monolith::params;
-    pMix      = apvts.getRawParameterValue (v2TexMix);
-    pAsset    = apvts.getRawParameterValue (v2TexAsset);
-    pTune     = apvts.getRawParameterValue (v2TexTune);
-    pKeytrack = apvts.getRawParameterValue (v2TexKeytrack);
-    pAttack   = apvts.getRawParameterValue (v2TexAttack);
-    pRelease  = apvts.getRawParameterValue (v2TexRelease);
-    pVelSens  = apvts.getRawParameterValue (v2TexVelSens);
-    pHighPass = apvts.getRawParameterValue (v2TexHighPass);
-    pLowPass  = apvts.getRawParameterValue (v2TexLowPass);
-    pWidth    = apvts.getRawParameterValue (v2TexWidth);
+    auto bindParam = [&] (const char* id) -> std::atomic<float>* {
+        if (resolver)
+            if (auto* shadowed = resolver (id))
+                return shadowed; // V2 control plane: macro / XY / expression-modulated shadow
+        return apvts.getRawParameterValue (id);
+    };
+    pMix      = bindParam (v2TexMix);
+    pAsset    = bindParam (v2TexAsset);
+    pTune     = bindParam (v2TexTune);
+    pKeytrack = bindParam (v2TexKeytrack);
+    pAttack   = bindParam (v2TexAttack);
+    pRelease  = bindParam (v2TexRelease);
+    pVelSens  = bindParam (v2TexVelSens);
+    pHighPass = bindParam (v2TexHighPass);
+    pLowPass  = bindParam (v2TexLowPass);
+    pWidth    = bindParam (v2TexWidth);
     pCc64Freeze = apvts.getRawParameterValue (cc64Freeze);
     jassert (pMix && pAsset && pTune && pKeytrack && pAttack && pRelease && pVelSens && pHighPass && pLowPass && pWidth && pCc64Freeze);
 }

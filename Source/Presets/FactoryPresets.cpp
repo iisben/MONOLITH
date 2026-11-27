@@ -64,7 +64,15 @@ namespace
             { v2TexVelSens,    defaults::v2TexVelSens },
             { v2TexHighPass,   defaults::v2TexHighPass },
             { v2TexLowPass,    defaults::v2TexLowPass },
-            { v2TexWidth,      defaults::v2TexWidth }
+            { v2TexWidth,      defaults::v2TexWidth },
+            // V2 Stage 3 per-preset expression (MPE enable / bend range / velocity curve are global, never reset)
+            { v2XyX,           defaults::v2XyX },
+            { v2XyY,           defaults::v2XyY },
+            { v2XyMode,        static_cast<float> (defaults::v2XyMode) },
+            { v2ExprVibrato,   defaults::v2ExprVibrato },
+            { v2ExprEffort,    defaults::v2ExprEffort },
+            { v2ExprOpenness,  defaults::v2ExprOpenness },
+            { v2ExprSwell,     defaults::v2ExprSwell }
         };
     }
 
@@ -599,6 +607,19 @@ void PresetManager::setCurrentPresetIndex (int idx) noexcept
     currentIndex = std::clamp (idx, 0, static_cast<int> (presets.size()) - 1);
 }
 
+std::vector<PresetParamValue> PresetManager::getResolvedParams (int index) const
+{
+    const auto& preset = getPreset (index);
+    auto list = buildDefaultsList();
+    for (const auto& kv : preset.params)
+    {
+        auto it = std::find_if (list.begin(), list.end(), [&] (const PresetParamValue& p) { return juce::String (p.id) == kv.id; });
+        if (it != list.end()) it->value = kv.value;
+        else                  list.push_back (kv);
+    }
+    return list;
+}
+
 void PresetManager::applyPreset (int index, juce::AudioProcessorValueTreeState& apvts)
 {
     currentIndex = std::clamp (index, 0, static_cast<int> (presets.size()) - 1);
@@ -693,6 +714,14 @@ void PresetManager::loadStateFromXml (const juce::XmlElement& parent)
     if (auto* wrapperB = parent.getChildByName ("SlotB"))
         if (auto* inner = wrapperB->getFirstChildElement())
             slotB = juce::ValueTree::fromXml (*inner);
+
+    // Slots hold parameter trees only: drop any nested session children (older builds nested SlotA/SlotB
+    // recursively into the APVTS state, growing the session on every save / load cycle).
+    for (auto* slot : { &slotA, &slotB })
+        if (slot->isValid())
+            for (int i = slot->getNumChildren(); --i >= 0;)
+                if (! slot->getChild (i).hasType ("PARAM"))
+                    slot->removeChild (i, nullptr);
 }
 
 } // namespace monolith

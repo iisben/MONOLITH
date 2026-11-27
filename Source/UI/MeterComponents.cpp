@@ -42,6 +42,8 @@ MonolithDial::MonolithDial (juce::AudioProcessorValueTreeState& apvts,
     slider.setTooltip (tooltipText);
     slider.getProperties().set (MonolithLookAndFeel::accentPropertyId, accentName);
     slider.getProperties().set (MonolithLookAndFeel::macroStylePropertyId, isMacro);
+    slider.getProperties().set ("monolithParamId", paramId); // V2: right-click MIDI Learn target
+    getProperties().set ("monolithParamId", paramId);
 
     if (auto* param = apvts.getParameter (paramId))
     {

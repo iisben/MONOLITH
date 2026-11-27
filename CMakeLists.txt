@@ -53,6 +53,9 @@ set_target_properties(MonolithV2Assets PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(MONOLITH_V2_SOURCES
     Source/V2/TextureLayer.cpp
+    Source/V2/ControlPlane.cpp
+    Source/V2/MidiLearn.cpp
+    Source/Presets/PresetLibrary.cpp
 )
 
 set(MONOLITH_DSP_AND_PRESET_SOURCES
@@ -62,6 +65,7 @@ set(MONOLITH_DSP_AND_PRESET_SOURCES
     Source/DSP/SwarmVoice.cpp
     Source/DSP/BrutalistReverb.cpp
     Source/DSP/SwarmEngine.cpp
+    Source/V2/MpeExpression.cpp
     Source/Presets/FactoryPresets.cpp
 )
 

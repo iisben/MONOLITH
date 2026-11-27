@@ -26,6 +26,14 @@ public:
 private:
     void timerCallback() override;
 
+    /** V2: right-click any parameter control -> MIDI Learn / clear CC / map scope (message thread). */
+    struct MidiLearnMenu final : public juce::MouseListener
+    {
+        explicit MidiLearnMenu (MonolithAudioProcessor& p) : proc (p) {}
+        void mouseDown (const juce::MouseEvent& e) override;
+        MonolithAudioProcessor& proc;
+    };
+
     MonolithAudioProcessor& audioProcessor;
     ui::MonolithLookAndFeel lookAndFeel;
     juce::TooltipWindow tooltipWindow { this, 500 };
@@ -41,6 +49,7 @@ private:
     ui::PerformanceDock performanceDock;
 
     int lastSyncedPresetIdx = -1;
+    MidiLearnMenu midiLearnMenu { audioProcessor }; // declared after audioProcessor (initialisation order)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MonolithAudioProcessorEditor)
 };

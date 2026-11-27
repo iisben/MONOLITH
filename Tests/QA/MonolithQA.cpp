@@ -2,10 +2,11 @@
     MONOLITH — Locked 8-Gate Headless Flagship QA Harness (Phase 2)
 
     Usage:
-      MonolithQA [--phase 3.1|3.2|3.3|3.4|3.5|4|v2.2] [--active <ids>] [--only <ids>] [--write-baseline]
+      MonolithQA [--phase 3.1|3.2|3.3|3.4|3.5|4|v2.2|v2.3] [--active <ids>] [--only <ids>] [--write-baseline]
 
     Sub-gate ids : 1 2 3morph 3toggle 4adaa 4alias 5 6block 6rate 6pdc 7dc 7steal 7dry 7fdn 8snap 8cpu
     V2 sub-gates : v2reg v2bypass v2lat v2tex v2state v2alloc v2cpu   (group: v2)
+    V3 sub-gates : v3null v3macro v3xy v3mpe v3vel v3ab v3undo v3state v3preset v3learn v3alloc (group: v3)
     Group ids    : 3 4 6 7 8 all, 7tract (=7dry), 7stealdry (=7steal,7dry)
 
     Status semantics:
@@ -1412,7 +1413,11 @@ void gateV2()
             for (const char* id : { phonemeX, ensembleSize, spaceMix, driveAmount, masterGain, macroAbyss, registerMode })
                 v1Kept = v1Kept && std::abs (value (c, id) - value (a, id)) < 1e-5f;
         }
-        record ("v2state", tagged && roundTrip && migrated && v1Kept && stripped == 10,
+        int numV2Params = 0; // ADAPTER: every appended v2_* parameter (Stage 2: 10, Stage 3: 20)
+        for (auto* p : a.proc->getParameters())
+            if (auto* wp = dynamic_cast<juce::AudioProcessorParameterWithID*> (p); wp != nullptr && wp->paramID.startsWith ("v2_"))
+                ++numV2Params;
+        record ("v2state", tagged && roundTrip && migrated && v1Kept && stripped >= 10 && stripped == numV2Params,
                 std::string ("version=2 ") + (tagged ? "ok" : "MISSING") + " | V2 round-trip " + (roundTrip ? "ok" : "FAIL")
                     + " | V1 session (" + std::to_string (stripped) + " v2 params stripped) -> bypassed defaults " + (migrated ? "ok" : "FAIL")
                     + " | V1 values " + (v1Kept ? "lossless" : "CHANGED"));
@@ -1465,6 +1470,602 @@ void gateV2()
 }
 
 // ============================================================================
+// V3 GATES (MONOLITH II Stage 3: control plane). Additive; every V1 / V2 gate above stays untouched.
+//   v3null   idle-but-armed control plane is bit-identical (MPE on w/o data, XY centred, neutral routes, Linear vel)
+//   v3macro  macro routes move their targets (normalised offsets), legacy-curve gating, bipolar neutrality, no clicks
+//   v3xy     XY Sculptor: vowel / light-shadow axes respond; smoothing is sample-rate and block-size invariant
+//   v3mpe    per-note bend (+/-48 st), pressure, slide, poly AT respond per note and are channel-isolated; CC74/CC2
+//   v3vel    velocity curves: Linear identity, Soft > Linear > Hard ordering, Fixed = 100
+//   v3ab     A/B swap restores params + routing exactly; swap mid-chord is click-free
+//   v3undo   debounced edit commit, undo/redo of params, preset loads and routing
+//   v3state  V2 session round-trip (routes, labels, MIDI map, A/B routing); V1 -> V2 migration; no session growth
+//   v3preset 30 V1 factory presets lossless through the V2 schema; user preset save/search/favourite/load
+//   v3learn  MIDI Learn bind / drain / rebind / clear; map persisted in state
+//   v3alloc  zero heap allocations with every control-plane feature active
+namespace lockv3
+{
+    constexpr double respDb       = 0.30;  // minimum audible response of a routed / expressive control (dB RMS or %)
+    constexpr double centroidPct  = 3.0;   // minimum spectral-centroid shift for timbral controls
+    constexpr double smoothTol    = 0.005; // |shadow - analytic one-pole| across rates / block sizes
+    constexpr double octaveDb     = -12.0; // odd/even harmonic energy after a +12 st per-note bend
+}
+
+Event midiAt (int64_t p, const juce::MidiMessage& m) { return { p, m }; }
+
+double centroidHz (const Stereo& s, size_t a, size_t b, double sr)
+{
+    const Vec ps = avgPowerSpectrum (mid (s), a, b, 4096, 2048);
+    double num = 0, den = 0;
+    for (size_t k = 1; k < ps.size(); ++k)
+    {
+        const double fq = static_cast<double> (k) * sr / 4096.0;
+        if (fq < 20.0 || fq > 20000.0) continue;
+        num += fq * ps[k]; den += ps[k];
+    }
+    return num / std::max (den, 1e-300);
+}
+
+/** Odd-vs-even harmonic energy of f0 (dB). A note sounding one octave above f0 has no odd harmonics of f0. */
+double oddEvenDb (const Stereo& s, size_t a, size_t b, double f0, double sr)
+{
+    const size_t n = 8192;
+    const Vec ps = avgPowerSpectrum (mid (s), a, b, n, n / 2);
+    double odd = 0, even = 0;
+    for (int k = 1; k <= 12; ++k)
+    {
+        const double bin = k * f0 * static_cast<double> (n) / sr;
+        double e = 0;
+        for (int d = -3; d <= 3; ++d)
+        {
+            const auto i = static_cast<long> (std::lround (bin)) + d;
+            if (i > 0 && i < static_cast<long> (ps.size())) e += ps[static_cast<size_t> (i)];
+        }
+        (k % 2 ? odd : even) += e;
+    }
+    return 10.0 * std::log10 (std::max (odd, 1e-300) / std::max (even, 1e-300));
+}
+
+/** Worst click ratio of either channel inside [t0, t1) seconds (excludes note-onset transients outside the window). */
+double windowClick (const Stereo& s, double t0, double t1, double sr)
+{
+    const auto a = static_cast<std::ptrdiff_t> (t0 * sr), b = static_cast<std::ptrdiff_t> (std::min (t1 * sr, static_cast<double> (s.size())));
+    const Vec l (s.L.begin() + a, s.L.begin() + b), r (s.R.begin() + a, s.R.begin() + b);
+    return std::max (clickRatio (l, sr), clickRatio (r, sr));
+}
+
+float rawValue (QaSynth& q, const char* id) { return q.proc->getAPVTS().getRawParameterValue (id)->load(); }
+
+int paramIndexOf (QaSynth& q, const char* id)
+{
+    const auto& ps = q.proc->getParameters();
+    for (int i = 0; i < ps.size(); ++i)
+        if (auto* wp = dynamic_cast<juce::AudioProcessorParameterWithID*> (ps[i]); wp != nullptr && wp->paramID == id)
+            return i;
+    return -1;
+}
+
+void gateV3()
+{
+    using namespace monolith::params;
+    using monolith::v2::ModSource;
+    const double sr = 48000.0;
+    const auto chord = [] { return std::vector<Event> { noteOn (0, 48), noteOn (0, 55), noteOn (0, 60), noteOn (0, 64) }; };
+    auto srcIdx = [] (ModSource s) { return static_cast<int> (s); };
+
+    // ── v3null ───────────────────────────────────────────────────────────────
+    {
+        auto run = [&] (bool armed) {
+            QaSynth q;
+            q.proc->applyFactoryPreset (0);
+            if (armed)
+            {
+                q.set (v2MpeEnable, 1.0f);
+                q.set (v2XyMode, 1.0f);
+                auto& cp = q.proc->getControlPlane();
+                cp.setRoute (srcIdx (ModSource::macro1), 0, spaceMix, 0.5f, false);       // macro at 0, unipolar -> 0
+                cp.setRoute (srcIdx (ModSource::macro2), 0, spectralCrown, 0.4f, true);   // bipolar at 0.5 -> 0
+                q.set (macroSpecter, 0.5f);
+                cp.setLegacyMacroCurve (1, false); // macro2 legacy curve off: its 0.5 must not reach the engine
+                cp.setRoute (srcIdx (ModSource::modWheel), 0, v2TexMix, 0.5f, false);    // CC1 never received
+                q.proc->getMidiLearn().bind (20, paramIndexOf (q, spaceDecay));           // CC20 never sent
+            }
+            q.prepare (sr, 512);
+            return q.render (q.S (3.0), chord(), fixedBlocks (512));
+        };
+        const auto base = run (false), armed = run (true);
+        // Reference for the armed run: V1 with Specter at 0 (legacy curve disabled => engine sees 0)
+        const double d = maxAbsDiff (base, armed);
+        record ("v3null", d == 0.0, "armed-idle control plane max |diff| " + fmt (d, 9) + " (MPE on, XY L/S centred, 3 neutral routes, legacy gate, idle learn)");
+    }
+
+    // ── v3macro ──────────────────────────────────────────────────────────────
+    {
+        auto run = [&] (float m1, bool legacy, bool route, bool bipolar = false, const std::function<void (QaSynth&, int64_t)>& autom = nullptr) {
+            QaSynth q;
+            q.proc->applyFactoryPreset (0);
+            auto& cp = q.proc->getControlPlane();
+            cp.setLegacyMacroCurve (0, legacy);
+            if (route)
+            {
+                cp.setRoute (srcIdx (ModSource::macro1), 0, spaceMix, bipolar ? 0.4f : -0.4f, bipolar);
+                cp.setRoute (srcIdx (ModSource::macro1), 1, spectralCrown, 0.5f, bipolar);
+                cp.setRoute (srcIdx (ModSource::macro1), 2, v2TexMix, 0.6f, bipolar);
+            }
+            q.set (macroColossus, m1);
+            q.prepare (sr, 512);
+            std::function<void (int64_t)> fn;
+            if (autom) fn = [&] (int64_t p) { autom (q, p); };
+            auto out = q.render (q.S (3.0), chord(), fixedBlocks (512), fn);
+            return std::make_pair (std::move (out), q.proc->getTextureLayer().isActive());
+        };
+        const size_t a = static_cast<size_t> (1.5 * sr), b = static_cast<size_t> (3.0 * sr);
+        const auto off = run (0.0f, false, true).first;
+        const auto [on, texOn] = run (1.0f, false, true);
+        const double dRms = std::abs (rmsDb (on, a, b) - rmsDb (off, a, b));
+        const double dCen = 100.0 * std::abs (centroidHz (on, a, b, sr) / centroidHz (off, a, b, sr) - 1.0);
+        const bool routed = (dRms >= lockv3::respDb || dCen >= lockv3::centroidPct) && texOn;
+
+        const double deadDiff = maxAbsDiff (run (0.0f, false, false).first, run (1.0f, false, false).first); // legacy off, no routes
+        const double legacyDiff = maxAbsDiff (run (0.0f, true, false).first, run (1.0f, true, false).first); // V1 curve alive
+        const double bipolarNeutral = maxAbsDiff (run (0.5f, true, false).first, run (0.5f, true, true, true).first);
+
+        // Shadow arithmetic: space_mix 0.46 - 0.4 * 1 (normalised range 0..1)
+        QaSynth s;
+        s.proc->applyFactoryPreset (0);
+        s.proc->getControlPlane().setLegacyMacroCurve (0, false);
+        s.proc->getControlPlane().setRoute (srcIdx (ModSource::macro1), 0, spaceMix, -0.4f, false);
+        s.set (macroColossus, 1.0f);
+        s.prepare (sr, 512);
+        (void) s.render (q0 (sr, 0.5), {}, fixedBlocks (512));
+        const float shadowMix = s.proc->getControlPlane().getShadowValue (monolith::v2::findDestination (spaceMix));
+        const bool arith = std::abs (shadowMix - 0.06f) < 1e-4f;
+
+        // Live sweep 0 -> 1 over 1 s mid-chord: no clicks beyond the static render's own d2 statistics
+        const auto sweep = run (0.0f, false, true, false, [&] (QaSynth& q, int64_t p) {
+            const double t = static_cast<double> (p) / sr;
+            q.set (macroColossus, static_cast<float> (std::clamp (t - 1.0, 0.0, 1.0)));
+        }).first;
+        const double cSweep = windowClick (sweep, 0.9, 2.2, sr);
+        const double cStatic = std::max (windowClick (on, 0.9, 2.2, sr), windowClick (off, 0.9, 2.2, sr));
+        const bool smooth = allFinite (sweep) && cSweep <= std::max (lockv2::clickRatio, 1.5 * cStatic);
+
+        record ("v3macro", routed && deadDiff == 0.0 && legacyDiff > 1e-3 && bipolarNeutral == 0.0 && arith && smooth,
+                "route dRMS " + fmt (dRms, 2) + " dB dCentroid " + fmt (dCen, 1) + "% tex " + (texOn ? "on" : "OFF")
+                    + " | legacy-off dead " + fmt (deadDiff, 9) + " | V1 curve alive " + fmt (legacyDiff, 4)
+                    + " | bipolar@0.5 " + fmt (bipolarNeutral, 9) + " | shadow " + fmt (shadowMix, 4) + " (0.06)"
+                    + " | sweep click " + fmt (cSweep, 2) + " (static " + fmt (cStatic, 2) + ")");
+    }
+
+    // ── v3xy ─────────────────────────────────────────────────────────────────
+    {
+        auto run = [&] (int mode, float x, float y) {
+            QaSynth q;
+            q.proc->applyFactoryPreset (0);
+            q.set (v2XyMode, static_cast<float> (mode));
+            q.set (v2XyX, x);
+            q.set (v2XyY, y);
+            q.prepare (sr, 512);
+            return q.render (q.S (3.0), chord(), fixedBlocks (512));
+        };
+        const size_t a = static_cast<size_t> (1.5 * sr), b = static_cast<size_t> (3.0 * sr);
+        const double cCentre = centroidHz (run (0, 0.5f, 0.5f), a, b, sr);
+        const double cVowel  = centroidHz (run (0, 1.0f, 0.0f), a, b, sr);  // /i/ corner
+        const double cDark   = centroidHz (run (1, 0.5f, 0.0f), a, b, sr);
+        const double cBright = centroidHz (run (1, 0.5f, 1.0f), a, b, sr);
+        const double vowelPct = 100.0 * std::abs (cVowel / cCentre - 1.0);
+        const bool lightOk = cBright > cDark * (1.0 + lockv3::centroidPct / 100.0);
+
+        // Smoothing invariance: step X 0.5 -> 1.0, shadow(phoneme_x) must follow 0.5 + 0.5 (1 - e^(-t / 60 ms))
+        double worstErr = 0.0;
+        for (const auto& [rate, blk] : std::vector<std::pair<double, int>> { { 44100.0, 64 }, { 48000.0, 64 }, { 96000.0, 64 }, { 48000.0, 512 }, { 192000.0, 256 } })
+        {
+            QaSynth q;
+            q.prepare (rate, blk);
+            (void) q.render (blk * 4, {}, fixedBlocks (blk));
+            q.set (v2XyX, 1.0f);
+            int64_t elapsed = 0;
+            const int dest = monolith::v2::findDestination (phonemeX);
+            while (elapsed < static_cast<int64_t> (0.2 * rate))
+            {
+                (void) q.render (blk, {}, fixedBlocks (blk));
+                elapsed += blk;
+                const double expect = defaults::phonemeX + 0.5 * (1.0 - std::exp (-static_cast<double> (elapsed) / rate / 0.060));
+                worstErr = std::max (worstErr, std::abs (q.proc->getControlPlane().getShadowValue (dest) - expect));
+            }
+        }
+        record ("v3xy", vowelPct >= lockv3::centroidPct && lightOk && worstErr < lockv3::smoothTol,
+                "vowel corner dCentroid " + fmt (vowelPct, 1) + "% | light/shadow " + fmt (cDark, 0) + " -> " + fmt (cBright, 0)
+                    + " Hz | smoothing err " + fmt (worstErr, 5) + " (44.1/48/96/192k, blk 64-512)");
+    }
+
+    // ── v3mpe ────────────────────────────────────────────────────────────────
+    {
+        const int note = 57; // A3 220 Hz
+        auto run = [&] (bool mpe, std::vector<Event> extra, int noteCh = 2) {
+            QaSynth q;
+            q.proc->applyFactoryPreset (0);
+            q.set (registerMode, 1.0f);
+            q.set (ensembleSize, 1.0f);
+            q.set (vibratoDepth, 0.0f);
+            q.set (tapeInstability, 0.0f);
+            q.set (subAbyss, 0.0f); // the sub-octave layer would put odd harmonics under a bent octave
+            q.dry();
+            q.set (v2MpeEnable, mpe ? 1.0f : 0.0f);
+            q.prepare (sr, 512);
+            extra.push_back ({ 0, juce::MidiMessage::noteOn (noteCh, note, 0.8f) });
+            return q.render (q.S (2.5), extra, fixedBlocks (512));
+        };
+        const size_t a = static_cast<size_t> (1.0 * sr), b = static_cast<size_t> (2.5 * sr);
+        const double f0 = midiHz (note);
+        const auto plain = run (true, {});
+
+        // Per-note bend +12 st on the note's member channel (range 48 st)
+        const auto bent = run (true, { midiAt (0, juce::MidiMessage::pitchWheel (2, 8192 + 8192 / 4)) });
+        const double oePlain = oddEvenDb (plain, a, b, f0, sr), oeBent = oddEvenDb (bent, a, b, f0, sr);
+        const bool bendOk = oeBent < lockv3::octaveDb && oePlain > oeBent + 10.0;
+        const double bendIso = maxAbsDiff (plain, run (true, { midiAt (0, juce::MidiMessage::pitchWheel (3, 16383)) }));
+        // Legacy (MPE off): same wheel value is a +-2 st global bend => far from an octave
+        const double oeLegacy = oddEvenDb (run (false, { midiAt (0, juce::MidiMessage::pitchWheel (2, 8192 + 8192 / 4)) }), a, b, f0, sr);
+
+        auto respond = [&] (const Stereo& x) {
+            return std::max (std::abs (rmsDb (x, a, b) - rmsDb (plain, a, b)) / lockv3::respDb,
+                             100.0 * std::abs (centroidHz (x, a, b, sr) / centroidHz (plain, a, b, sr) - 1.0) / lockv3::centroidPct);
+        };
+        const double pressResp = respond (run (true, { midiAt (q0 (sr, 0.3), juce::MidiMessage::channelPressureChange (2, 127)) }));
+        const double pressIso  = maxAbsDiff (plain, run (true, { midiAt (q0 (sr, 0.3), juce::MidiMessage::channelPressureChange (3, 127)) }));
+        const double slideResp = respond (run (true, { midiAt (q0 (sr, 0.3), juce::MidiMessage::controllerEvent (2, 74, 0)) }));
+        const double slideIso  = maxAbsDiff (plain, run (true, { midiAt (q0 (sr, 0.3), juce::MidiMessage::controllerEvent (3, 74, 0)) }));
+        const double polyResp  = respond (run (true, { midiAt (q0 (sr, 0.3), juce::MidiMessage::aftertouchChange (2, note, 127)) }));
+        const double polyIso   = maxAbsDiff (plain, run (true, { midiAt (q0 (sr, 0.3), juce::MidiMessage::aftertouchChange (2, note + 1, 127)) }));
+        const auto plainV1 = run (false, {}, 1);
+        auto respondV1 = [&] (const Stereo& x) {
+            return std::max (std::abs (rmsDb (x, a, b) - rmsDb (plainV1, a, b)) / lockv3::respDb,
+                             100.0 * std::abs (centroidHz (x, a, b, sr) / centroidHz (plainV1, a, b, sr) - 1.0) / lockv3::centroidPct);
+        };
+        const double cc74Resp   = respondV1 (run (false, { midiAt (q0 (sr, 0.3), juce::MidiMessage::controllerEvent (1, 74, 0)) }, 1));
+        const double breathResp = respondV1 (run (false, { midiAt (q0 (sr, 0.3), juce::MidiMessage::controllerEvent (1, 2, 127)) }, 1));
+
+        const bool ok = bendOk && bendIso == 0.0 && oeLegacy > oeBent + 10.0 && pressResp >= 1.0 && pressIso == 0.0
+                     && slideResp >= 1.0 && slideIso == 0.0 && polyResp >= 1.0 && polyIso == 0.0 && cc74Resp >= 1.0 && breathResp >= 1.0;
+        record ("v3mpe", ok,
+                "bend+12 odd/even " + fmt (oePlain, 1) + " -> " + fmt (oeBent, 1) + " dB (legacy " + fmt (oeLegacy, 1) + ") iso " + fmt (bendIso, 9)
+                    + " | press x" + fmt (pressResp, 1) + " iso " + fmt (pressIso, 9) + " | slide x" + fmt (slideResp, 1) + " iso " + fmt (slideIso, 9)
+                    + " | polyAT x" + fmt (polyResp, 1) + " iso " + fmt (polyIso, 9) + " | CC74 x" + fmt (cc74Resp, 1) + " CC2 x" + fmt (breathResp, 1));
+    }
+
+    // ── v3vel ────────────────────────────────────────────────────────────────
+    {
+        using CP = monolith::v2::ControlPlane;
+        bool identity = true, order = true;
+        for (int v = 1; v <= 127; ++v)
+        {
+            identity = identity && CP::applyVelocityCurve (v, 0) == v;
+            order = order && CP::applyVelocityCurve (v, 1) >= v && CP::applyVelocityCurve (v, 2) <= v && CP::applyVelocityCurve (v, 4) == 100;
+        }
+        order = order && CP::applyVelocityCurve (64, 1) > 64 && CP::applyVelocityCurve (64, 2) < 64 && CP::applyVelocityCurve (0, 1) == 0;
+        auto run = [&] (int curve) {
+            QaSynth q;
+            q.proc->applyFactoryPreset (0);
+            q.set (v2VelCurve, static_cast<float> (curve));
+            q.prepare (sr, 512);
+            return q.render (q.S (2.0), { noteOn (0, 60, 0.35f) }, fixedBlocks (512));
+        };
+        const size_t a = static_cast<size_t> (0.8 * sr), b = static_cast<size_t> (2.0 * sr);
+        const double soft = rmsDb (run (1), a, b), lin = rmsDb (run (0), a, b), hard = rmsDb (run (2), a, b);
+        record ("v3vel", identity && order && soft > lin && lin > hard,
+                std::string ("Linear identity ") + (identity ? "ok" : "FAIL") + " | curve order " + (order ? "ok" : "FAIL")
+                    + " | vel 45 RMS soft " + fmt (soft, 2) + " > lin " + fmt (lin, 2) + " > hard " + fmt (hard, 2) + " dBFS");
+    }
+
+    // ── v3ab ─────────────────────────────────────────────────────────────────
+    {
+        QaSynth q;
+        q.proc->applyFactoryPreset (0);
+        q.proc->copyActiveToInactiveAB();
+        q.proc->toggleABCompare(); // -> B
+        q.set (spaceMix, 0.10f);
+        q.set (masterGain, -9.0f);
+        q.proc->getControlPlane().setRoute (srcIdx (ModSource::macro4), 0, spaceDecay, 0.3f, false);
+        q.proc->toggleABCompare(); // -> A
+        const bool aOk = std::abs (rawValue (q, spaceMix) - 0.46f) < 1e-5f && std::abs (rawValue (q, masterGain)) < 1e-5f
+                      && q.proc->getControlPlane().getConfig().routes[3][0].dest < 0 && ! q.proc->getPresetManager().isSlotBActive();
+        q.proc->toggleABCompare(); // -> B
+        const bool bOk = std::abs (rawValue (q, spaceMix) - 0.10f) < 1e-5f && std::abs (rawValue (q, masterGain) + 9.0f) < 1e-4f
+                      && q.proc->getControlPlane().getConfig().routes[3][0].dest >= 0;
+        q.proc->toggleABCompare(); // -> A for the audio test
+
+        // Swap A -> B mid-chord at 1.0 s and back at 2.0 s: shadow glide keeps it click-free
+        q.prepare (sr, 512);
+        bool swappedB = false, swappedA = false;
+        const auto out = q.render (q.S (3.0), chord(), fixedBlocks (512), [&] (int64_t p) {
+            if (! swappedB && p >= q.S (1.0)) { q.proc->toggleABCompare(); swappedB = true; }
+            if (! swappedA && p >= q.S (2.0)) { q.proc->toggleABCompare(); swappedA = true; }
+        });
+        QaSynth ref;
+        ref.proc->applyFactoryPreset (0);
+        ref.prepare (sr, 512);
+        const auto still = ref.render (ref.S (3.0), chord(), fixedBlocks (512));
+        const double cSwap = std::max (windowClick (out, 0.9, 1.2, sr), windowClick (out, 1.9, 2.2, sr));
+        const double cStill = std::max (windowClick (still, 0.9, 1.2, sr), windowClick (still, 1.9, 2.2, sr));
+        const double gainDrop = rmsDb (out, static_cast<size_t> (q.S (1.5)), static_cast<size_t> (q.S (1.9)))
+                              - rmsDb (still, static_cast<size_t> (q.S (1.5)), static_cast<size_t> (q.S (1.9)));
+        record ("v3ab", aOk && bOk && allFinite (out) && cSwap <= std::max (lockv2::clickRatio, 1.5 * cStill) && gainDrop < -3.0,
+                std::string ("A restore ") + (aOk ? "ok" : "FAIL") + " | B restore " + (bOk ? "ok" : "FAIL") + " | live swap click "
+                    + fmt (cSwap, 2) + " (static " + fmt (cStill, 2) + ") | B level " + fmt (gainDrop, 1) + " dB");
+    }
+
+    // ── v3undo ───────────────────────────────────────────────────────────────
+    {
+        QaSynth q;
+        q.proc->applyFactoryPreset (0);
+        auto& u = q.proc->getUndoHistory();
+        u.reset();
+        double t = 0.0;
+        auto settle = [&] { for (int i = 0; i < 25; ++i) { t += 20.0; q.proc->runMessageThreadTasks (t); } };
+        for (float v : { 0.5f, 0.6f, 0.7f }) { q.set (spaceMix, v); t += 20.0; q.proc->runMessageThreadTasks (t); } // one drag
+        settle();
+        const size_t steps1 = u.getNumUndoSteps();
+        q.set (glottalTension, 0.2f);
+        settle();
+        q.proc->getControlPlane().setRoute (srcIdx (ModSource::macro2), 0, spaceShimmer, 0.5f, false);
+        u.commit();
+        q.proc->applyFactoryPreset (9);
+        const float presetMix = rawValue (q, spaceMix);
+
+        bool ok = steps1 == 1 && u.getNumUndoSteps() == 4;
+        ok = ok && q.proc->undo() && std::abs (rawValue (q, spaceMix) - 0.7f) < 1e-5f && q.proc->getControlPlane().getConfig().routes[1][0].dest >= 0; // preset undone
+        ok = ok && q.proc->undo() && q.proc->getControlPlane().getConfig().routes[1][0].dest < 0;                                  // route undone
+        ok = ok && q.proc->undo() && std::abs (rawValue (q, glottalTension) - 0.68f) < 1e-5f;                                       // tension undone
+        ok = ok && q.proc->undo() && std::abs (rawValue (q, spaceMix) - 0.46f) < 1e-5f && ! q.proc->undo();                         // drag undone, empty
+        ok = ok && q.proc->redo() && std::abs (rawValue (q, spaceMix) - 0.7f) < 1e-5f;
+        ok = ok && q.proc->redo() && q.proc->redo() && q.proc->redo() && std::abs (rawValue (q, spaceMix) - presetMix) < 1e-5f && ! q.proc->redo();
+        // A fresh edit after an undo drops the redo branch
+        ok = ok && q.proc->undo() && (q.set (spaceDamp, 0.9f), u.commit(), ! u.canRedo());
+        record ("v3undo", ok, std::string ("drag=1 step, tension, route, preset load: undo x4 / redo x4 ") + (ok ? "ok" : "FAIL")
+                                  + " | redo branch cleared on new edit");
+    }
+
+    // ── v3state ──────────────────────────────────────────────────────────────
+    {
+        QaSynth a;
+        a.proc->applyFactoryPreset (3);
+        a.set (v2XyMode, 2.0f);
+        a.set (v2XyX, 0.8f);
+        a.set (v2ExprVibrato, 0.9f);
+        a.set (v2MpeEnable, 1.0f);
+        auto& cp = a.proc->getControlPlane();
+        cp.setRoute (srcIdx (ModSource::macro1), 0, spaceMix, 0.25f, false);
+        cp.setRoute (srcIdx (ModSource::xyX), 0, throatShift, -0.5f, true);
+        cp.setLegacyMacroCurve (2, false);
+        cp.setMacroLabel (0, "SIZE");
+        a.proc->getMidiLearn().bind (21, paramIndexOf (a, spaceDecay));
+        a.proc->copyActiveToInactiveAB();
+        juce::MemoryBlock mb;
+        a.proc->getStateInformation (mb);
+
+        QaSynth b;
+        b.proc->setStateInformation (mb.getData(), static_cast<int> (mb.getSize()));
+        const bool rt = b.proc->getControlPlane().toValueTree().isEquivalentTo (cp.toValueTree())
+                     && b.proc->getControlPlane().getMacroLabel (0) == "SIZE"
+                     && b.proc->getMidiLearn().getCcForParam (paramIndexOf (b, spaceDecay)) == 21
+                     && std::abs (rawValue (b, v2XyX) - 0.8f) < 1e-5f && std::lround (rawValue (b, v2XyMode)) == 2
+                     && rawValue (b, v2MpeEnable) > 0.5f && std::abs (rawValue (b, v2ExprVibrato) - 0.9f) < 1e-5f;
+
+        // No session growth across repeated save / load cycles (A/B slots used to nest into the APVTS tree)
+        size_t s1 = 0, s3 = 0;
+        {
+            juce::MemoryBlock m = mb;
+            for (int cycle = 0; cycle < 3; ++cycle)
+            {
+                QaSynth c;
+                c.proc->setStateInformation (m.getData(), static_cast<int> (m.getSize()));
+                m.reset();
+                c.proc->getStateInformation (m);
+                (cycle == 0 ? s1 : s3) = m.getSize();
+            }
+        }
+
+        // V1 session: strip version, every v2_* PARAM and every V2 child
+        auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), static_cast<int> (mb.getSize()));
+        xml->removeAttribute (stateVersionAttr);
+        for (auto* child = xml->getFirstChildElement(); child != nullptr;)
+        {
+            auto* next = child->getNextElement();
+            const auto tag = child->getTagName();
+            if (child->getStringAttribute ("id").startsWith ("v2_") || tag.startsWith ("V2") || tag == "MidiMap")
+                xml->removeChildElement (child, true);
+            child = next;
+        }
+        juce::MemoryBlock v1;
+        juce::AudioProcessor::copyXmlToBinary (*xml, v1);
+        QaSynth c;
+        c.set (v2XyX, 0.1f);
+        c.set (v2ExprEffort, 0.0f);
+        c.proc->getControlPlane().setRoute (0, 0, spaceMix, 1.0f, false);
+        c.proc->setStateInformation (v1.getData(), static_cast<int> (v1.getSize()));
+        bool migrated = std::abs (rawValue (c, v2XyX) - defaults::v2XyX) < 1e-6f && std::abs (rawValue (c, v2ExprEffort) - defaults::v2ExprEffort) < 1e-6f
+                     && std::lround (rawValue (c, v2VelCurve)) == defaults::v2VelCurve && rawValue (c, v2MpeEnable) < 0.5f;
+        for (int s = 0; s < monolith::v2::kNumModSources; ++s)
+            for (const auto& r : c.proc->getControlPlane().getConfig().routes[static_cast<size_t> (s)])
+                migrated = migrated && r.dest < 0;
+        for (bool l : c.proc->getControlPlane().getConfig().legacyMacroCurve) migrated = migrated && l;
+        bool v1Kept = true;
+        for (const char* id : { phonemeX, ensembleSize, spaceMix, driveAmount, masterGain, macroAbyss, registerMode, spaceType })
+            v1Kept = v1Kept && std::abs (rawValue (c, id) - rawValue (a, id)) < 1e-5f;
+
+        record ("v3state", rt && s1 == s3 && migrated && v1Kept,
+                std::string ("V2 round-trip (routes/labels/legacy/MIDI map/XY/expr) ") + (rt ? "ok" : "FAIL") + " | session size "
+                    + std::to_string (s1) + " -> " + std::to_string (s3) + " B over 3 cycles | V1 -> V2 defaults + factory routing "
+                    + (migrated ? "ok" : "FAIL") + " | V1 values " + (v1Kept ? "lossless" : "CHANGED"));
+    }
+
+    // ── v3preset ─────────────────────────────────────────────────────────────
+    {
+        QaSynth probe;
+        const auto& pm = probe.proc->getPresetManager();
+        int lossless = 0, renderExact = 0;
+        for (int i = 0; i < pm.getNumPresets(); ++i)
+        {
+            auto rec = monolith::preset_schema::fromFactory (pm, i);
+            const auto text = monolith::preset_schema::toXml (rec)->toString();
+            auto parsed = monolith::preset_schema::fromXml (*juce::parseXML (text));
+            if (! parsed) continue;
+            parsed->factoryIndex = -1; // force the generic V2 loader (not the factory shortcut)
+
+            QaSynth f, g;
+            f.proc->applyFactoryPreset (i);
+            g.proc->loadPresetRecord (*parsed);
+            bool same = parsed->sourceVersion == 2 && parsed->name == rec.name && parsed->category == rec.category;
+            const auto& pf = f.proc->getParameters();
+            const auto& pg = g.proc->getParameters();
+            for (int k = 0; k < pf.size(); ++k)
+                same = same && std::equal_to<float>() (pf[k]->getValue(), pg[k]->getValue()); // bit-exact
+            lossless += same ? 1 : 0;
+            if (i % 10 == 0 && same)
+            {
+                f.prepare (sr, 512);
+                g.prepare (sr, 512);
+                renderExact += maxAbsDiff (f.render (f.S (2.0), chord(), fixedBlocks (512)), g.render (g.S (2.0), chord(), fixedBlocks (512))) == 0.0 ? 1 : 0;
+            }
+        }
+
+        // User presets: save with full V2 metadata, rescan, search, favourite persists, reload into a fresh instance
+        const auto dir = juce::File (qaDir()).getChildFile ("v3_presets");
+        (void) dir.deleteRecursively();
+        QaSynth u;
+        u.proc->getPresetLibrary().setUserDirectory (dir);
+        u.proc->applyFactoryPreset (12);
+        u.set (spaceShimmer, 0.77f);
+        u.proc->getControlPlane().setRoute (srcIdx (ModSource::pressure), 0, v2TexMix, 0.4f, false);
+        u.proc->getControlPlane().setMacroLabel (1, "BREATH");
+        auto rec = u.proc->captureCurrentPreset ("Glass Cathedral", "QA", "Ethereal Hybrids", { "air", "glass", "evolving" }, "QA save test");
+        rec.favorite = true;
+        const bool saved = u.proc->saveUserPreset (rec).wasOk();
+        auto& lib = u.proc->getPresetLibrary();
+        const auto hits = lib.search ("glass air", "Ethereal Hybrids");
+        const bool found = hits.size() == 1 && lib.get (hits[0]).author == "QA" && lib.get (hits[0]).macroLabels[1] == "BREATH";
+
+        monolith::PresetLibrary lib2 (u.proc->getPresetManager());
+        lib2.setUserDirectory (dir);
+        const auto favs = lib2.search ({}, {}, true);
+        const bool favOk = favs.size() == 1 && lib2.get (favs[0]).name == "Glass Cathedral";
+        lib2.setFavourite (0, true); // factory favourite persists by key
+
+        QaSynth w;
+        if (found) w.proc->loadPresetRecord (lib.get (hits[0]));
+        bool reloaded = found && std::abs (rawValue (w, spaceShimmer) - 0.77f) < 1e-6f
+                     && w.proc->getControlPlane().getConfig().routes[static_cast<size_t> (ModSource::pressure)][0].dest >= 0
+                     && w.proc->getControlPlane().getMacroLabel (1) == "BREATH" && w.proc->getCurrentPresetMeta().name == "Glass Cathedral";
+        const auto& pu = u.proc->getParameters();
+        const auto& pw = w.proc->getParameters();
+        for (int k = 0; k < pu.size(); ++k)
+            reloaded = reloaded && std::abs (pu[k]->getValue() - pw[k]->getValue()) < 1e-6f;
+
+        // Legacy V1 data (raw APVTS state XML) loads through the schema
+        juce::MemoryBlock mb;
+        probe.proc->applyFactoryPreset (7);
+        probe.proc->getStateInformation (mb);
+        auto stateXml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), static_cast<int> (mb.getSize()));
+        auto legacy = monolith::preset_schema::fromXml (*stateXml);
+        QaSynth lv;
+        if (legacy) lv.proc->loadPresetRecord (*legacy);
+        const bool legacyOk = legacy && legacy->sourceVersion == 1 && std::abs (rawValue (lv, spaceMix) - rawValue (probe, spaceMix)) < 1e-6f
+                           && std::abs (rawValue (lv, throatShift) - rawValue (probe, throatShift)) < 1e-6f;
+
+        QaSynth lib3probe;
+        monolith::PresetLibrary lib3 (lib3probe.proc->getPresetManager());
+        lib3.setUserDirectory (dir);
+        const bool factFav = lib3.get (0).favorite;
+        (void) dir.deleteRecursively();
+
+        record ("v3preset", lossless == pm.getNumPresets() && renderExact == 3 && saved && found && favOk && factFav && reloaded && legacyOk,
+                std::to_string (lossless) + "/" + std::to_string (pm.getNumPresets()) + " factory presets lossless via V2 XML (render exact "
+                    + std::to_string (renderExact) + "/3) | user save " + (saved ? "ok" : "FAIL") + " search " + (found ? "ok" : "FAIL")
+                    + " favourites " + (favOk && factFav ? "ok" : "FAIL") + " reload " + (reloaded ? "ok" : "FAIL") + " | V1 state XML " + (legacyOk ? "ok" : "FAIL"));
+    }
+
+    // ── v3learn ──────────────────────────────────────────────────────────────
+    {
+        QaSynth q;
+        q.prepare (sr, 512);
+        auto& ml = q.proc->getMidiLearn();
+        const int pi = paramIndexOf (q, spaceMix), pj = paramIndexOf (q, spaceDecay);
+        auto block = [&] (std::vector<Event> ev) { (void) q.render (512, std::move (ev), fixedBlocks (512)); };
+        ml.armLearn (pi);
+        block ({ midiAt (10, juce::MidiMessage::controllerEvent (1, 21, 100)) });
+        const bool bound = ml.getCcForParam (pi) == 21 && ml.consumeLearnCompleted() && ml.getArmedParam() == -1;
+        q.proc->runMessageThreadTasks (0.0);
+        const bool applied = std::abs (rawValue (q, spaceMix) - 100.0f / 127.0f) < 1e-5f;
+        block ({ midiAt (5, juce::MidiMessage::controllerEvent (1, 21, 10)), midiAt (90, juce::MidiMessage::controllerEvent (1, 21, 0)) });
+        q.proc->runMessageThreadTasks (20.0);
+        const bool coalesced = rawValue (q, spaceMix) <= 0.0f;
+        ml.armLearn (pj); // learning CC21 for a new param moves the binding
+        block ({ midiAt (0, juce::MidiMessage::controllerEvent (1, 21, 64)) });
+        const bool moved = ml.getCcForParam (pj) == 21 && ml.getCcForParam (pi) == -1;
+        ml.armLearn (pi);
+        block ({ midiAt (0, juce::MidiMessage::controllerEvent (1, 64, 127)), midiAt (1, juce::MidiMessage::controllerEvent (1, 123, 0)) });
+        const bool reserved = ml.getArmedParam() == pi; // sustain / channel-mode CCs never learn
+        ml.cancelLearn();
+        const auto tree = ml.toValueTree (*q.proc);
+        ml.clearAll();
+        ml.fromValueTree (tree, *q.proc);
+        const bool persisted = ml.getCcForParam (pj) == 21 && ml.getNumBindings() == 1;
+        ml.clearParam (pj);
+        record ("v3learn", bound && applied && coalesced && moved && reserved && persisted && ml.getNumBindings() == 0,
+                std::string ("bind ") + (bound ? "ok" : "FAIL") + " apply " + (applied ? "ok" : "FAIL") + " coalesce " + (coalesced ? "ok" : "FAIL")
+                    + " rebind " + (moved ? "ok" : "FAIL") + " reserved CCs " + (reserved ? "ok" : "FAIL") + " persist " + (persisted ? "ok" : "FAIL"));
+    }
+
+    // ── v3alloc ──────────────────────────────────────────────────────────────
+    {
+        QaSynth q;
+        q.proc->applyFactoryPreset (0);
+        q.set (v2TexMix, 0.5f);
+        q.set (v2MpeEnable, 1.0f);
+        q.set (v2VelCurve, 1.0f);
+        q.set (v2XyMode, 1.0f);
+        auto& cp = q.proc->getControlPlane();
+        cp.setRoute (0, 0, spaceMix, 0.3f, false);
+        cp.setRoute (0, 1, v2TexLowPass, -0.4f, true);
+        cp.setRoute (srcIdx (ModSource::pressure), 0, v2TexMix, 0.3f, false);
+        cp.setRoute (srcIdx (ModSource::modWheel), 0, vibratoDepth, 0.5f, false);
+        q.proc->getMidiLearn().bind (22, paramIndexOf (q, spaceDamp));
+        q.prepare (sr, 512);
+        juce::AudioBuffer<float> buf (2, 512);
+        juce::MidiBuffer midi;
+        midi.ensureSize (8192);
+        auto* macro = q.proc->getAPVTS().getParameter (macroColossus);
+        auto* xy = q.proc->getAPVTS().getParameter (v2XyY);
+        long counted = 0;
+        const long startCount = qa_alloc::count.load();
+        for (int blk = 0; blk < 400; ++blk)
+        {
+            midi.clear();
+            const int ch = 2 + blk % 4;
+            if (blk % 20 == 5) for (int n : { 48, 52, 55, 59 }) midi.addEvent (juce::MidiMessage::noteOn (ch, n + (blk / 20) % 5, 0.8f), 17);
+            midi.addEvent (juce::MidiMessage::pitchWheel (ch, 8192 + (blk * 97) % 4000), 30);
+            midi.addEvent (juce::MidiMessage::channelPressureChange (ch, blk % 128), 60);
+            midi.addEvent (juce::MidiMessage::controllerEvent (ch, 74, (blk * 3) % 128), 90);
+            midi.addEvent (juce::MidiMessage::aftertouchChange (ch, 52, blk % 128), 120);
+            midi.addEvent (juce::MidiMessage::controllerEvent (1, 1, blk % 128), 150);
+            midi.addEvent (juce::MidiMessage::controllerEvent (1, 2, (blk * 5) % 128), 180);
+            midi.addEvent (juce::MidiMessage::controllerEvent (1, 22, (blk * 7) % 128), 210);
+            if (blk % 20 == 15) for (int n = 40; n < 80; ++n) midi.addEvent (juce::MidiMessage::noteOff (ch, n), 300);
+            macro->setValueNotifyingHost (static_cast<float> (blk % 100) / 100.0f);
+            xy->setValueNotifyingHost (static_cast<float> ((blk * 3) % 100) / 100.0f);
+            if (blk == 200) q.proc->toggleABCompare();
+            buf.clear();
+            const bool measure = blk >= 10;
+            if (measure) qa_alloc::armed = true;
+            q.proc->processBlock (buf, midi);
+            qa_alloc::armed = false;
+            if (measure) counted = qa_alloc::count.load() - startCount;
+        }
+        record ("v3alloc", counted == 0, std::to_string (counted) + " heap allocations in 390 armed blocks (MPE bend/pressure/slide/polyAT, CC1/2, learn CC, macro+XY sweeps, A/B swap)");
+    }
+}
+
+// ============================================================================
 const std::vector<std::string> kAllIds { "1", "2", "3morph", "3toggle", "4adaa", "4alias", "5", "6block", "6rate", "6pdc",
                                          "7dc", "7steal", "7dry", "7fdn", "8snap", "8cpu" };
 
@@ -1474,7 +2075,8 @@ std::set<std::string> expandIds (const std::string& csv)
         { "3", { "3morph", "3toggle" } }, { "4", { "4adaa", "4alias" } }, { "6", { "6block", "6rate", "6pdc" } },
         { "7", { "7dc", "7steal", "7dry", "7fdn" } }, { "8", { "8snap", "8cpu" } }, { "7tract", { "7dry" } },
         { "7stealdry", { "7steal", "7dry" } }, { "all", kAllIds },
-        { "v2", { "v2reg", "v2bypass", "v2lat", "v2tex", "v2state", "v2alloc", "v2cpu" } } };
+        { "v2", { "v2reg", "v2bypass", "v2lat", "v2tex", "v2state", "v2alloc", "v2cpu" } },
+        { "v3", { "v3null", "v3macro", "v3xy", "v3mpe", "v3vel", "v3ab", "v3undo", "v3state", "v3preset", "v3learn", "v3alloc" } } };
     std::set<std::string> out;
     std::stringstream ss (csv);
     std::string tok;
@@ -1500,6 +2102,7 @@ std::string phaseActive (const std::string& ph)
     if (ph == "3.4") return p34;
     if (ph == "3.5" || ph == "4") return "all";
     if (ph == "v2.2") return "all,v2"; // MONOLITH II Stage 2: every V1 gate + V2 layer gates
+    if (ph == "v2.3") return "all,v2,v3"; // MONOLITH II Stage 3: + control-plane gates
     return "";
 }
 } // namespace
@@ -1536,6 +2139,7 @@ int main (int argc, char** argv)
     if (want ("7")) gate7();
     if (want ("8")) gate8 (writeBaseline);
     if (want ("v2")) gateV2();
+    if (want ("v3")) gateV3();
     const double secs = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
 
     int fails = 0, pending = 0, passes = 0;

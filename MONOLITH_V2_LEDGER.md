@@ -67,3 +67,26 @@ Stage 1: PASS · Next: Stage 2
 - The output meter (`TelemetrySnapshot`) is engine-only and does not include the texture layer yet (Stage 4).
 
 Stage 2: PASS · Next: Stage 3
+
+## Stage 3 — Performance, Expression & Preset-Engine Architecture — PASS (2026-11-26)
+- **Control plane** `Source/V2/ControlPlane.{h,cpp}` + `ModMatrix.h`: 35 lock-free shadow atomics (31 destinations + 4 macros). Engine/texture bind to them via a resolver (`SwarmEngine::prepare(..., resolver)`, `TextureLayer::bindParameters(..., resolver)`). Each block: shadow = base (exact copy when idle) or `from0to1(clamp(to0to1(base)+Σoffsets))`. Routing POD reaches the audio thread via a lock-free `TripleBuffer`.
+- **Macros 1–4** = V1 macro params (no new IDs). Each has 8 routes (depth ±1, uni/bipolar), a per-preset label, and a legacy V1-curve gate. Further sources: XY X/Y, ModWheel, Pressure, Breath.
+- **XY Sculptor** `v2_xy_x/y/mode` (Vowel Field · Light/Shadow · Preset Axes). One-pole smoothing (τ 60 ms) uses the real block dt, so it is invariant to sample rate and block size.
+- **Expression** `Source/V2/MpeExpression.{h,cpp}`: MPE lower zone, per-note PB ±48 st, member CC74, per-channel pressure, poly AT, plus global CC74 and CC2. It folds into a per-voice copy of `VoiceRenderParams` (bend, effort/tilt, vibrato, openness). Texture swell is multiplicative and never un-bypasses the layer. Velocity curve (Linear/Soft/Hard/S-Curve/Fixed) is rewritten in place in the MidiBuffer.
+- **MIDI Learn** `Source/V2/MidiLearn.{h,cpp}`: atomic CC→param table and SPSC FIFO, drained on a 50 Hz timer with gesture-bracketed host notifications. Scope is per preset or global (`~/Library/Application Support/Monolith Audio/MONOLITH II/MidiLearn.xml`). Right-click menu on every `MonolithDial` (`PluginEditor.cpp`).
+- **Workflow**: A/B swaps routing as well as params, with a 60 ms shadow glide. `UndoHistory.h` holds snapshot undo/redo (350 ms debounce; preset/A-B/route edits commit). `Presets/PresetLibrary.{h,cpp}` uses a `version="2"` XML schema (name/author/category/tags/description/favourite/macro labels/params/V2Control/MidiMap), user dir `~/Library/Audio/Presets/Monolith Audio/MONOLITH II`, search and favourites.
+- New params (append-only, `ParameterID{…,2}`): `v2_xy_x` `v2_xy_y` `v2_xy_mode` `v2_mpe_enable` `v2_mpe_pb_range` `v2_vel_curve` `v2_expr_vibrato` `v2_expr_effort` `v2_expr_openness` `v2_expr_swell`. MPE enable/range and velocity curve are global and never reset by presets.
+- State: the session adds `V2Control`, `MidiMap`, `V2AB`, `V2PresetMeta`; all are stripped before `replaceState`. **Pre-existing bug fixed:** SlotA/SlotB used to nest into the APVTS tree, so the session grew on every save/load. It is now stable (9704 B over 3 cycles).
+- Frozen DSP: render math untouched. The only `SwarmEngine` diff is the resolver in `prepare` and a nullable hook in `handleMidiMessage` and the voice loop; the V1 loop is kept verbatim as the `else` path.
+- QA `MonolithQA --phase v2.3`: **34/34 PASS** (16 V1 + 7 V2 + 11 V3). Log `build/v2_qa/qa_v2_stage3.log`. `MonolithDspAudit` 6/6 PASS. AU/VST3/Standalone Release build clean.
+  - v2reg 0.0005 dB (unchanged) · v3null armed-idle 0.0 diff · v3macro route +2.0 dB, legacy-off dead 0.0, bipolar@0.5 0.0 · v3xy smoothing err <1e-5 (44.1–192k) · v3mpe +12 st odd/even 7.0→−37.3 dB, all channel-isolation diffs 0.0
+  - v3ab/v3undo/v3state/v3preset (30/30 V1 presets bit-exact via V2 XML)/v3learn all PASS · v3alloc 0 allocs · 8cpu 8.58 % RT
+- Adapter change: the `v2state` gate counts v2_* params dynamically (Stage 2 hard-coded 10; there are now 20). Thresholds are unchanged.
+
+### Warnings
+- MIDI-Learn values reach the audio ≤20 ms late (message-thread drain). In an offline bounce, learned-CC moves take effect after timer ticks, not sample-accurately.
+- Undo also records settled host-automation changes (snapshot polling cannot tell where a change came from).
+- Stage 4 must surface the following in the UI: macro labels and routing editor, XY pad on `v2_xy_*`, MPE indicator (`MpeExpression::uiMpeActive`), undo/redo, and the preset browser. The only Stage 3 UI is the right-click Learn menu.
+- ASSET_PROVENANCE licensing blocker from Stage 2 still open.
+
+Stage 3: PASS · Next: Stage 4

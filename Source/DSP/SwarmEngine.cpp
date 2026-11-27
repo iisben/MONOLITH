@@ -1,4 +1,5 @@
 #include "SwarmEngine.h"
+#include "../V2/MpeExpression.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -24,57 +25,65 @@ namespace
     }
 } // namespace
 
-void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::AudioProcessorValueTreeState& apvts)
+void SwarmEngine::prepare (double sampleRate, int maxBlockSize, const juce::AudioProcessorValueTreeState& apvts,
+                           const ParamResolver& resolver)
 {
+    auto bindParam = [&] (const char* id) -> std::atomic<float>* {
+        if (resolver)
+            if (auto* shadowed = resolver (id))
+                return shadowed;
+        return apvts.getRawParameterValue (id);
+    };
+
     sr = std::max (8000.0, sampleRate);
     preparedMaxBlock = std::max (32, maxBlockSize);
 
-    ptrs.phonemeX       = apvts.getRawParameterValue (params::phonemeX);
-    ptrs.phonemeY       = apvts.getRawParameterValue (params::phonemeY);
-    ptrs.orbitEnable    = apvts.getRawParameterValue (params::orbitEnable);
-    ptrs.orbitRate      = apvts.getRawParameterValue (params::orbitRate);
-    ptrs.orbitDepth     = apvts.getRawParameterValue (params::orbitDepth);
-    ptrs.orbitSync      = apvts.getRawParameterValue (params::orbitSync);
+    ptrs.phonemeX       = bindParam (params::phonemeX);
+    ptrs.phonemeY       = bindParam (params::phonemeY);
+    ptrs.orbitEnable    = bindParam (params::orbitEnable);
+    ptrs.orbitRate      = bindParam (params::orbitRate);
+    ptrs.orbitDepth     = bindParam (params::orbitDepth);
+    ptrs.orbitSync      = bindParam (params::orbitSync);
 
-    ptrs.registerMode   = apvts.getRawParameterValue (params::registerMode);
-    ptrs.ensembleSize   = apvts.getRawParameterValue (params::ensembleSize);
-    ptrs.ensembleSpread = apvts.getRawParameterValue (params::ensembleSpread);
-    ptrs.vibratoDepth   = apvts.getRawParameterValue (params::vibratoDepth);
-    ptrs.attackTime     = apvts.getRawParameterValue (params::attackTime);
-    ptrs.releaseTime    = apvts.getRawParameterValue (params::releaseTime);
-    ptrs.onsetMode      = apvts.getRawParameterValue (params::onsetMode);
-    ptrs.onsetAmount    = apvts.getRawParameterValue (params::onsetAmount);
+    ptrs.registerMode   = bindParam (params::registerMode);
+    ptrs.ensembleSize   = bindParam (params::ensembleSize);
+    ptrs.ensembleSpread = bindParam (params::ensembleSpread);
+    ptrs.vibratoDepth   = bindParam (params::vibratoDepth);
+    ptrs.attackTime     = bindParam (params::attackTime);
+    ptrs.releaseTime    = bindParam (params::releaseTime);
+    ptrs.onsetMode      = bindParam (params::onsetMode);
+    ptrs.onsetAmount    = bindParam (params::onsetAmount);
 
-    ptrs.glottalTension = apvts.getRawParameterValue (params::glottalTension);
-    ptrs.breathAmount   = apvts.getRawParameterValue (params::breathAmount);
-    ptrs.throatShift    = apvts.getRawParameterValue (params::throatShift);
-    ptrs.formantFocus   = apvts.getRawParameterValue (params::formantFocus);
-    ptrs.subAbyss       = apvts.getRawParameterValue (params::subAbyss);
-    ptrs.spectralCrown  = apvts.getRawParameterValue (params::spectralCrown);
-    ptrs.masterGain     = apvts.getRawParameterValue (params::masterGain);
+    ptrs.glottalTension = bindParam (params::glottalTension);
+    ptrs.breathAmount   = bindParam (params::breathAmount);
+    ptrs.throatShift    = bindParam (params::throatShift);
+    ptrs.formantFocus   = bindParam (params::formantFocus);
+    ptrs.subAbyss       = bindParam (params::subAbyss);
+    ptrs.spectralCrown  = bindParam (params::spectralCrown);
+    ptrs.masterGain     = bindParam (params::masterGain);
 
-    ptrs.driveAmount    = apvts.getRawParameterValue (params::driveAmount);
-    ptrs.tapeInstability= apvts.getRawParameterValue (params::tapeInstability);
-    ptrs.oxideDamping   = apvts.getRawParameterValue (params::oxideDamping);
-    ptrs.screwPitch     = apvts.getRawParameterValue (params::screwPitch);
-    ptrs.screwDepth     = apvts.getRawParameterValue (params::screwDepth);
-    ptrs.oversampleHq   = apvts.getRawParameterValue (params::oversampleHq);
+    ptrs.driveAmount    = bindParam (params::driveAmount);
+    ptrs.tapeInstability= bindParam (params::tapeInstability);
+    ptrs.oxideDamping   = bindParam (params::oxideDamping);
+    ptrs.screwPitch     = bindParam (params::screwPitch);
+    ptrs.screwDepth     = bindParam (params::screwDepth);
+    ptrs.oversampleHq   = bindParam (params::oversampleHq);
 
-    ptrs.spaceType      = apvts.getRawParameterValue (params::spaceType);
-    ptrs.spaceMix       = apvts.getRawParameterValue (params::spaceMix);
-    ptrs.spaceDecay     = apvts.getRawParameterValue (params::spaceDecay);
-    ptrs.spaceDamp      = apvts.getRawParameterValue (params::spaceDamp);
-    ptrs.spaceShimmer   = apvts.getRawParameterValue (params::spaceShimmer);
-    ptrs.spaceFreeze    = apvts.getRawParameterValue (params::spaceFreeze);
-    ptrs.cc64Freeze     = apvts.getRawParameterValue (params::cc64Freeze);
+    ptrs.spaceType      = bindParam (params::spaceType);
+    ptrs.spaceMix       = bindParam (params::spaceMix);
+    ptrs.spaceDecay     = bindParam (params::spaceDecay);
+    ptrs.spaceDamp      = bindParam (params::spaceDamp);
+    ptrs.spaceShimmer   = bindParam (params::spaceShimmer);
+    ptrs.spaceFreeze    = bindParam (params::spaceFreeze);
+    ptrs.cc64Freeze     = bindParam (params::cc64Freeze);
 
-    ptrs.macroColossus  = apvts.getRawParameterValue (params::macroColossus);
-    ptrs.macroSpecter   = apvts.getRawParameterValue (params::macroSpecter);
-    ptrs.macroRot       = apvts.getRawParameterValue (params::macroRot);
-    ptrs.macroAbyss     = apvts.getRawParameterValue (params::macroAbyss);
-    ptrs.legatoEnable   = apvts.getRawParameterValue (params::legatoEnable);
-    ptrs.glideTime      = apvts.getRawParameterValue (params::glideTime);
-    ptrs.expressionLevel= apvts.getRawParameterValue (params::expressionLevel);
+    ptrs.macroColossus  = bindParam (params::macroColossus);
+    ptrs.macroSpecter   = bindParam (params::macroSpecter);
+    ptrs.macroRot       = bindParam (params::macroRot);
+    ptrs.macroAbyss     = bindParam (params::macroAbyss);
+    ptrs.legatoEnable   = bindParam (params::legatoEnable);
+    ptrs.glideTime      = bindParam (params::glideTime);
+    ptrs.expressionLevel= bindParam (params::expressionLevel);
 
     // Pre-initialize shared read-only static tables outside processBlock()
     (void) LfGlottalTables::instance();
@@ -318,6 +327,11 @@ void SwarmEngine::handleMidiMessage (const juce::MidiMessage& msg,
                                      float glideSec,
                                      bool cc64TriggersFreeze) noexcept
 {
+    // V2 control-plane hook: per-note expression (MPE member channels / poly pressure) never reaches the
+    // global V1 handlers below; every other message continues unchanged.
+    if (expression != nullptr && expression->consume (msg))
+        return;
+
     if (msg.isNoteOn())
     {
         triggerNoteOn (msg.getNoteNumber(), msg.getFloatVelocity(), legatoOn, glideSec);
@@ -655,10 +669,27 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
             std::fill (busL.begin(), busL.begin() + chunk, 0.0f);
             std::fill (busR.begin(), busR.begin() + chunk, 0.0f);
 
-            for (auto& v : voices)
+            if (expression != nullptr && expression->isEngaged())
             {
-                if (v.isActive())
-                    v.renderBlock (busL.data(), busR.data(), chunk, cell.vParams, formantAcc, breathAcc);
+                // V2 per-voice expression: each voice renders from a COPY of the cell params with its own
+                // note's bend / pressure / slide folded in (identity while no expression data is present).
+                for (auto& v : voices)
+                {
+                    if (v.isActive())
+                    {
+                        VoiceRenderParams vp = cell.vParams;
+                        expression->applyToVoice (v.getMidiNote(), vp);
+                        v.renderBlock (busL.data(), busR.data(), chunk, vp, formantAcc, breathAcc);
+                    }
+                }
+            }
+            else
+            {
+                for (auto& v : voices)
+                {
+                    if (v.isActive())
+                        v.renderBlock (busL.data(), busR.data(), chunk, cell.vParams, formantAcc, breathAcc);
+                }
             }
 
             reverb.processBlock (busL.data(),
