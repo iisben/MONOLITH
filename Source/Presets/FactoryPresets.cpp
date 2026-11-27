@@ -53,7 +53,18 @@ namespace
             { macroAbyss,      defaults::macroAbyss },
             { legatoEnable,    defaults::legatoEnable ? 1.0f : 0.0f },
             { glideTime,       defaults::glideTime },
-            { expressionLevel, defaults::expressionLevel }
+            { expressionLevel, defaults::expressionLevel },
+            // V2 (append-only): every V1 preset loads with the texture layer bypassed
+            { v2TexMix,        defaults::v2TexMix },
+            { v2TexAsset,      static_cast<float> (defaults::v2TexAsset) },
+            { v2TexTune,       defaults::v2TexTune },
+            { v2TexKeytrack,   defaults::v2TexKeytrack },
+            { v2TexAttack,     defaults::v2TexAttack },
+            { v2TexRelease,    defaults::v2TexRelease },
+            { v2TexVelSens,    defaults::v2TexVelSens },
+            { v2TexHighPass,   defaults::v2TexHighPass },
+            { v2TexLowPass,    defaults::v2TexLowPass },
+            { v2TexWidth,      defaults::v2TexWidth }
         };
     }
 

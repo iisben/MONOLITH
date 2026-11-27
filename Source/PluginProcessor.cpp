@@ -11,6 +11,7 @@ MonolithAudioProcessor::MonolithAudioProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "MONOLITH_STATE", params::createParameterLayout())
 {
+    textureLayer.bindParameters (apvts);
     presetManager.initializeAB (apvts);
     startTimerHz (20); // PDC follows OS mode / drive engagement (0 when bypassed) via atomic parameter reads
 }
@@ -24,12 +25,14 @@ void MonolithAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 {
     telemetry.reset();
     engine.prepare (sampleRate, std::max (64, samplesPerBlock), apvts);
-    setLatencySamples (engine.getLatencySamples());
+    textureLayer.prepare (sampleRate, std::max (64, samplesPerBlock));
+    setLatencySamples (engine.getLatencySamples()); // texture layer adds 0 (aligned to engine PDC)
 }
 
 void MonolithAudioProcessor::releaseResources()
 {
     engine.reset();
+    textureLayer.reset();
     telemetry.reset();
 }
 
@@ -56,6 +59,9 @@ void MonolithAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                          midiMessages,
                          lastKnownBpm.load (std::memory_order_relaxed),
                          telemetry);
+
+    // V2 post-core bus: additive texture layer (returns untouched while bypassed at 0 % mix)
+    textureLayer.process (buffer, midiMessages, engine.getLatencySamples());
 }
 
 juce::AudioProcessorEditor* MonolithAudioProcessor::createEditor()
@@ -122,6 +128,7 @@ void MonolithAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     std::unique_ptr<juce::XmlElement> xml (state.createXml());
     if (xml != nullptr)
     {
+        xml->setAttribute (params::stateVersionAttr, params::stateVersion);
         presetManager.saveStateToXml (*xml);
         copyXmlToBinary (*xml, destData);
     }
@@ -132,8 +139,12 @@ void MonolithAudioProcessor::setStateInformation (const void* data, int sizeInBy
     std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary (data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName (apvts.state.getType()))
     {
+        // V1 sessions carry no version attribute and no v2_* children: APVTS restores every missing
+        // parameter to its default, so V2 layers come back bypassed (lossless V1 -> V2 migration).
         presetManager.loadStateFromXml (*xmlState);
-        apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+        auto tree = juce::ValueTree::fromXml (*xmlState);
+        tree.removeProperty (params::stateVersionAttr, nullptr);
+        apvts.replaceState (tree);
         setLatencySamples (engine.getLatencySamples());
     }
 }

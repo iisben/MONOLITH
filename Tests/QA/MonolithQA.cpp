@@ -2,9 +2,10 @@
     MONOLITH — Locked 8-Gate Headless Flagship QA Harness (Phase 2)
 
     Usage:
-      MonolithQA [--phase 3.1|3.2|3.3|3.4|3.5|4] [--active <ids>] [--only <ids>] [--write-baseline]
+      MonolithQA [--phase 3.1|3.2|3.3|3.4|3.5|4|v2.2] [--active <ids>] [--only <ids>] [--write-baseline]
 
     Sub-gate ids : 1 2 3morph 3toggle 4adaa 4alias 5 6block 6rate 6pdc 7dc 7steal 7dry 7fdn 8snap 8cpu
+    V2 sub-gates : v2reg v2bypass v2lat v2tex v2state v2alloc v2cpu   (group: v2)
     Group ids    : 3 4 6 7 8 all, 7tract (=7dry), 7stealdry (=7steal,7dry)
 
     Status semantics:
@@ -38,6 +39,28 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include <atomic>
+#include <cstdlib>
+#include <new>
+
+// ── V2 real-time audit: count global heap allocations while armed (v2alloc gate) ──
+namespace qa_alloc
+{
+    std::atomic<long> count { 0 };
+    thread_local bool armed = false;
+}
+void* operator new (std::size_t n)
+{
+    if (qa_alloc::armed) qa_alloc::count.fetch_add (1, std::memory_order_relaxed);
+    if (void* p = std::malloc (n == 0 ? 1 : n)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[] (std::size_t n) { return ::operator new (n); }
+void operator delete (void* p) noexcept { std::free (p); }
+void operator delete[] (void* p) noexcept { std::free (p); }
+void operator delete (void* p, std::size_t) noexcept { std::free (p); }
+void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 
 #if __has_include("DSP/ThroatDrive.h")
  #include "DSP/ThroatDrive.h"
@@ -1105,6 +1128,343 @@ void gate8 (bool writeBaseline)
 }
 
 // ============================================================================
+// V2 GATES (MONOLITH II Stage 2+). Additive to the locked Phase-2 gates above; V1 thresholds untouched.
+//   v2reg    V1 factory presets vs Tests/QA/preset_baseline_v2_stage1.csv, |dRMS| <= 0.05 dB (V2 layers at default 0 %)
+//   v2bypass 0 % texture mix is bit-identical to V1 even with every other V2 param moved; fade-out returns to bit-exact bypass
+//   v2lat    reported PDC unchanged by the texture layer; texture is phase-aligned to the engine's PDC delay
+//   v2tex    every asset: zero NaN/Inf, zero clicks (steal / retrigger / loop seam / mix + tune automation / block jitter), clean tail
+//   v2state  V2 state round-trip carries monolithStateVersion=2; V1 state (no version, no v2_*) migrates to bypassed defaults
+//   v2alloc  zero heap allocations inside processBlock with the texture layer active
+//   v2cpu    texture layer overhead (8-note chord, 24 singers) < 1.5 % RT
+namespace lockv2
+{
+    constexpr double regRmsDb     = 0.05;
+    constexpr double clickRatio   = 12.0;  // |d2| / local 10 ms d2 RMS; a lone click saturates near sqrt(481) = 21.9
+    constexpr double tailDbfs     = -90.0;
+    constexpr double alignTol     = 1.0e-4;
+    constexpr double cpuOverhead  = 1.5;   // % RT
+}
+
+int64_t q0 (double sr, double sec) { return static_cast<int64_t> (std::llround (sec * sr)); }
+
+std::string v2BaselineCsv() { return std::string (MONOLITH_SOURCE_DIR) + "/Tests/QA/preset_baseline_v2_stage1.csv"; }
+
+std::map<int, double> readRmsCsv (const std::string& path)
+{
+    std::map<int, double> m;
+    std::ifstream f (path);
+    std::string line;
+    std::getline (f, line);
+    while (std::getline (f, line))
+    {
+        std::vector<std::string> cols;
+        std::stringstream ss (line);
+        std::string c;
+        while (std::getline (ss, c, ',')) cols.push_back (c);
+        if (cols.size() >= 3) m[std::stoi (cols[0])] = std::stod (cols[2]);
+    }
+    return m;
+}
+
+Stereo diff (const Stereo& a, const Stereo& b)
+{
+    Stereo d;
+    d.L.resize (a.size()); d.R.resize (a.size());
+    for (size_t i = 0; i < a.size(); ++i) { d.L[i] = a.L[i] - b.L[i]; d.R[i] = a.R[i] - b.R[i]; }
+    return d;
+}
+
+double maxAbsDiff (const Stereo& a, const Stereo& b, size_t from = 0)
+{
+    double m = 0.0;
+    for (size_t i = from; i < a.size(); ++i) m = std::max ({ m, std::abs (a.L[i] - b.L[i]), std::abs (a.R[i] - b.R[i]) });
+    return m;
+}
+
+/** Worst isolated-discontinuity ratio of a channel: |d2[n]| over the RMS of d2 in a +/-10 ms window. */
+double clickRatio (const Vec& x, double sr)
+{
+    const size_t n = x.size();
+    if (n < 4) return 0.0;
+    Vec d2 (n, 0.0), cum (n + 1, 0.0);
+    for (size_t i = 2; i < n; ++i) d2[i] = x[i] - 2.0 * x[i - 1] + x[i - 2];
+    for (size_t i = 0; i < n; ++i) cum[i + 1] = cum[i] + d2[i] * d2[i];
+    const size_t w = static_cast<size_t> (0.010 * sr);
+    double worst = 0.0;
+    for (size_t i = 2; i < n; ++i)
+    {
+        if (std::abs (d2[i]) < 1.0e-4) continue; // below -80 dB: inaudible
+        const size_t a = i > w ? i - w : 0, b = std::min (n, i + w + 1);
+        const double rms = std::sqrt ((cum[b] - cum[a]) / static_cast<double> (b - a));
+        worst = std::max (worst, std::abs (d2[i]) / std::max (rms, 1.0e-5));
+    }
+    return worst;
+}
+
+BlockFn jitterBlocks (uint32_t seed)
+{
+    auto rng = std::make_shared<QaRng>();
+    rng->s = seed;
+    return [rng] { return 1 + static_cast<int> (rng->next() % 512u); };
+}
+
+void gateV2()
+{
+    using namespace monolith::params;
+    const double sr = 48000.0;
+
+    // ── v2reg: V1 presets vs Stage-1 locked baseline ─────────────────────────
+    {
+        const auto base = readRmsCsv (v2BaselineCsv());
+        const int numPresets = QaSynth().proc->getNumPrograms();
+        double worst = 0.0;
+        int worstIdx = -1, missing = 0;
+        for (int i = 0; i < numPresets; ++i)
+        {
+            QaSynth q;
+            q.proc->applyFactoryPreset (i);
+            q.prepare (sr, 512);
+            const auto out = q.render (q.S (3.0), { noteOn (0, 48), noteOn (0, 51), noteOn (0, 55) }, fixedBlocks (512));
+            const double r = rmsDb (out, static_cast<size_t> (q.S (1.0)), out.size());
+            const auto it = base.find (i);
+            if (it == base.end()) { ++missing; continue; }
+            const double d = std::abs (r - it->second);
+            if (d > worst) { worst = d; worstIdx = i; }
+        }
+        record ("v2reg", missing == 0 && numPresets == 30 && worst <= lockv2::regRmsDb,
+                std::to_string (numPresets) + " V1 presets | max |dRMS| " + fmt (worst, 4) + " dB (#" + std::to_string (worstIdx)
+                    + ") vs stage-1 baseline" + (missing ? " | missing " + std::to_string (missing) : ""));
+    }
+
+    // ── v2bypass ─────────────────────────────────────────────────────────────
+    {
+        double worst = 0.0, worstFade = 0.0;
+        for (int preset : { 0, 10, 22 })
+        {
+            const std::vector<Event> ev { noteOn (q0 (sr, 0.05), 48), noteOn (q0 (sr, 0.05), 55), noteOn (q0 (sr, 1.2), 62, 0.4f),
+                                          noteOff (q0 (sr, 2.0), 48), noteOff (q0 (sr, 2.2), 55), noteOff (q0 (sr, 2.4), 62) };
+            QaSynth ref;  ref.proc->applyFactoryPreset (preset);  ref.prepare (sr, 512);
+            QaSynth alt;  alt.proc->applyFactoryPreset (preset);  alt.prepare (sr, 512);
+            alt.set (v2TexAsset, 5.0f); alt.set (v2TexTune, 7.0f); alt.set (v2TexKeytrack, 0.3f); alt.set (v2TexAttack, 0.5f);
+            alt.set (v2TexRelease, 3.0f); alt.set (v2TexVelSens, 1.0f); alt.set (v2TexHighPass, 900.0f);
+            alt.set (v2TexLowPass, 2000.0f); alt.set (v2TexWidth, 2.0f);
+            const auto a = ref.render (ref.S (3.0), ev, jitterBlocks (7));
+            const auto b = alt.render (alt.S (3.0), ev, jitterBlocks (7));
+            worst = std::max (worst, maxAbsDiff (a, b));
+
+            // Fade: mix 0 -> 0.8 (1.0 s) -> 0 (1.6 s); from 2.0 s on the output must be bit-exact V1 again
+            QaSynth fade; fade.proc->applyFactoryPreset (preset); fade.prepare (sr, 512);
+            auto* mixP = fade.proc->getAPVTS().getParameter (v2TexMix);
+            const auto c = fade.render (fade.S (3.0), ev, jitterBlocks (7), [&] (int64_t pos) {
+                const double t = static_cast<double> (pos) / sr;
+                mixP->setValueNotifyingHost (t >= 1.0 && t < 1.6 ? 0.8f : 0.0f);
+            });
+            worstFade = std::max (worstFade, maxAbsDiff (a, c, static_cast<size_t> (2.2 * sr)));
+            if (fade.proc->getTextureLayer().isActive()) worstFade = 1.0;
+        }
+        record ("v2bypass", worst == 0.0 && worstFade == 0.0,
+                "0% mix max |diff| " + fmt (worst, 9) + " (all V2 params moved) | post-fade max |diff| " + fmt (worstFade, 9));
+    }
+
+    // ── v2lat ────────────────────────────────────────────────────────────────
+    {
+        struct Cfg { float drive; bool hq; };
+        std::vector<int> lat;
+        bool latOk = true, alignOk = true;
+        Stereo t0;
+        int lat0 = 0;
+        std::string detail;
+        for (const Cfg cfg : { Cfg { 0.0f, false }, Cfg { 0.6f, false }, Cfg { 0.6f, true } })
+        {
+            auto run = [&] (float mix, int& latency) {
+                QaSynth q;
+                q.dry();
+                q.set (driveAmount, cfg.drive);
+                q.set (oversampleHq, cfg.hq ? 1.0f : 0.0f);
+                q.set (v2TexMix, mix);
+                q.set (v2TexAsset, 2.0f);
+                q.prepare (sr, 512);
+                latency = q.proc->getLatencySamples();
+                return q.render (q.S (1.5), { noteOn (q.S (0.2), 60, 0.9f) }, fixedBlocks (512));
+            };
+            int lOff = 0, lOn = 0;
+            const auto off = run (0.0f, lOff);
+            const auto on = run (1.0f, lOn);
+            latOk = latOk && lOff == lOn;
+            const auto t = diff (on, off);
+            if (cfg.drive == 0.0f) { t0 = t; lat0 = lOn; }
+            else
+            {
+                const int L = lOn - lat0;
+                double err = 0.0;
+                for (size_t i = static_cast<size_t> (std::max (0, L)); i < t.size(); ++i)
+                    err = std::max (err, std::abs (t.L[i] - t0.L[i - static_cast<size_t> (L)]));
+                alignOk = alignOk && err < lockv2::alignTol;
+                detail += " | drive" + std::string (cfg.hq ? " 4x" : " 2x") + " PDC " + std::to_string (lOff) + "->" + std::to_string (lOn)
+                          + " align err " + fmt (dbAmp (err), 1) + " dB";
+            }
+            if (cfg.drive == 0.0f) detail = "bypassed-drive PDC " + std::to_string (lOff) + "->" + std::to_string (lOn);
+        }
+        record ("v2lat", latOk && alignOk, detail + " | texture added latency " + std::to_string (monolith::v2::TextureLayer::getAddedLatencySamples()));
+    }
+
+    // ── v2tex: per-asset stress ──────────────────────────────────────────────
+    {
+        const int nAssets = monolith::v2::kNumTextureAssets;
+        double worstClick = 0.0, worstTail = -400.0, quietest = 400.0, worstPeak = -400.0;
+        int worstAsset = -1;
+        bool finite = true, bypassed = true;
+        for (int asset = 0; asset < nAssets; ++asset)
+        {
+            std::vector<Event> ev;
+            for (int n : { 48, 52, 55 }) ev.push_back (noteOn (q0 (sr, 0.1), n, 0.9f));
+            ev.push_back (noteOn (q0 (sr, 1.0), 60, 0.5f));
+            ev.push_back (noteOn (q0 (sr, 1.5), 48, 0.7f)); // retrigger while ringing
+            for (int k = 0; k < 14; ++k) ev.push_back (noteOn (q0 (sr, 2.0 + 0.01 * k), 62 + k, 0.8f)); // steal storm
+            for (int n = 40; n < 90; ++n) ev.push_back (noteOff (q0 (sr, 3.0), n));
+            ev.push_back (noteOn (q0 (sr, 3.5), 67, 1.0f));  // long hold: crosses every loop seam
+            ev.push_back (noteOn (q0 (sr, 3.5), 43, 0.3f));  // slow-rate voice
+            ev.push_back (noteOff (q0 (sr, 10.5), 67));
+            ev.push_back (noteOff (q0 (sr, 10.5), 43));
+            const std::vector<Event> evc = ev;
+
+            auto run = [&] (bool on) {
+                QaSynth q;
+                q.dry();
+                q.set (v2TexAsset, static_cast<float> (asset));
+                q.set (v2TexAttack, 0.004f);
+                q.set (v2TexRelease, 0.25f);
+                q.prepare (sr, 512);
+                auto& ap = q.proc->getAPVTS();
+                auto* mixP = ap.getParameter (v2TexMix);
+                auto* assetP = ap.getParameter (v2TexAsset);
+                auto* tuneP = ap.getParameter (v2TexTune);
+                auto* hpP = ap.getParameter (v2TexHighPass);
+                auto out = q.render (q.S (13.0), evc, jitterBlocks (1234u + static_cast<uint32_t> (asset)), [&] (int64_t pos) {
+                    const double t = static_cast<double> (pos) / sr;
+                    float mix = on ? 1.0f : 0.0f;
+                    if (on && t >= 5.0 && t < 6.0) mix = 0.3f;
+                    if (t >= 11.8) mix = 0.0f;
+                    mixP->setValueNotifyingHost (mixP->convertTo0to1 (mix));
+                    assetP->setValueNotifyingHost (assetP->convertTo0to1 (static_cast<float> (t >= 7.0 ? (asset + 1) % nAssets : asset)));
+                    tuneP->setValueNotifyingHost (tuneP->convertTo0to1 (t >= 8.0 ? 2.0f : 0.0f));
+                    hpP->setValueNotifyingHost (hpP->convertTo0to1 (t >= 9.0 ? 600.0f : 20.0f));
+                });
+                bypassed = bypassed && (on ? ! q.proc->getTextureLayer().isActive() : true);
+                return out;
+            };
+            const auto on = run (true);
+            const auto off = run (false);
+            finite = finite && allFinite (on);
+            const auto t = diff (on, off);
+            const double c = std::max (clickRatio (t.L, sr), clickRatio (t.R, sr));
+            if (c > worstClick) { worstClick = c; worstAsset = asset; }
+            worstTail = std::max (worstTail, rmsDb (t, static_cast<size_t> (12.0 * sr), t.size()));
+            quietest = std::min (quietest, rmsDb (t, static_cast<size_t> (3.6 * sr), static_cast<size_t> (4.4 * sr)));
+            worstPeak = std::max (worstPeak, dbAmp (peakAbs (t, 0, t.size())));
+        }
+        const auto& bank = monolith::v2::TextureBank::get();
+        const bool audible = quietest > -45.0;
+        record ("v2tex", finite && bypassed && audible && worstClick < lockv2::clickRatio && worstTail < lockv2::tailDbfs,
+                std::to_string (nAssets) + " assets | worst click ratio " + fmt (worstClick, 2) + " (asset " + std::to_string (worstAsset)
+                    + ") | tail " + fmt (worstTail, 1) + " dBFS | hold RMS min " + fmt (quietest, 1) + " dBFS | layer peak " + fmt (worstPeak, 1)
+                    + " dBFS | bank " + fmt (static_cast<double> (bank.bytesResident()) / 1.0e6, 1) + " MB RAM" + (finite ? "" : " | NaN/Inf!")
+                    + (bypassed ? "" : " | did not return to bypass"));
+    }
+
+    // ── v2state ──────────────────────────────────────────────────────────────
+    {
+        QaSynth a;
+        a.proc->applyFactoryPreset (4);
+        a.set (v2TexMix, 0.7f);
+        a.set (v2TexAsset, 3.0f);
+        a.set (v2TexLowPass, 5000.0f);
+        juce::MemoryBlock mb;
+        a.proc->getStateInformation (mb);
+        auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), static_cast<int> (mb.getSize()));
+        const bool tagged = xml != nullptr && xml->getIntAttribute (stateVersionAttr) == stateVersion;
+
+        auto value = [] (QaSynth& q, const char* id) { return q.proc->getAPVTS().getRawParameterValue (id)->load(); };
+        QaSynth b;
+        b.proc->setStateInformation (mb.getData(), static_cast<int> (mb.getSize()));
+        const bool roundTrip = std::abs (value (b, v2TexMix) - 0.7f) < 1e-4f && std::abs (value (b, v2TexAsset) - 3.0f) < 1e-4f
+                               && std::abs (value (b, v2TexLowPass) - 5000.0f) < 0.5f;
+
+        // Synthesize a V1 session: strip the version attribute and every v2_* PARAM child
+        bool migrated = false, v1Kept = true;
+        int stripped = 0;
+        if (xml != nullptr)
+        {
+            xml->removeAttribute (stateVersionAttr);
+            for (auto* child = xml->getFirstChildElement(); child != nullptr;)
+            {
+                auto* next = child->getNextElement();
+                if (child->getStringAttribute ("id").startsWith ("v2_")) { xml->removeChildElement (child, true); ++stripped; }
+                child = next;
+            }
+            juce::MemoryBlock v1;
+            juce::AudioProcessor::copyXmlToBinary (*xml, v1);
+            QaSynth c;
+            c.set (v2TexMix, 0.9f); // dirty instance: migration must restore the bypassed default
+            c.set (v2TexAsset, 6.0f);
+            c.proc->setStateInformation (v1.getData(), static_cast<int> (v1.getSize()));
+            migrated = std::abs (value (c, v2TexMix) - defaults::v2TexMix) < 1e-6f && std::lround (value (c, v2TexAsset)) == defaults::v2TexAsset;
+            for (const char* id : { phonemeX, ensembleSize, spaceMix, driveAmount, masterGain, macroAbyss, registerMode })
+                v1Kept = v1Kept && std::abs (value (c, id) - value (a, id)) < 1e-5f;
+        }
+        record ("v2state", tagged && roundTrip && migrated && v1Kept && stripped == 10,
+                std::string ("version=2 ") + (tagged ? "ok" : "MISSING") + " | V2 round-trip " + (roundTrip ? "ok" : "FAIL")
+                    + " | V1 session (" + std::to_string (stripped) + " v2 params stripped) -> bypassed defaults " + (migrated ? "ok" : "FAIL")
+                    + " | V1 values " + (v1Kept ? "lossless" : "CHANGED"));
+    }
+
+    // ── v2alloc ──────────────────────────────────────────────────────────────
+    {
+        QaSynth q;
+        q.set (v2TexMix, 1.0f);
+        q.set (v2TexAsset, 4.0f);
+        q.prepare (sr, 512);
+        juce::AudioBuffer<float> buf (2, 512);
+        juce::MidiBuffer midi;
+        midi.ensureSize (4096);
+        long counted = 0;
+        for (int blk = 0; blk < 400; ++blk)
+        {
+            midi.clear();
+            if (blk % 20 == 5) for (int n : { 48, 52, 55, 59 }) midi.addEvent (juce::MidiMessage::noteOn (1, n + (blk / 20) % 5, 0.8f), 17);
+            if (blk % 20 == 15) for (int n = 40; n < 80; ++n) midi.addEvent (juce::MidiMessage::noteOff (1, n), 300);
+            buf.clear();
+            const bool measure = blk >= 10;
+            if (measure) qa_alloc::armed = true;
+            q.proc->processBlock (buf, midi);
+            qa_alloc::armed = false;
+            if (measure) counted = qa_alloc::count.load();
+        }
+        record ("v2alloc", counted == 0, std::to_string (counted) + " heap allocations in 390 armed processBlock calls (texture active, notes cycling)");
+    }
+
+    // ── v2cpu ────────────────────────────────────────────────────────────────
+    {
+        auto medianUs = [&] (float mix) {
+            QaSynth q;
+            q.set (ensembleSize, 24.0f);
+            q.set (v2TexMix, mix);
+            q.set (v2TexAsset, 4.0f);
+            q.prepare (sr, 512);
+            std::vector<Event> ev;
+            for (int n : { 48, 52, 55, 59, 62, 65, 69, 72 }) ev.push_back (noteOn (0, n));
+            Vec us;
+            (void) q.render (512 * 400, ev, fixedBlocks (512), nullptr, &us);
+            return median (Vec (us.begin() + 100, us.end()));
+        };
+        const double off = medianUs (0.0f), on = medianUs (1.0f);
+        const double overhead = (on - off) / 10666.7 * 100.0;
+        record ("v2cpu", overhead < lockv2::cpuOverhead,
+                "texture overhead " + fmt (overhead, 3) + "% RT (" + fmt (off, 1) + " -> " + fmt (on, 1) + " us/blk, 8 voices)");
+    }
+}
+
+// ============================================================================
 const std::vector<std::string> kAllIds { "1", "2", "3morph", "3toggle", "4adaa", "4alias", "5", "6block", "6rate", "6pdc",
                                          "7dc", "7steal", "7dry", "7fdn", "8snap", "8cpu" };
 
@@ -1113,7 +1473,8 @@ std::set<std::string> expandIds (const std::string& csv)
     static const std::map<std::string, std::vector<std::string>> groups {
         { "3", { "3morph", "3toggle" } }, { "4", { "4adaa", "4alias" } }, { "6", { "6block", "6rate", "6pdc" } },
         { "7", { "7dc", "7steal", "7dry", "7fdn" } }, { "8", { "8snap", "8cpu" } }, { "7tract", { "7dry" } },
-        { "7stealdry", { "7steal", "7dry" } }, { "all", kAllIds } };
+        { "7stealdry", { "7steal", "7dry" } }, { "all", kAllIds },
+        { "v2", { "v2reg", "v2bypass", "v2lat", "v2tex", "v2state", "v2alloc", "v2cpu" } } };
     std::set<std::string> out;
     std::stringstream ss (csv);
     std::string tok;
@@ -1138,6 +1499,7 @@ std::string phaseActive (const std::string& ph)
     if (ph == "3.3") return p33;
     if (ph == "3.4") return p34;
     if (ph == "3.5" || ph == "4") return "all";
+    if (ph == "v2.2") return "all,v2"; // MONOLITH II Stage 2: every V1 gate + V2 layer gates
     return "";
 }
 } // namespace
@@ -1173,6 +1535,7 @@ int main (int argc, char** argv)
     if (want ("6")) gate6();
     if (want ("7")) gate7();
     if (want ("8")) gate8 (writeBaseline);
+    if (want ("v2")) gateV2();
     const double secs = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
 
     int fails = 0, pending = 0, passes = 0;

@@ -47,3 +47,23 @@ Control plane only may touch `SwarmEngine::handleMidiMessage` input mapping via 
 - 8cpu is 0.7 pt above the Phase-2 baseline but within its threshold.
 
 Stage 1: PASS · Next: Stage 2
+
+## Stage 2 — Sample Curation & Additive V2 Audio Layers — PASS (2026-11-26)
+- Scan: 2 ranked Python passes over `/Volumes/Audio Blob/Samples` (≤40 lines each). **Layer B skipped**: no real IRs on the drive (only "IR" hit = Indian Roots bell loop) → Layer A expanded to 8 assets.
+- Assets: `assets/v2_samples/*.flac` (8 files, **8.04 MB**, 48 kHz/24-bit, −12 dBFS active RMS, ≤−1 dBFS peak, DC ≤ −85 dBFS, loop seam step < 0.6× 99.9th-pct step). Pipeline `Tools/v2_process_assets.py` → also generates `Source/V2/TextureAssetTable.h` + `ASSET_PROVENANCE.md`.
+- New: `Source/V2/TextureLayer.{h,cpp}` : `TextureBank` (shared, decoded once, guard-padded), `TextureLayer` 12 voices/16 slots, Hermite, vel env, 3 ms steal fade, CC64/120/123, TPT SVF HP→LP, M/S width, 20 ms mix smoothing, engine-PDC alignment ring (adds 0 latency), hard bypass at 0 % mix.
+- Wiring: `PluginProcessor.cpp` processBlock sums layer after `engine.processBlock`; state writes `monolithStateVersion="2"`; V1 sessions → V2 defaults (bypassed). CMake `juce_add_binary_data(MonolithV2Assets)`.
+- Params (append-only, `ParameterID{…,2}`): `v2_tex_mix` `v2_tex_asset` `v2_tex_tune` `v2_tex_keytrack` `v2_tex_attack` `v2_tex_release` `v2_tex_vel_sens` `v2_tex_hp` `v2_tex_lp` `v2_tex_width` (also in `buildDefaultsList`).
+- QA `MonolithQA --phase v2.2`: **23/23 PASS** (16 V1 gates + 7 V2). Log `build/v2_qa/qa_v2_stage2.log`. `MonolithDspAudit`: 6/6 PASS.
+  - v2reg max |ΔRMS| 0.0005 dB vs stage-1 csv (CSV rounding; output bit-exact) · v2bypass 0.0 diff (all V2 params moved, and post-fade)
+  - v2lat PDC 0/60/67 unchanged, texture aligned (err −147 dB) · v2tex worst click ratio 5.92 (<12), NaN 0, tail silent · v2state version/round-trip/V1 migration OK
+  - v2alloc 0 heap allocs in 390 armed blocks · v2cpu +0.14 % RT · 8cpu 8.75 % RT (within lock)
+- Frozen DSP: `git diff Source/DSP` empty.
+
+### Warnings
+- **LICENSING BLOCKER for sale:** all 8 assets come from Splice packs, and the standard Splice licence bars redistributing them inside an instrument. Every row in `ASSET_PROVENANCE.md` is NOT CLEARED until the user signs it off or the asset is replaced.
+- At 100 % mix a 14-note steal storm peaks the texture at −0.4 dBFS. Stage 5 gain staging must cap per-preset mix accordingly.
+- Bank RAM 17 MB (decoded float, shared across instances). Notes that are already held when the mix rises from 0 stay silent; the layer reacts only to new notes.
+- The output meter (`TelemetrySnapshot`) is engine-only and does not include the texture layer yet (Stage 4).
+
+Stage 2: PASS · Next: Stage 3

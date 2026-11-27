@@ -42,6 +42,19 @@ juce_add_plugin(MONOLITH
     VST3_CATEGORIES             "Instrument|Synth"
 )
 
+# ── V2 Layer A texture assets (pre-processed by Tools/v2_process_assets.py) ──
+file(GLOB MONOLITH_V2_ASSET_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/v2_samples/*.flac")
+juce_add_binary_data(MonolithV2Assets
+    HEADER_NAME V2Assets.h
+    NAMESPACE   V2Assets
+    SOURCES     ${MONOLITH_V2_ASSET_FILES}
+)
+set_target_properties(MonolithV2Assets PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+set(MONOLITH_V2_SOURCES
+    Source/V2/TextureLayer.cpp
+)
+
 set(MONOLITH_DSP_AND_PRESET_SOURCES
     Source/DSP/PhonemeField.cpp
     Source/DSP/HarmonicLayers.cpp
@@ -56,6 +69,7 @@ target_sources(MONOLITH
     PRIVATE
         ${MONOLITH_DSP_AND_PRESET_SOURCES}
         Source/PluginProcessor.cpp
+        ${MONOLITH_V2_SOURCES}
         Source/PluginEditor.cpp
         Source/UI/MonolithLookAndFeel.cpp
         Source/UI/MeterComponents.cpp
@@ -79,6 +93,7 @@ target_compile_definitions(MONOLITH
 
 target_link_libraries(MONOLITH
     PRIVATE
+        MonolithV2Assets
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC
@@ -140,6 +155,7 @@ target_sources(MonolithQA
     PRIVATE
         Tests/QA/MonolithQA.cpp
         Source/PluginProcessor.cpp
+        ${MONOLITH_V2_SOURCES}
         ${MONOLITH_DSP_AND_PRESET_SOURCES}
 )
 
@@ -161,6 +177,7 @@ target_compile_definitions(MonolithQA
 
 target_link_libraries(MonolithQA
     PRIVATE
+        MonolithV2Assets
         juce::juce_audio_processors
         juce::juce_dsp
     PUBLIC

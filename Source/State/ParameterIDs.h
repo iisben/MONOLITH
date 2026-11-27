@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <memory>
+#include "../V2/TextureAssetTable.h"
 
 namespace monolith::params
 {
@@ -59,6 +60,22 @@ inline constexpr const char* legatoEnable   = "legato_enable";
 inline constexpr const char* glideTime      = "glide_time";
 inline constexpr const char* expressionLevel= "expression_level";
 
+// ── V2 Layer A: Texture Engine (append-only, ParameterID version 2) ───────────
+inline constexpr const char* v2TexMix       = "v2_tex_mix";
+inline constexpr const char* v2TexAsset     = "v2_tex_asset";
+inline constexpr const char* v2TexTune      = "v2_tex_tune";
+inline constexpr const char* v2TexKeytrack  = "v2_tex_keytrack";
+inline constexpr const char* v2TexAttack    = "v2_tex_attack";
+inline constexpr const char* v2TexRelease   = "v2_tex_release";
+inline constexpr const char* v2TexVelSens   = "v2_tex_vel_sens";
+inline constexpr const char* v2TexHighPass  = "v2_tex_hp";
+inline constexpr const char* v2TexLowPass   = "v2_tex_lp";
+inline constexpr const char* v2TexWidth     = "v2_tex_width";
+
+/** State schema version written into the APVTS root (absent attribute = V1 session). */
+inline constexpr const char* stateVersionAttr = "monolithStateVersion";
+inline constexpr int         stateVersion     = 2;
+
 // ── Default Values (Calibrated to Preset 01: Monolith Awakening) ──────────────
 namespace defaults
 {
@@ -108,6 +125,18 @@ namespace defaults
     inline constexpr bool  legatoEnable    = false;
     inline constexpr float glideTime       = 0.14f;
     inline constexpr float expressionLevel = 0.78f;
+
+    // V2 texture layer: 0 % mix = fully bypassed (no added samples, no latency)
+    inline constexpr float v2TexMix        = 0.0f;
+    inline constexpr int   v2TexAsset      = 0;
+    inline constexpr float v2TexTune       = 0.0f;
+    inline constexpr float v2TexKeytrack   = 1.0f;
+    inline constexpr float v2TexAttack     = 0.012f;
+    inline constexpr float v2TexRelease    = 0.9f;
+    inline constexpr float v2TexVelSens    = 0.6f;
+    inline constexpr float v2TexHighPass   = 20.0f;
+    inline constexpr float v2TexLowPass    = 20000.0f;
+    inline constexpr float v2TexWidth      = 1.0f;
 } // namespace defaults
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
@@ -218,6 +247,33 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
         juce::ParameterID { glideTime, 1 }, "Glide Time", normRange (0.01f, 1.5f, 0.0f, 0.4f), defaults::glideTime));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { expressionLevel, 1 }, "Expression", normRange (0.0f, 1.0f), defaults::expressionLevel));
+
+    // ── V2 Layer A: Texture Engine (appended after every V1 ID; V1 indices untouched)
+    {
+        juce::StringArray assetNames;
+        for (const auto& a : v2::kTextureAssets)
+            assetNames.add (a.displayName);
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexMix, 2 }, "Texture Mix", normRange (0.0f, 1.0f), defaults::v2TexMix));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { v2TexAsset, 2 }, "Texture Source", assetNames, defaults::v2TexAsset));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexTune, 2 }, "Texture Tune", normRange (-24.0f, 24.0f, 0.01f), defaults::v2TexTune));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexKeytrack, 2 }, "Texture Keytrack", normRange (0.0f, 1.0f), defaults::v2TexKeytrack));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexAttack, 2 }, "Texture Attack", normRange (0.001f, 4.0f, 0.0f, 0.3f), defaults::v2TexAttack));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexRelease, 2 }, "Texture Release", normRange (0.02f, 8.0f, 0.0f, 0.35f), defaults::v2TexRelease));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexVelSens, 2 }, "Texture Velocity", normRange (0.0f, 1.0f), defaults::v2TexVelSens));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexHighPass, 2 }, "Texture High-Pass", normRange (20.0f, 2000.0f, 0.0f, 0.3f), defaults::v2TexHighPass));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexLowPass, 2 }, "Texture Low-Pass", normRange (400.0f, 20000.0f, 0.0f, 0.3f), defaults::v2TexLowPass));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { v2TexWidth, 2 }, "Texture Width", normRange (0.0f, 2.0f), defaults::v2TexWidth));
+    }
 
     return layout;
 }

@@ -4,6 +4,7 @@
 #include "Presets/PresetManager.h"
 #include "State/ParameterIDs.h"
 #include "State/TelemetrySnapshot.h"
+#include "V2/TextureLayer.h"
 #include <atomic>
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -45,6 +46,7 @@ public:
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts; }
     const TelemetrySnapshot& getTelemetry() const noexcept { return telemetry; }
     PresetManager& getPresetManager() noexcept { return presetManager; }
+    const v2::TextureLayer& getTextureLayer() const noexcept { return textureLayer; }
 
     void triggerPanic() noexcept { engine.requestPanic(); }
     void setUiExpression (float val01) noexcept { engine.setUiExpressionOverride (val01); }
@@ -59,6 +61,7 @@ private:
 
     juce::AudioProcessorValueTreeState apvts;
     dsp::SwarmEngine engine;
+    v2::TextureLayer textureLayer; // V2 Layer A: additive, post-core, bypassed at 0 % mix
     TelemetrySnapshot telemetry;
     PresetManager presetManager;
 
