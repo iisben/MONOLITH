@@ -112,3 +112,29 @@ Stage 3: PASS · Next: Stage 4
 - The ASSET_PROVENANCE licensing blocker (Stage 2) is still open.
 
 Stage 4: PASS · Next: Stage 5
+
+## Stage 5 — 20 Flagship Production-Ready Presets (Closed-Loop Audio QA) — PASS (2026-11-27)
+- **Source of truth:** `Tools/v2_flagship_presets.py` holds 20 presets tuned from V1 sweet spots. It writes `assets/v2_presets/NN_Name.mnlpreset` (V2 schema: full 58-param state with no globals, 4 named macros, CC1/pressure/CC2 routes, XY Preset Axes on Ethereal, MPE depths). It is embedded via `juce_add_binary_data(MonolithV2Presets)` (93.5 KB) and validates ids, ranges, routes and slot-bound V1 labels. It also writes a preset→asset dependency table into `ASSET_PROVENANCE.md`.
+- **Library/host:** `PresetRecord::flagshipIndex` / `isBuiltIn()` and `preset_schema::loadFlagshipPresets()` (embedded or from a directory). Browser order: flagship, then V1, then user. Host programs: 0–29 are V1 (indices unchanged) and 30–49 are flagship. Session meta stores `flagshipIndex`.
+- **UI:** built-ins can't be deleted, and the detail pane shows a MONOLITH II badge. Long category names wrap to two lines instead of showing an ellipsis, and the top-bar subtitle drops the author when it doesn't fit. Snapshot runner adds `08_flagship_main`, `09_flagship_browser` (inspected).
+- **QA runner** `Tests/QA/PresetQA.cpp` (`MonolithPresetQA`, ctest): 20 renders/preset (susC3/C4, vel-110 4-note chord, C5 melody, 4 macro sweeps + 4 at 100 %, all-max, CC1 sweep/0/127, pressure 127, MPE ± per-note pressure/slide, audition). Locked thresholds: 4x true peak ≤ −0.5 dBTP; chord RMS −19…−11; NaN/Inf 0; DC (Hann-weighted 0 Hz) < −80; sub-150 corr ≥ 0.4 and mono drop ≤ 4 dB on chord and C3; macro Δ ≥ 1.5 dB; CC1 Δ ≥ 1.5; pressure and MPE Δ ≥ 1.0; meta; near-duplicate score ≥ 1. `--preset-dir` gives a no-rebuild tuning loop and flags a stale embedded copy.
+- **Result (embedded, Release):** **20/20 PASS**, diversity PASS (min score 1.98, #1~#3), library PASS. Snapshot: `Tests/QA/preset_qa_v2_stage5.csv`. Log `build/v2_qa/preset_qa_stage5.log`.
+  - TP ≤ −1.0 dBTP worst (#19) · chord RMS −16.3…−12.6 · sub150 corr ≥ 0.74 · mono drop ≤ 1.0 dB · DC ≤ −103 dBFS · macro Δ ≥ 2.0 dB · CC1 ≥ 11.1 · pressure ≥ 3.1 · MPE ≥ 4.9
+  - Audition: 20 × 4 s 48 kHz/24-bit WAV → `build/v2_qa/audition/01_…20_*.wav`. The phrase follows the tags: melody (solo/lead/hook), stabs, evolving (MACRO 1 bloom), drone, otherwise progression.
+
+| Category | Preset — TP dBTP / chord RMS dBFS / weakest macro Δ dB |
+|---|---|
+| Monumental & Cathedral Choirs | Cathedral of Dunes −1.1/−15.1/2.5 · Basilica Eternal −1.6/−13.2/2.6 · Siege of Giants −3.2/−14.3/3.0 · Seraphim Ascendant −1.2/−13.2/2.7 |
+| Operatic & Expressive Soloists | Prima Donna −1.3/−16.2/2.6 · Basso Lamentoso −2.7/−14.6/3.5 · Tenore Eroico −2.8/−14.7/3.1 · Moonlit Mezzo −1.3/−14.9/2.6 |
+| Festival, DJ & Club Anthems | Euphoria Mainstage −1.1/−16.3/3.5 · Formant Ignition −6.1/−14.1/3.1 · Afterhours Hymn −2.0/−12.9/3.9 · Siren Tension −1.8/−13.5/3.6 |
+| Dark Cinematic & Witch House Rituals | Obsidian Rite −3.7/−13.3/3.6 · Haunted Mixtape −2.7/−13.3/3.2 · Mourning Wraiths −1.5/−13.5/2.5 · Leviathan Vigil −1.7/−12.6/2.9 |
+| Ethereal Hybrids & Evolving Textures | Prism Bloom −1.3/−15.4/2.6 · Breathing Nebula −1.4/−13.2/2.1 · Bowed Spirit Choir −1.0/−15.9/2.0 · Aeolian Drift −1.2/−14.5/4.5 |
+
+- **Regression lock:** `MonolithQA --phase v2.4` **36/36 PASS** (v2reg 0.0005 dB unchanged · 8snap 0.88 dB = Stage 4 · 8cpu 8.80 % RT). Adapter: gate8/v2reg count V1 presets via `getPresetManager()` because programs now number 50; thresholds untouched. `MonolithDspAudit` 6/6. AU/VST3/Standalone + all tools Release `-O3`: 0 project warnings (9 JUCE-internal Metal deprecations, macOS 27 SDK). `git diff Source/DSP` empty.
+
+### Warnings
+- Tuning finding: vowel **orbit** combined with closed (low-Y) vowels produces real infrasonic/DC drift in the frozen engine (up to −72 dBFS). Presets avoid it with shallow orbits and vowel centres pY ≥ 0.42. User patches can still reach it.
+- 10/20 presets use the texture layer, so they inherit the open **ASSET_PROVENANCE licensing blocker** (table in that file).
+- QA is locked at 48 kHz. Stage 6 should spot-check 44.1/96 kHz true peak, and AU/VST3 hosts with 50 programs (auval/pluginval).
+
+Stage 5: PASS · Next: Stage 6

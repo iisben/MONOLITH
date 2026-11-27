@@ -29,3 +29,20 @@ with original or properly licensed recordings. Treat every row as **NOT CLEARED*
 - [ ] Or replace any uncleared asset: drop a new file into the pipeline table, re-run `python3 Tools/v2_process_assets.py`, rebuild.
 - [ ] Confirm no recognisable performer likeness / lyric content (all selected assets are wordless breath, air, ooh or bowed tones).
 - [ ] Record licence reference numbers / invoices here before NAMM 2027 sale.
+
+<!-- BEGIN v2_flagship_presets (generated) -->
+## Flagship preset dependencies (Stage 5)
+
+10 of 20 flagship presets use the texture layer (`v2_tex_mix` > 0) and inherit the clearance status of their asset. If an asset is replaced, re-audition these presets; if one is removed without replacement, re-run `python3 Tools/v2_flagship_presets.py` after retuning them.
+
+| Asset | Flagship presets using it | Clearance |
+|---|---|---|
+| Breath Exhale | 08 Moonlit Mezzo | NOT CLEARED |
+| Breath Inhale | — (unused) | NOT CLEARED |
+| Whisper Wind | 13 Obsidian Rite, 20 Aeolian Drift | NOT CLEARED |
+| Cathedral Air | 01 Cathedral of Dunes | NOT CLEARED |
+| Breathing Choir Drone | 16 Leviathan Vigil, 18 Breathing Nebula | NOT CLEARED |
+| Guardian Halo | 04 Seraphim Ascendant, 17 Prism Bloom | NOT CLEARED |
+| Gospel Ooh Swell | 02 Basilica Eternal | NOT CLEARED |
+| Bowed Ethereal | 19 Bowed Spirit Choir | NOT CLEARED |
+<!-- END v2_flagship_presets -->

@@ -26,6 +26,7 @@ namespace
         e.setAttribute ("tags", r.tags.joinIntoString (","));
         e.setAttribute ("description", r.description);
         e.setAttribute ("factoryIndex", r.factoryIndex);
+        e.setAttribute ("flagshipIndex", r.flagshipIndex);
     }
 
     void readMeta (const juce::XmlElement& e, PresetRecord& r)
@@ -38,6 +39,7 @@ namespace
         r.tags.removeEmptyStrings();
         r.description = e.getStringAttribute ("description", r.description);
         r.factoryIndex = e.getIntAttribute ("factoryIndex", r.factoryIndex);
+        r.flagshipIndex = e.getIntAttribute ("flagshipIndex", -1);
     }
 }
 
@@ -130,23 +132,31 @@ juce::AudioProcessorEditor* MonolithAudioProcessor::createEditor()
    #endif
 }
 
+// Host programs: 0-29 are the V1 factory presets (indices unchanged for existing sessions / program changes),
+// 30-49 the MONOLITH II flagship presets.
 int MonolithAudioProcessor::getNumPrograms()
 {
-    return presetManager.getNumPresets();
+    return presetManager.getNumPresets() + presetLibrary.getNumFlagship();
 }
 
 int MonolithAudioProcessor::getCurrentProgram()
 {
-    return presetManager.getCurrentPresetIndex();
+    return currentMeta.isFlagship() ? presetManager.getNumPresets() + currentMeta.flagshipIndex
+                                    : presetManager.getCurrentPresetIndex();
 }
 
 void MonolithAudioProcessor::setCurrentProgram (int index)
 {
-    applyFactoryPreset (index);
+    if (const auto* fs = presetLibrary.getFlagship (index - presetManager.getNumPresets()))
+        loadPresetRecord (*fs);
+    else
+        applyFactoryPreset (index);
 }
 
 const juce::String MonolithAudioProcessor::getProgramName (int index)
 {
+    if (const auto* fs = presetLibrary.getFlagship (index - presetManager.getNumPresets()))
+        return fs->name;
     return presetManager.getPreset (index).name;
 }
 

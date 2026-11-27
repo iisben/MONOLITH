@@ -18,6 +18,40 @@ namespace
         e.setTextToShowWhenEmpty (placeholder, palette::ash);
         e.setJustification (multi ? juce::Justification::topLeft : juce::Justification::centredLeft);
     }
+
+    /** One line when the label fits; otherwise two lines in wrapFont, broken after "&" / "," nearest the middle (or the
+        middle space). Long MONOLITH II category names stay complete instead of ending in an ellipsis. */
+    void drawFittingLabel (juce::Graphics& g, const juce::String& text, juce::Rectangle<float> area,
+                           const juce::Font& font, const juce::Font& wrapFont)
+    {
+        if (juce::GlyphArrangement::getStringWidth (font, text) <= area.getWidth())
+        {
+            g.setFont (font);
+            g.drawText (text, area, juce::Justification::centredLeft, true);
+            return;
+        }
+        int best = -1;
+        float bestDist = 1.0e9f;
+        for (int pass = 0; pass < 2 && best < 0; ++pass)
+            for (int i = 1; i < text.length() - 1; ++i)
+            {
+                const bool brk = pass == 0 ? ((text[i] == '&' || text[i] == ',') && text[i + 1] == ' ')
+                                           : (text[i] == ' ');
+                const float dist = std::abs (static_cast<float> (i) - static_cast<float> (text.length()) * 0.5f);
+                if (brk && dist < bestDist) { best = pass == 0 ? i + 1 : i; bestDist = dist; }
+            }
+        if (best < 0)
+        {
+            g.setFont (font);
+            g.drawText (text, area, juce::Justification::centredLeft, true);
+            return;
+        }
+        const float lineH = wrapFont.getHeight() + 1.0f;
+        auto lines = area.withSizeKeepingCentre (area.getWidth(), 2.0f * lineH);
+        g.setFont (wrapFont);
+        g.drawText (text.substring (0, best).trimEnd(), lines.removeFromTop (lineH), juce::Justification::centredLeft, true);
+        g.drawText (text.substring (best).trimStart(), lines, juce::Justification::centredLeft, true);
+    }
 }
 
 // ============================================================================
@@ -55,7 +89,7 @@ PresetBrowserOverlay::PresetBrowserOverlay (MonolithAudioProcessor& p) : proc (p
     loadBtn.onClick = [this] { loadRow (resultList.getSelectedRow()); };
     deleteBtn.getProperties().set (MonolithLookAndFeel::accentPropertyId, "crimson");
     deleteBtn.onClick = [this] {
-        if (const auto* r = selectedRecord(); r != nullptr && ! r->isFactory())
+        if (const auto* r = selectedRecord(); r != nullptr && ! r->isBuiltIn())
         {
             const int idx = proc.getPresetLibrary().indexOfKey (r->key());
             if (idx >= 0 && proc.getPresetLibrary().deleteUserPreset (idx))
@@ -167,8 +201,8 @@ void PresetBrowserOverlay::paintListBoxItem (int row, juce::Graphics& g, int wid
     g.setFont (uiFont (13.0f, isCurrent || selected ? Weight::demibold : Weight::medium));
     g.drawText (r.name, juce::Rectangle<float> (36.0f, 0.0f, 236.0f, b.getHeight()), juce::Justification::centredLeft, true);
     g.setColour (palette::stone);
-    g.setFont (uiFont (12.0f, Weight::regular));
-    g.drawText (r.category, juce::Rectangle<float> (280.0f, 0.0f, 168.0f, b.getHeight()), juce::Justification::centredLeft, true);
+    drawFittingLabel (g, r.category, juce::Rectangle<float> (280.0f, 0.0f, 168.0f, b.getHeight()),
+                      uiFont (12.0f, Weight::regular), uiFont (11.0f, Weight::regular));
     g.setColour (palette::ash.brighter (0.2f));
     g.setFont (capsFont (9.0f, Weight::medium));
     g.drawText (r.tags.joinIntoString (juce::String::fromUTF8 ("  \xc2\xb7  ")).toUpperCase(),
@@ -202,7 +236,7 @@ void PresetBrowserOverlay::selectedRowsChanged (int)
 {
     const auto* r = selectedRecord();
     loadBtn.setEnabled (r != nullptr);
-    deleteBtn.setVisible (r != nullptr && ! r->isFactory());
+    deleteBtn.setVisible (r != nullptr && ! r->isBuiltIn());
     repaint (864, 72, 288, 560);
 }
 
@@ -219,8 +253,9 @@ void PresetBrowserOverlay::CategoryModel::paintListBoxItem (int row, juce::Graph
         g.fillRect (0.0f, 8.0f, 2.0f, static_cast<float> (height) - 16.0f);
     }
     g.setColour (selected ? palette::ivory : palette::stone);
-    g.setFont (uiFont (13.0f, selected ? Weight::demibold : Weight::medium));
-    g.drawText (owner.categories[row], b.withTrimmedLeft (14.0f).withTrimmedRight (36.0f), juce::Justification::centredLeft, true);
+    drawFittingLabel (g, owner.categories[row], b.withTrimmedLeft (14.0f).withTrimmedRight (36.0f),
+                      uiFont (13.0f, selected ? Weight::demibold : Weight::medium),
+                      uiFont (12.5f, selected ? Weight::demibold : Weight::medium));
 
     // Count badge
     const auto& cat = owner.categories[row];
@@ -306,8 +341,17 @@ void PresetBrowserOverlay::paint (juce::Graphics& g)
     g.drawFittedText (r->name, d.removeFromTop (oneLine ? 30.0f : 54.0f).toNearestInt(), juce::Justification::topLeft, 2, 1.0f);
     g.setColour (palette::amber);
     g.setFont (capsFont (9.5f));
-    g.drawText (r->category.toUpperCase() + (r->isFactory() ? juce::String::fromUTF8 ("  \xc2\xb7  FACTORY") : juce::String::fromUTF8 ("  \xc2\xb7  USER")),
-                d.removeFromTop (16.0f), juce::Justification::centredLeft, true);
+    {
+        const juce::String source (r->isFlagship() ? "MONOLITH II" : r->isFactory() ? "FACTORY" : "USER");
+        const auto caption = r->category.toUpperCase() + juce::String::fromUTF8 ("  \xc2\xb7  ") + source;
+        if (juce::GlyphArrangement::getStringWidth (capsFont (9.5f), caption) <= d.getWidth())
+            g.drawText (caption, d.removeFromTop (16.0f), juce::Justification::centredLeft, true);
+        else
+        {
+            g.drawText (r->category.toUpperCase(), d.removeFromTop (16.0f), juce::Justification::centredLeft, true);
+            g.drawText (source, d.removeFromTop (16.0f), juce::Justification::centredLeft, true);
+        }
+    }
     if (r->author.isNotEmpty())
     {
         g.setColour (palette::stone);
@@ -374,15 +418,15 @@ juce::Rectangle<int> SavePresetOverlay::panelBounds() const
 void SavePresetOverlay::open()
 {
     const auto& meta = proc.getCurrentPresetMeta();
-    nameEd.setText (meta.isFactory() || meta.name == "Init" ? meta.name + " Variation" : meta.name, false);
-    authorEd.setText (meta.isFactory() ? juce::String() : meta.author, false);
+    nameEd.setText (meta.isBuiltIn() || meta.name == "Init" ? meta.name + " Variation" : meta.name, false);
+    authorEd.setText (meta.isBuiltIn() ? juce::String() : meta.author, false);
     tagsEd.setText (meta.tags.joinIntoString (", "), false);
     descEd.setText (meta.description, false);
     categoryBox.clear (juce::dontSendNotification);
     const auto cats = proc.getPresetLibrary().getCategories();
     for (int i = 0; i < cats.size(); ++i)
         categoryBox.addItem (cats[i], i + 1);
-    categoryBox.setText (meta.isFactory() || meta.category.isEmpty() || meta.category == "Init" ? juce::String ("User") : meta.category,
+    categoryBox.setText (meta.isBuiltIn() || meta.category.isEmpty() || meta.category == "Init" ? juce::String ("User") : meta.category,
                          juce::dontSendNotification);
     status = {};
     setVisible (true);

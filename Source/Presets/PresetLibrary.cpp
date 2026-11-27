@@ -1,4 +1,5 @@
 #include "PresetLibrary.h"
+#include "V2Presets.h" // juce_add_binary_data(MonolithV2Presets): assets/v2_presets/*.mnlpreset
 #include <algorithm>
 
 namespace monolith
@@ -115,13 +116,57 @@ PresetRecord fromFactory (const PresetManager& pm, int index)
     return r;
 }
 
+namespace
+{
+    /** Parses (fileName, xmlText) pairs, drops anything that is not a valid V2 record, sorts by file name. */
+    std::vector<PresetRecord> parseFlagship (std::vector<std::pair<juce::String, juce::String>> sources)
+    {
+        std::sort (sources.begin(), sources.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+        std::vector<PresetRecord> out;
+        for (const auto& [fileName, text] : sources)
+        {
+            auto xml = juce::parseXML (text);
+            if (xml == nullptr)
+                continue;
+            auto rec = fromXml (*xml);
+            if (! rec || rec->sourceVersion != kVersion)
+                continue;
+            rec->flagshipIndex = static_cast<int> (out.size());
+            rec->factoryIndex = -1;
+            out.push_back (std::move (*rec));
+        }
+        return out;
+    }
+}
+
+std::vector<PresetRecord> loadFlagshipPresets()
+{
+    std::vector<std::pair<juce::String, juce::String>> sources;
+    for (int i = 0; i < V2Presets::namedResourceListSize; ++i)
+    {
+        int size = 0;
+        if (const char* data = V2Presets::getNamedResource (V2Presets::namedResourceList[i], size); data != nullptr && size > 0)
+            sources.emplace_back (V2Presets::originalFilenames[i], juce::String::fromUTF8 (data, size));
+    }
+    return parseFlagship (std::move (sources));
+}
+
+std::vector<PresetRecord> loadFlagshipPresets (const juce::File& directory)
+{
+    std::vector<std::pair<juce::String, juce::String>> sources;
+    for (const auto& f : directory.findChildFiles (juce::File::findFiles, false, juce::String ("*") + kFileExtension))
+        sources.emplace_back (f.getFileName(), f.loadFileAsString());
+    return parseFlagship (std::move (sources));
+}
+
 } // namespace preset_schema
 
 // ============================================================================
 
-PresetLibrary::PresetLibrary (const PresetManager& factory) : factoryPresets (factory)
+PresetLibrary::PresetLibrary (const PresetManager& factory)
+    : factoryPresets (factory), flagship (preset_schema::loadFlagshipPresets())
 {
-    rescan(); // factory presets only until a user directory is set
+    rescan(); // built-in presets only until a user directory is set
 }
 
 juce::File PresetLibrary::defaultUserDirectory()
@@ -140,6 +185,7 @@ void PresetLibrary::setUserDirectory (const juce::File& dir)
 void PresetLibrary::rescan()
 {
     records.clear();
+    records.insert (records.end(), flagship.begin(), flagship.end()); // MONOLITH II flagship first, then V1, then user
     for (int i = 0; i < factoryPresets.getNumPresets(); ++i)
         records.push_back (preset_schema::fromFactory (factoryPresets, i));
 
@@ -231,6 +277,7 @@ juce::Result PresetLibrary::saveUserPreset (const PresetRecord& record)
 
     PresetRecord copy = record;
     copy.factoryIndex = -1;
+    copy.flagshipIndex = -1;
     auto xml = preset_schema::toXml (copy);
     if (! xml->writeTo (file))
         return juce::Result::fail ("Cannot write " + file.getFullPathName());
@@ -243,7 +290,7 @@ juce::Result PresetLibrary::saveUserPreset (const PresetRecord& record)
 
 bool PresetLibrary::deleteUserPreset (int index)
 {
-    if (index < 0 || index >= size() || records[static_cast<size_t> (index)].isFactory())
+    if (index < 0 || index >= size() || records[static_cast<size_t> (index)].isBuiltIn())
         return false;
     const auto f = records[static_cast<size_t> (index)].file;
     favourites.erase (records[static_cast<size_t> (index)].key());

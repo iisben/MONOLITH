@@ -1074,7 +1074,8 @@ void gate8 (bool writeBaseline)
 {
     const double sr = 48000.0;
     std::vector<Snapshot> snaps;
-    const int numPresets = QaSynth().proc->getNumPrograms();
+    // ADAPTER (V2 Stage 5): host programs now include 20 flagship presets; the locked snapshot covers the V1 factory list.
+    const int numPresets = QaSynth().proc->getPresetManager().getNumPresets();
     for (int i = 0; i < numPresets; ++i)
     {
         QaSynth q;
@@ -1218,7 +1219,7 @@ void gateV2()
     // ── v2reg: V1 presets vs Stage-1 locked baseline ─────────────────────────
     {
         const auto base = readRmsCsv (v2BaselineCsv());
-        const int numPresets = QaSynth().proc->getNumPrograms();
+        const int numPresets = QaSynth().proc->getPresetManager().getNumPresets(); // ADAPTER (V2 Stage 5): V1 factory list only
         double worst = 0.0;
         int worstIdx = -1, missing = 0;
         for (int i = 0; i < numPresets; ++i)

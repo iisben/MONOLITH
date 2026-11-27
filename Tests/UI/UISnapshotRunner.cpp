@@ -222,6 +222,25 @@ int main (int argc, char** argv)
     }
     rig.editor->setZoom (1.0f);
 
+    // (V2 Stage 5) Flagship presets: main view with preset macro names / routes, and the browser on the longest
+    // category names ("Dark Cinematic & Witch House Rituals", "Ethereal Hybrids & Evolving Textures").
+    {
+        const int v1 = rig.proc->getPresetManager().getNumPresets();
+        rig.pending.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+        rig.proc->setCurrentProgram (v1 + 16); // 17 Prism Bloom: texture layer, XY preset axes, custom macros
+        rig.editor->closeOverlays();
+        for (int n : { 48, 55, 60, 62 })
+            rig.pending.addEvent (juce::MidiMessage::noteOn (1, n, static_cast<juce::uint8> (104)), 0);
+        rig.play (90);
+        ok = snapshot (rig, outDir, "08_flagship_main") && ok;
+
+        rig.proc->setCurrentProgram (v1 + 13); // 14 Haunted Mixtape
+        rig.editor->showPresetBrowser();
+        rig.play (2);
+        ok = snapshot (rig, outDir, "09_flagship_browser") && ok;
+        rig.editor->closeOverlays();
+    }
+
     rig.editorHolder.reset();
     rig.proc->releaseResources();
     presetDir.deleteRecursively();

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MonolithPreset version="2" name="Moonlit Mezzo" author="Monolith Audio" category="Operatic &amp; Expressive Soloists" tags="solo,alto,mezzo,intimate,breathy,legato,expressive,mpe,flagship,monolith ii" description="Close-mic mezzo with real breath texture: intimate at a whisper, warm and present at full voice." favorite="0">
+  <MacroLabels m1="AIR" m2="WARMTH" m3="TREMBLE" m4="DISTANCE"/>
+  <Params>
+    <Param id="phoneme_x" value="0.44"/>
+    <Param id="phoneme_y" value="0.7"/>
+    <Param id="orbit_enable" value="0"/>
+    <Param id="orbit_rate" value="0.18"/>
+    <Param id="orbit_depth" value="0.35"/>
+    <Param id="orbit_sync" value="0"/>
+    <Param id="register_mode" value="2"/>
+    <Param id="ensemble_size" value="1"/>
+    <Param id="ensemble_spread" value="0.14"/>
+    <Param id="vibrato_depth" value="0.4"/>
+    <Param id="attack_time" value="0.22"/>
+    <Param id="release_time" value="1.4"/>
+    <Param id="onset_mode" value="0"/>
+    <Param id="onset_amount" value="0.4"/>
+    <Param id="glottal_tension" value="0.46"/>
+    <Param id="breath_amount" value="0.32"/>
+    <Param id="throat_shift" value="-0.5"/>
+    <Param id="formant_focus" value="0.7"/>
+    <Param id="sub_abyss" value="0.04"/>
+    <Param id="spectral_crown" value="0.18"/>
+    <Param id="master_gain" value="1.5"/>
+    <Param id="drive_amount" value="0.03"/>
+    <Param id="tape_instability" value="0.05"/>
+    <Param id="oxide_damping" value="0.05"/>
+    <Param id="screw_pitch" value="0"/>
+    <Param id="screw_depth" value="0"/>
+    <Param id="oversample_hq" value="0"/>
+    <Param id="space_type" value="0"/>
+    <Param id="space_mix" value="0.4"/>
+    <Param id="space_decay" value="0.74"/>
+    <Param id="space_damp" value="0.38"/>
+    <Param id="space_shimmer" value="0.16"/>
+    <Param id="space_freeze" value="0"/>
+    <Param id="cc64_freeze" value="0"/>
+    <Param id="macro_colossus" value="0"/>
+    <Param id="macro_specter" value="0"/>
+    <Param id="macro_rot" value="0"/>
+    <Param id="macro_abyss" value="0"/>
+    <Param id="legato_enable" value="1"/>
+    <Param id="glide_time" value="0.14"/>
+    <Param id="expression_level" value="0.76"/>
+    <Param id="v2_tex_mix" value="0.1"/>
+    <Param id="v2_tex_asset" value="0"/>
+    <Param id="v2_tex_tune" value="0"/>
+    <Param id="v2_tex_keytrack" value="0.25"/>
+    <Param id="v2_tex_attack" value="0.02"/>
+    <Param id="v2_tex_release" value="0.8"/>
+    <Param id="v2_tex_vel_sens" value="0.7"/>
+    <Param id="v2_tex_hp" value="400"/>
+    <Param id="v2_tex_lp" value="10000"/>
+    <Param id="v2_tex_width" value="0.6"/>
+    <Param id="v2_xy_x" value="0.5"/>
+    <Param id="v2_xy_y" value="0.5"/>
+    <Param id="v2_xy_mode" value="0"/>
+    <Param id="v2_expr_vibrato" value="0.7"/>
+    <Param id="v2_expr_effort" value="0.6"/>
+    <Param id="v2_expr_openness" value="0.6"/>
+    <Param id="v2_expr_swell" value="0.6"/>
+  </Params>
+  <V2Control>
+    <Source id="macro1" label="AIR" legacy="0">
+      <Route dest="breath_amount" depth="0.45" bipolar="0"/>
+      <Route dest="v2_tex_mix" depth="0.35" bipolar="0"/>
+      <Route dest="onset_amount" depth="0.3" bipolar="0"/>
+      <Route dest="master_gain" depth="-0.02" bipolar="0"/>
+    </Source>
+    <Source id="macro2" label="WARMTH" legacy="0">
+      <Route dest="throat_shift" depth="-0.1" bipolar="0"/>
+      <Route dest="spectral_crown" depth="-0.18" bipolar="0"/>
+      <Route dest="formant_focus" depth="-0.1" bipolar="0"/>
+      <Route dest="sub_abyss" depth="0.12" bipolar="0"/>
+    </Source>
+    <Source id="macro3" label="TREMBLE" legacy="0">
+      <Route dest="vibrato_depth" depth="0.35" bipolar="0"/>
+      <Route dest="tape_instability" depth="0.1" bipolar="0"/>
+    </Source>
+    <Source id="macro4" label="DISTANCE" legacy="0">
+      <Route dest="space_mix" depth="0.28" bipolar="0"/>
+      <Route dest="space_decay" depth="0.15" bipolar="0"/>
+      <Route dest="spectral_crown" depth="-0.1" bipolar="0"/>
+    </Source>
+    <Source id="xy_x"/>
+    <Source id="xy_y"/>
+    <Source id="mod_wheel">
+      <Route dest="vibrato_depth" depth="0.22" bipolar="0"/>
+      <Route dest="glottal_tension" depth="0.15" bipolar="0"/>
+      <Route dest="breath_amount" depth="-0.1" bipolar="0"/>
+    </Source>
+    <Source id="pressure">
+      <Route dest="vibrato_depth" depth="0.2" bipolar="0"/>
+      <Route dest="glottal_tension" depth="0.15" bipolar="0"/>
+      <Route dest="v2_tex_mix" depth="0.1" bipolar="0"/>
+    </Source>
+    <Source id="breath">
+      <Route dest="vibrato_depth" depth="0.2" bipolar="0"/>
+      <Route dest="glottal_tension" depth="0.15" bipolar="0"/>
+      <Route dest="v2_tex_mix" depth="0.1" bipolar="0"/>
+    </Source>
+  </V2Control>
+</MonolithPreset>

@@ -55,7 +55,12 @@ void PresetDisplay::paint (juce::Graphics& g)
     g.drawText (name, text.withTrimmedBottom (b.getHeight() * 0.42f).withTrimmedTop (3.0f), juce::Justification::bottomLeft, true);
     g.setColour (palette::stone);
     g.setFont (capsFont (9.0f));
-    g.drawText (sub, text.withTrimmedTop (b.getHeight() * 0.58f).withTrimmedBottom (4.0f), juce::Justification::topLeft, true);
+    const auto subArea = text.withTrimmedTop (b.getHeight() * 0.58f).withTrimmedBottom (4.0f);
+    auto subText = sub; // "CATEGORY  ·  AUTHOR": drop the author rather than cut a long category with an ellipsis
+    const auto sep = juce::String::fromUTF8 ("  \xc2\xb7  ");
+    if (juce::GlyphArrangement::getStringWidth (capsFont (9.0f), subText) > subArea.getWidth() && subText.contains (sep))
+        subText = subText.upToLastOccurrenceOf (sep, false, false);
+    g.drawText (subText, subArea, juce::Justification::topLeft, true);
     drawGlyph (g, GlyphButton::Glyph::browse, b.withTrimmedLeft (b.getWidth() - 32.0f), hot ? palette::amber : palette::stone);
 }
 

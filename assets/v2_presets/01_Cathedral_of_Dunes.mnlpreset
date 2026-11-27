@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MonolithPreset version="2" name="Cathedral of Dunes" author="Monolith Audio" category="Monumental &amp; Cathedral Choirs" tags="choir,satb,epic,cinematic,widescreen,cathedral,air,pad,flagship,monolith ii" description="Dune-scale SATB wall: 22 singers over a desert-deep sub, open cathedral air and slow orbiting vowels." favorite="0">
+  <MacroLabels m1="SIZE" m2="AIR" m3="DARKNESS" m4="DEPTH"/>
+  <Params>
+    <Param id="phoneme_x" value="0.5"/>
+    <Param id="phoneme_y" value="0.84"/>
+    <Param id="orbit_enable" value="1"/>
+    <Param id="orbit_rate" value="0.06"/>
+    <Param id="orbit_depth" value="0.16"/>
+    <Param id="orbit_sync" value="0"/>
+    <Param id="register_mode" value="4"/>
+    <Param id="ensemble_size" value="22"/>
+    <Param id="ensemble_spread" value="0.62"/>
+    <Param id="vibrato_depth" value="0.34"/>
+    <Param id="attack_time" value="0.6"/>
+    <Param id="release_time" value="2.6"/>
+    <Param id="onset_mode" value="0"/>
+    <Param id="onset_amount" value="0.24"/>
+    <Param id="glottal_tension" value="0.7"/>
+    <Param id="breath_amount" value="0.18"/>
+    <Param id="throat_shift" value="-1"/>
+    <Param id="formant_focus" value="0.66"/>
+    <Param id="sub_abyss" value="0.6"/>
+    <Param id="spectral_crown" value="0.42"/>
+    <Param id="master_gain" value="-4.5"/>
+    <Param id="drive_amount" value="0.2"/>
+    <Param id="tape_instability" value="0.06"/>
+    <Param id="oxide_damping" value="0.1"/>
+    <Param id="screw_pitch" value="0"/>
+    <Param id="screw_depth" value="0"/>
+    <Param id="oversample_hq" value="0"/>
+    <Param id="space_type" value="0"/>
+    <Param id="space_mix" value="0.4"/>
+    <Param id="space_decay" value="0.78"/>
+    <Param id="space_damp" value="0.32"/>
+    <Param id="space_shimmer" value="0.28"/>
+    <Param id="space_freeze" value="0"/>
+    <Param id="cc64_freeze" value="0"/>
+    <Param id="macro_colossus" value="0"/>
+    <Param id="macro_specter" value="0"/>
+    <Param id="macro_rot" value="0"/>
+    <Param id="macro_abyss" value="0"/>
+    <Param id="legato_enable" value="0"/>
+    <Param id="glide_time" value="0.14"/>
+    <Param id="expression_level" value="0.8"/>
+    <Param id="v2_tex_mix" value="0.1"/>
+    <Param id="v2_tex_asset" value="3"/>
+    <Param id="v2_tex_tune" value="0"/>
+    <Param id="v2_tex_keytrack" value="0.25"/>
+    <Param id="v2_tex_attack" value="0.8"/>
+    <Param id="v2_tex_release" value="3"/>
+    <Param id="v2_tex_vel_sens" value="0.3"/>
+    <Param id="v2_tex_hp" value="350"/>
+    <Param id="v2_tex_lp" value="9000"/>
+    <Param id="v2_tex_width" value="1"/>
+    <Param id="v2_xy_x" value="0.5"/>
+    <Param id="v2_xy_y" value="0.5"/>
+    <Param id="v2_xy_mode" value="0"/>
+    <Param id="v2_expr_vibrato" value="0.45"/>
+    <Param id="v2_expr_effort" value="0.55"/>
+    <Param id="v2_expr_openness" value="0.5"/>
+    <Param id="v2_expr_swell" value="0.5"/>
+  </Params>
+  <V2Control>
+    <Source id="macro1" label="SIZE" legacy="1">
+      <Route dest="v2_tex_mix" depth="0.08" bipolar="0"/>
+    </Source>
+    <Source id="macro2" label="AIR" legacy="0">
+      <Route dest="v2_tex_mix" depth="0.35" bipolar="0"/>
+      <Route dest="breath_amount" depth="0.3" bipolar="0"/>
+      <Route dest="spectral_crown" depth="0.3" bipolar="0"/>
+      <Route dest="space_shimmer" depth="0.3" bipolar="0"/>
+      <Route dest="master_gain" depth="-0.04" bipolar="0"/>
+    </Source>
+    <Source id="macro3" label="DARKNESS" legacy="0">
+      <Route dest="throat_shift" depth="-0.15" bipolar="0"/>
+      <Route dest="spectral_crown" depth="-0.35" bipolar="0"/>
+      <Route dest="formant_focus" depth="-0.15" bipolar="0"/>
+      <Route dest="space_damp" depth="0.35" bipolar="0"/>
+      <Route dest="v2_tex_lp" depth="-0.35" bipolar="0"/>
+      <Route dest="phoneme_y" depth="-0.2" bipolar="0"/>
+    </Source>
+    <Source id="macro4" label="DEPTH" legacy="1">
+      <Route dest="master_gain" depth="-0.02" bipolar="0"/>
+    </Source>
+    <Source id="xy_x"/>
+    <Source id="xy_y"/>
+    <Source id="mod_wheel">
+      <Route dest="vibrato_depth" depth="0.22" bipolar="0"/>
+      <Route dest="spectral_crown" depth="0.12" bipolar="0"/>
+      <Route dest="ensemble_size" depth="0.15" bipolar="0"/>
+    </Source>
+    <Source id="pressure">
+      <Route dest="glottal_tension" depth="0.15" bipolar="0"/>
+      <Route dest="vibrato_depth" depth="0.18" bipolar="0"/>
+      <Route dest="v2_tex_mix" depth="0.12" bipolar="0"/>
+    </Source>
+    <Source id="breath">
+      <Route dest="glottal_tension" depth="0.15" bipolar="0"/>
+      <Route dest="vibrato_depth" depth="0.18" bipolar="0"/>
+      <Route dest="v2_tex_mix" depth="0.12" bipolar="0"/>
+    </Source>
+  </V2Control>
+</MonolithPreset>
