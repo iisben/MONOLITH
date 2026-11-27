@@ -191,3 +191,8 @@ Defined by the user in chat ("Replace samples"); it is not in `MONOLITH_V2_SPEC.
 - The Splice-derived FLACs remain in **git history** (from Stage 2) and in every build made before this commit, including the installed one. Do not publish that history or ship those builds.
 
 Stage 7: PASS
+
+## Post-merge reinstall (2026-11-27) — merge 8fdb1dc (bool fix + Stage 7)
+- Release: DspAudit 6/6 · MonolithQA 36/36 · PresetQA 20/20 @ 44.1/48/96 k · ctest 2/2 · UISnapshot OK · 0 warnings · `Source/DSP` diff 0. Debug DspAudit: CPU gate only (as Stage 6).
+- Installed AU / VST3 / app embed 8/8 new textures, 0/8 Splice. auval strict PASS · pluginval s5 AU PASS · s10 VST3 PASS (5 seeds).
+- ⚠ Correction: pluginval s10 **AU is flaky**, not 31/31. Seeds 11–40: Stage 6 AU 5/30 fail, merged AU 9/30 fail. Failing param is random per run (state-restore tests); "Drive 4x OS … after restoring the same state" shows up only on the merged build (5×). Cause not found yet. VST3 unaffected.
