@@ -835,6 +835,7 @@ bool testClickPopAndCpuAudit()
 
 int main()
 {
+    juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager for the APVTS timers (Debug builds asserted without it)
     std::cout << "=== MONOLITH DSP & PRESET AUDIT SUITE ===\n";
 
     if (! testPresetsAndParameters())

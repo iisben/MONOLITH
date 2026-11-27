@@ -39,7 +39,7 @@ namespace grid
 
 enum class Weight { regular = 0, medium, demibold, bold };
 
-/** Geometric typography (Avenir Next; JUCE falls back to the platform sans where it is absent). */
+/** Geometric typography: Avenir Next on macOS, Segoe UI on Windows, the fontconfig default sans on Linux. */
 [[nodiscard]] juce::Font uiFont (float heightPx, Weight w = Weight::medium, float tracking = 0.0f);
 /** Fixed-width numerals for meters and live readouts. */
 [[nodiscard]] juce::Font monoFont (float heightPx);

@@ -171,8 +171,16 @@ PresetLibrary::PresetLibrary (const PresetManager& factory)
 
 juce::File PresetLibrary::defaultUserDirectory()
 {
+   #if JUCE_MAC
     return juce::File::getSpecialLocation (juce::File::userHomeDirectory)
         .getChildFile ("Library/Audio/Presets/Monolith Audio/MONOLITH II");
+   #elif JUCE_WINDOWS
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+        .getChildFile ("Monolith Audio/MONOLITH II/Presets");
+   #else
+    return juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+        .getChildFile (".local/share/Monolith Audio/MONOLITH II/Presets");
+   #endif
 }
 
 void PresetLibrary::setUserDirectory (const juce::File& dir)

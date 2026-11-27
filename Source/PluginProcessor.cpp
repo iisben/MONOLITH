@@ -78,6 +78,7 @@ void MonolithAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     engine.prepare (sampleRate, std::max (64, samplesPerBlock), apvts,
                     [this] (const char* id) { return resolveShadow (id); });
     textureLayer.prepare (sampleRate, std::max (64, samplesPerBlock));
+    dcBlocker.prepare (sampleRate);
     setLatencySamples (engine.getLatencySamples()); // texture layer adds 0 (aligned to engine PDC)
 }
 
@@ -85,6 +86,7 @@ void MonolithAudioProcessor::releaseResources()
 {
     engine.reset();
     textureLayer.reset();
+    dcBlocker.reset();
     telemetry.reset();
 }
 
@@ -116,6 +118,10 @@ void MonolithAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                          midiMessages,
                          lastKnownBpm.load (std::memory_order_relaxed),
                          telemetry);
+
+    // Engine output DC / infrasonic blocker (orbit over closed vowels drifts in the frozen core). Applied before the
+    // texture is added so a 0 % texture mix stays bit-exact after a fade (the 5 Hz filter has a long memory).
+    dcBlocker.process (buffer);
 
     // V2 post-core bus: additive texture layer (returns untouched while bypassed at 0 % mix)
     textureLayer.process (buffer, midiMessages, engine.getLatencySamples());

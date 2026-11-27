@@ -5,6 +5,7 @@
 #include "Presets/PresetManager.h"
 #include "State/ParameterIDs.h"
 #include "State/TelemetrySnapshot.h"
+#include "V2/DcBlocker.h"
 #include "V2/AudioTap.h"
 #include "V2/ControlPlane.h"
 #include "V2/MidiLearn.h"
@@ -112,6 +113,7 @@ private:
     dsp::SwarmEngine engine;
     v2::TextureLayer textureLayer; // V2 Layer A: additive, post-core, bypassed at 0 % mix
     TelemetrySnapshot telemetry;
+    v2::DcBlocker dcBlocker;       // 5 Hz high-pass on the engine output: removes the orbit / closed-vowel drift
     v2::AudioTap outputTap;        // V2 Stage 4: read-only observer of the final bus (UI analysis)
     float editorScale = 1.0f;
     PresetManager presetManager;

@@ -9,10 +9,24 @@ const juce::Identifier MonolithLookAndFeel::accentPropertyId     ("monolith_acce
 const juce::Identifier MonolithLookAndFeel::macroStylePropertyId ("monolith_macro");
 const juce::Identifier MonolithLookAndFeel::segmentPropertyId    ("monolith_segment");
 
+// Platform typography: Avenir Next / Menlo on macOS, Segoe UI / Consolas on Windows, and the fontconfig default
+// sans / mono on Linux. Weights map to the nearest style each family actually ships.
 juce::Font uiFont (float heightPx, Weight w, float tracking)
 {
+   #if JUCE_MAC || JUCE_IOS
+    static const juce::String family ("Avenir Next");
     static const char* const styles[] { "Regular", "Medium", "Demi Bold", "Bold" };
-    auto opts = juce::FontOptions ("Avenir Next", styles[static_cast<int> (w)], heightPx);
+   #elif JUCE_WINDOWS
+    static const juce::String family ("Segoe UI");
+    static const char* const styles[] { "Regular", "Semibold", "Semibold", "Bold" };
+   #else
+    static const juce::String family (juce::Font::getDefaultSansSerifFontName());
+    static const char* const styles[] { "Regular", "Regular", "Bold", "Bold" };
+   #endif
+    auto opts = juce::FontOptions (family, styles[static_cast<int> (w)], heightPx);
+   #if ! (JUCE_MAC || JUCE_IOS || JUCE_WINDOWS)
+    opts = opts.withHorizontalScale (0.9f); // DejaVu / Noto Sans run ~10 % wider than Avenir Next: keep labels unclipped
+   #endif
     if (tracking != 0.0f)
         opts = opts.withKerningFactor (tracking);
     return juce::Font (opts);
@@ -20,7 +34,13 @@ juce::Font uiFont (float heightPx, Weight w, float tracking)
 
 juce::Font monoFont (float heightPx)
 {
+   #if JUCE_MAC || JUCE_IOS
     return juce::Font (juce::FontOptions ("Menlo", "Regular", heightPx));
+   #elif JUCE_WINDOWS
+    return juce::Font (juce::FontOptions ("Consolas", "Regular", heightPx));
+   #else
+    return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), "Regular", heightPx));
+   #endif
 }
 
 juce::Colour accentOf (const juce::Component& c, juce::Colour fallback)

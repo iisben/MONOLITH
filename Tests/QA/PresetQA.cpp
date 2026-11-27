@@ -3,10 +3,15 @@
 
     Usage:
       MonolithPresetQA [--preset-dir <dir>] [--only <1-based list, e.g. 3,7>] [--no-audition] [--csv <path>] [--rate <Hz>]
+      MonolithPresetQA --dc-probe [--rate <Hz>]
 
     Presets: by default the 20 flagship presets embedded in the binary (assets/v2_presets via BinaryData).
     --preset-dir loads the same V2-schema *.mnlpreset files from disk (tuning loop, no rebuild); the runner then
     also reports whether the embedded copy is stale.
+
+    --dc-probe renders worst-case user patches instead of the presets: the Init patch with the vowel orbit on
+    (depth 0.6 / 1.0, rate 0.05 / 0.4 / 2 Hz) over closed vowels (Phoneme Y 0 / 0.15 / 0.3), chord phrase, and
+    applies the same LOCKED clean assertion (DC < -80 dBFS) to every render.
 
     --rate (V2 Stage 6) re-runs every phrase and LOCKED assertion at another host rate (e.g. 44100, 96000);
     audition export is 48 kHz only and is disabled at any other rate, and the CSV defaults to preset_qa_<rate>.csv.
@@ -836,13 +841,44 @@ bool sameRecords (const std::vector<monolith::PresetRecord>& a, const std::vecto
 
 } // namespace
 
+/** Worst-case user patches for the Stage 5 orbit + closed-vowel DC finding (see --dc-probe). */
+static int runDcProbe()
+{
+    monolith::PresetRecord init;
+    init.name = "Init";
+    double worst = -400.0;
+    std::string worstWhat;
+    int fails = 0, n = 0;
+    for (float depth : { 0.6f, 1.0f })
+        for (float rate : { 0.05f, 0.4f, 2.0f })
+            for (float py : { 0.0f, 0.15f, 0.3f })
+            {
+                Rig r (init);
+                r.set (monolith::params::orbitEnable, 1.0f);
+                r.set (monolith::params::orbitDepth, depth);
+                r.set (monolith::params::orbitRate, rate);
+                r.set (monolith::params::phonemeY, py);
+                const auto out = r.render (5.5, chordPhrase());
+                const double dc = dcDb (out);
+                const bool ok = allFinite (out) && dc <= lock5::dcDbfs;
+                ++n;
+                fails += ok ? 0 : 1;
+                const std::string what = "depth " + fmt (depth, 2) + " rate " + fmt (rate, 2) + " Hz  Y " + fmt (py, 2);
+                if (dc > worst) { worst = dc; worstWhat = what; }
+                std::cout << (ok ? "  [PASS] " : "  [FAIL] ") << what << "  dc " << fmt (dc, 1) << " dBFS\n";
+            }
+    std::cout << "DC PROBE " << (fails == 0 ? "PASS" : "FAIL") << " | " << n - fails << " / " << n << " renders | worst "
+              << fmt (worst, 1) << " dBFS (" << worstWhat << ") | lock " << fmt (lock5::dcDbfs, 0) << " dBFS\n";
+    return fails == 0 ? 0 : 1;
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager only; no windows / devices
 
     juce::File presetDir;
     std::set<int> only;
-    bool audition = true;
+    bool audition = true, dcProbe = false;
     std::string csvPath = std::string (MONOLITH_SOURCE_DIR) + "/build/v2_qa/preset_qa.csv";
     for (int i = 1; i < argc; ++i)
     {
@@ -852,7 +888,10 @@ int main (int argc, char** argv)
         else if (a == "--no-audition")           audition = false;
         else if (a == "--csv" && i + 1 < argc)   csvPath = argv[++i];
         else if (a == "--rate" && i + 1 < argc)  gSr = std::stod (argv[++i]);
+        else if (a == "--dc-probe")              dcProbe = true;
     }
+    if (dcProbe)
+        return runDcProbe();
     if (gSr != 48000.0)
     {
         audition = false; // the audition set is the 48 kHz / 24-bit deliverable; never overwrite it
