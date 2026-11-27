@@ -25,7 +25,7 @@ juce::Font uiFont (float heightPx, Weight w, float tracking)
    #endif
     auto opts = juce::FontOptions (family, styles[static_cast<int> (w)], heightPx);
    #if ! (JUCE_MAC || JUCE_IOS || JUCE_WINDOWS)
-    opts = opts.withHorizontalScale (0.9f); // DejaVu / Noto Sans run ~10 % wider than Avenir Next: keep labels unclipped
+    opts = opts.withHorizontalScale (0.86f); // DejaVu / Noto Sans run ~10-15 % wider than Avenir Next: keep labels unclipped
    #endif
     if (tracking != 0.0f)
         opts = opts.withKerningFactor (tracking);
