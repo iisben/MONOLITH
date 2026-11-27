@@ -5,6 +5,7 @@
 #include "Presets/PresetManager.h"
 #include "State/ParameterIDs.h"
 #include "State/TelemetrySnapshot.h"
+#include "V2/AudioTap.h"
 #include "V2/ControlPlane.h"
 #include "V2/MidiLearn.h"
 #include "V2/MpeExpression.h"
@@ -84,6 +85,15 @@ public:
     void runMessageThreadTasks (double nowMs);
     bool saveGlobalMidiMap() const;
 
+    // ── V2 Stage 4: editor support (message thread unless noted) ──
+    /** Post-bus stereo output tap feeding the visualiser and meters (armed only while an editor is open). */
+    v2::AudioTap& getOutputTap() noexcept { return outputTap; }
+    /** Loads the neutral INIT patch: every non-global parameter at its default, factory (V1) macro routing. */
+    void loadInitPatch();
+    /** Editor zoom (1.0 = design size), persisted in the session state. */
+    [[nodiscard]] float getEditorScale() const noexcept { return editorScale; }
+    void setEditorScale (float s) noexcept { editorScale = std::clamp (s, 0.5f, 2.0f); }
+
     /** Transition time used for A/B swaps and undo/redo restores. */
     static constexpr float kStateTransitionMs = 60.0f;
 
@@ -102,6 +112,8 @@ private:
     dsp::SwarmEngine engine;
     v2::TextureLayer textureLayer; // V2 Layer A: additive, post-core, bypassed at 0 % mix
     TelemetrySnapshot telemetry;
+    v2::AudioTap outputTap;        // V2 Stage 4: read-only observer of the final bus (UI analysis)
+    float editorScale = 1.0f;
     PresetManager presetManager;
     PresetLibrary presetLibrary { presetManager };
     PresetRecord currentMeta;

@@ -90,3 +90,25 @@ Stage 2: PASS · Next: Stage 3
 - ASSET_PROVENANCE licensing blocker from Stage 2 still open.
 
 Stage 3: PASS · Next: Stage 4
+
+## Stage 4 — NAMM 2027 Flagship UI/UX Craft & Visual Self-Inspection — PASS (2026-11-26)
+- **MONOLITH II editor** (1200×800 design canvas, 8 px grid, root scaled by an `AffineTransform`). Look: obsidian chassis, hairline bevels, matte plates, amber/ivory arcs, Avenir Next + Menlo numerals. Rewritten: `PluginEditor`, `UI/MonolithLookAndFeel`, `UI/MeterComponents`, `UI/SectionPanels`. New: `UI/{CachedLayer.h, TopBar, HeroVisualizer, OutputAnalyser, PresetBrowser, MacroEditor, UiText.h}`. Removed: `UI/HeaderBar`, `UI/PhonemeFieldComponent`.
+- **Zero-frame-drop rendering:** `CachedLayer` pre-renders static chrome (chassis, plates, knob faces/ticks, sculptor grid and vowel map, axis chips) at the physical pixel scale. It re-renders only when scale, size or content changes. Snapshot runner check: 0 chassis re-renders over 120 live frames.
+- **Output tap** `Source/V2/AudioTap.h`: preallocated SPSC `AbstractFifo` stereo ring (32k frames). The audio thread pushes the final bus (texture included) only while the editor is open, and drops frames when full instead of blocking. `OutputAnalyser` runs on the message thread: peak with hold and clip latch, K-weighted LUFS (M 400 ms / S 3 s), 2048-pt FFT → 160 log bands, formant picking F1–F4.
+- **Hero:** spectral/formant contour plus swarm presence field (haze, formant rings, singer motes), refreshed at 60 Hz. Draggable XY Vowel/Light/Axes sculptor with a glowing trail, tether, drag readout and double-click reset.
+- **Top bar:** wordmark, Prev/Next, preset display, browser, SAVE, INIT (`loadInitPatch`), A/B/A→B, undo/redo, MPE badge (right-click sets bend range), zoom menu (75–150 %) plus corner drag with locked aspect ratio, persisted as `<V2UI scale>`, and a stereo peak/LUFS-S meter with clip latch.
+- **Dock:** 4 hero macros with per-preset names, route captions and live mod rings; route editor overlay (8 routes, depth ±100, bipolar, V1 curve gate); Texture/Space quick mixes and source; perform section.
+- **Overlays:** preset browser (search, categories with counts, favourites, tags, detail pane, load/delete) and save dialog.
+- **Tactile:** custom `MonolithDial` with hover/drag precise readouts, Shift/Cmd fine drag, double-click/Alt reset, wheel, tooltips, right-click MIDI Learn, accessibility values, and bipolar or zero-origin arcs. Routed destinations show live modulation rings.
+- **Snapshot runner** `Tests/UI/UISnapshotRunner.cpp` (`MonolithUISnapshot`, headless `ScopedJuceInitialiser_GUI`) writes 14 PNGs to `build/v2_qa/ui_snapshots/`: main view, browser, macro/mod-active, macro editor, texture+expression, save dialog (each at 1x and 2x), plus zoom at 75 % and 150 %.
+  - Inspection passes fixed: cramped knob rows (uniform 80 px cells, 8 px gaps), −12..0 arcs drawn from 0, "-0.0" readouts, idle SLIDE meter showing 50 %, axis captions buried under the swarm (moved to a cached chip layer), mod rings hidden headless (`isShowing` replaced by a visibility check), the hidden search glyph, a clipped half-row in the browser, ambiguous route-glyph placement, redundant destination names, and "20000 Hz" (now 20.0 kHz).
+- **QA** `MonolithQA --phase v2.4`: **36/36 PASS** (34 prior + `v4tap`, `v4ui`). Log `build/v2_qa/qa_v2_stage4.log`.
+  - v2reg 0.0005 dB (unchanged) · v4tap: on/off diff 0.0, tap == output bit-exact, 0 allocs, overflow drops without blocking · v4ui: scale round-trip, clamp and V1-session default OK; Init leaves 0 params off default · 8cpu 8.55 % RT
+- `MonolithDspAudit` 6/6 PASS · `auval` SUCCEEDED · AU/VST3/Standalone/QA/Audit/UISnapshot Release `-O3` build: 0 warnings · `git diff Source/DSP` empty.
+
+### Warnings
+- Resolves Stage 2's "meter excludes texture" warning: the meter now reads the post-texture tap. Every Stage 3 UI item listed above is now surfaced.
+- Fonts: Avenir Next/Menlo are macOS system fonts. A Windows build needs embedded font binaries; JUCE falls back silently.
+- The ASSET_PROVENANCE licensing blocker (Stage 2) is still open.
+
+Stage 4: PASS · Next: Stage 5

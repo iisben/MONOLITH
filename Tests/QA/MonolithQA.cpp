@@ -2,11 +2,12 @@
     MONOLITH — Locked 8-Gate Headless Flagship QA Harness (Phase 2)
 
     Usage:
-      MonolithQA [--phase 3.1|3.2|3.3|3.4|3.5|4|v2.2|v2.3] [--active <ids>] [--only <ids>] [--write-baseline]
+      MonolithQA [--phase 3.1|3.2|3.3|3.4|3.5|4|v2.2|v2.3|v2.4] [--active <ids>] [--only <ids>] [--write-baseline]
 
     Sub-gate ids : 1 2 3morph 3toggle 4adaa 4alias 5 6block 6rate 6pdc 7dc 7steal 7dry 7fdn 8snap 8cpu
     V2 sub-gates : v2reg v2bypass v2lat v2tex v2state v2alloc v2cpu   (group: v2)
     V3 sub-gates : v3null v3macro v3xy v3mpe v3vel v3ab v3undo v3state v3preset v3learn v3alloc (group: v3)
+    V4 sub-gates : v4tap v4ui   (group: v4)
     Group ids    : 3 4 6 7 8 all, 7tract (=7dry), 7stealdry (=7steal,7dry)
 
     Status semantics:
@@ -2066,6 +2067,128 @@ void gateV3()
 }
 
 // ============================================================================
+// MONOLITH II Stage 4: UI-facing engine hooks (output tap, editor state, Init patch)
+void gateV4()
+{
+    using namespace monolith::params;
+    const double sr = 48000.0;
+    const auto chord = [] { return std::vector<Event> { noteOn (0, 48), noteOn (0, 55), noteOn (0, 60), noteOn (0, 64) }; };
+
+    // ── v4tap: the tap is a pure observer (bit-identical output) and delivers exactly the output ──────────
+    {
+        auto run = [&] (bool tapOn, Stereo* pulled) {
+            QaSynth q;
+            q.proc->applyFactoryPreset (0);
+            q.set (v2TexMix, 0.35f); // include the texture layer: the tap sits after it
+            q.prepare (sr, 512);
+            auto& tap = q.proc->getOutputTap();
+            tap.setActive (tapOn);
+            std::vector<float> l (static_cast<size_t> (monolith::v2::AudioTap::kCapacity)), r (l.size());
+            auto drain = [&] {
+                if (pulled == nullptr) return;
+                const int n = tap.pull (l.data(), r.data(), monolith::v2::AudioTap::kCapacity);
+                for (int i = 0; i < n; ++i)
+                {
+                    pulled->L.push_back (l[static_cast<size_t> (i)]);
+                    pulled->R.push_back (r[static_cast<size_t> (i)]);
+                }
+            };
+            auto out = q.render (q.S (3.0), chord(), fixedBlocks (512), [&] (int64_t) { drain(); });
+            drain();
+            return std::make_pair (std::move (out), tap.getDroppedFrames());
+        };
+        Stereo pulled;
+        const auto [off, d0] = run (false, nullptr);
+        const auto [on, dropped] = run (true, &pulled);
+        const double diff = maxAbsDiff (off, on);
+        const bool same = pulled.size() == on.size() && dropped == 0 && maxAbsDiff (pulled, on) <= 0.0;
+        (void) d0;
+
+        // Real-time safety with the tap armed, including the overflow path (consumer stalls for 100 blocks)
+        QaSynth q;
+        q.proc->applyFactoryPreset (0);
+        q.set (v2TexMix, 0.5f);
+        q.prepare (sr, 512);
+        auto& tap = q.proc->getOutputTap();
+        tap.setActive (true);
+        std::vector<float> l (static_cast<size_t> (monolith::v2::AudioTap::kCapacity)), r (l.size());
+        juce::AudioBuffer<float> buf (2, 512);
+        juce::MidiBuffer midi;
+        midi.ensureSize (4096);
+        long counted = 0;
+        const long startCount = qa_alloc::count.load();
+        for (int blk = 0; blk < 400; ++blk)
+        {
+            midi.clear();
+            if (blk % 40 == 2) for (int n : { 48, 52, 55, 59 }) midi.addEvent (juce::MidiMessage::noteOn (1, n + (blk / 40) % 5, 0.8f), 11);
+            if (blk % 40 == 30) for (int n = 40; n < 80; ++n) midi.addEvent (juce::MidiMessage::noteOff (1, n), 200);
+            buf.clear();
+            const bool measure = blk >= 10;
+            if (measure) qa_alloc::armed = true;
+            q.proc->processBlock (buf, midi);
+            qa_alloc::armed = false;
+            if (measure) counted = qa_alloc::count.load() - startCount;
+            if (blk < 150 || blk >= 250) (void) tap.pull (l.data(), r.data(), monolith::v2::AudioTap::kCapacity);
+        }
+        const auto overflowDrops = tap.getDroppedFrames();
+        record ("v4tap", diff == 0.0 && same && counted == 0 && overflowDrops > 0,
+                "tap on/off max |diff| " + fmt (diff, 9) + ", tap == output " + (same ? "bit-exact" : "MISMATCH") + " ("
+                    + std::to_string (pulled.size()) + " frames), " + std::to_string (counted) + " allocs in 390 armed blocks, overflow dropped "
+                    + std::to_string (overflowDrops) + " frames without blocking");
+    }
+
+    // ── v4ui: editor scale persists with the session; V1 sessions keep the default; Init resets to defaults ──
+    {
+        QaSynth a;
+        a.proc->applyFactoryPreset (3);
+        a.proc->setEditorScale (1.25f);
+        juce::MemoryBlock mb;
+        a.proc->getStateInformation (mb);
+        QaSynth b;
+        b.proc->setStateInformation (mb.getData(), static_cast<int> (mb.getSize()));
+        const bool scaleRt = std::abs (b.proc->getEditorScale() - 1.25f) < 1.0e-6f;
+        bool paramsRt = true;
+        for (auto* p : a.proc->getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+                if (auto* bp = b.proc->getAPVTS().getParameter (rp->paramID))
+                    paramsRt = paramsRt && std::abs (bp->getValue() - rp->getValue()) < 1.0e-6f;
+
+        b.proc->setEditorScale (9.0f);
+        const bool clamped = std::abs (b.proc->getEditorScale() - 2.0f) < 1.0e-6f;
+
+        // A state without the V2UI child (V1 / Stage 3 session) leaves the default zoom untouched
+        juce::MemoryBlock v1;
+        {
+            auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), static_cast<int> (mb.getSize()));
+            if (xml != nullptr)
+            {
+                if (auto* ui = xml->getChildByName ("V2UI")) xml->removeChildElement (ui, true);
+                juce::AudioProcessor::copyXmlToBinary (*xml, v1);
+            }
+        }
+        QaSynth c;
+        c.proc->setStateInformation (v1.getData(), static_cast<int> (v1.getSize()));
+        const bool v1Default = std::abs (c.proc->getEditorScale() - 1.0f) < 1.0e-6f;
+
+        QaSynth i;
+        i.proc->applyFactoryPreset (0);
+        i.proc->loadInitPatch();
+        int off = 0;
+        for (auto* p : i.proc->getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p); rp != nullptr && ! isGlobalPerformanceParam (rp->paramID))
+                if (std::abs (rp->getValue() - rp->getDefaultValue()) > 1.0e-6f) ++off;
+        i.prepare (sr, 512);
+        const auto initOut = i.render (i.S (1.0), chord(), fixedBlocks (512));
+        const bool initOk = off == 0 && allFinite (initOut);
+
+        record ("v4ui", scaleRt && paramsRt && clamped && v1Default && initOk,
+                std::string ("scale round-trip ") + (scaleRt ? "ok" : "FAIL") + ", params " + (paramsRt ? "ok" : "FAIL") + ", clamp "
+                    + (clamped ? "ok" : "FAIL") + ", V1 session default " + (v1Default ? "ok" : "FAIL") + ", Init: " + std::to_string (off)
+                    + " params off default" + (allFinite (initOut) ? "" : ", NON-FINITE"));
+    }
+}
+
+// ============================================================================
 const std::vector<std::string> kAllIds { "1", "2", "3morph", "3toggle", "4adaa", "4alias", "5", "6block", "6rate", "6pdc",
                                          "7dc", "7steal", "7dry", "7fdn", "8snap", "8cpu" };
 
@@ -2076,7 +2199,8 @@ std::set<std::string> expandIds (const std::string& csv)
         { "7", { "7dc", "7steal", "7dry", "7fdn" } }, { "8", { "8snap", "8cpu" } }, { "7tract", { "7dry" } },
         { "7stealdry", { "7steal", "7dry" } }, { "all", kAllIds },
         { "v2", { "v2reg", "v2bypass", "v2lat", "v2tex", "v2state", "v2alloc", "v2cpu" } },
-        { "v3", { "v3null", "v3macro", "v3xy", "v3mpe", "v3vel", "v3ab", "v3undo", "v3state", "v3preset", "v3learn", "v3alloc" } } };
+        { "v3", { "v3null", "v3macro", "v3xy", "v3mpe", "v3vel", "v3ab", "v3undo", "v3state", "v3preset", "v3learn", "v3alloc" } },
+        { "v4", { "v4tap", "v4ui" } } };
     std::set<std::string> out;
     std::stringstream ss (csv);
     std::string tok;
@@ -2103,6 +2227,7 @@ std::string phaseActive (const std::string& ph)
     if (ph == "3.5" || ph == "4") return "all";
     if (ph == "v2.2") return "all,v2"; // MONOLITH II Stage 2: every V1 gate + V2 layer gates
     if (ph == "v2.3") return "all,v2,v3"; // MONOLITH II Stage 3: + control-plane gates
+    if (ph == "v2.4") return "all,v2,v3,v4"; // MONOLITH II Stage 4: + output tap / UI state gates
     return "";
 }
 } // namespace
@@ -2140,6 +2265,7 @@ int main (int argc, char** argv)
     if (want ("8")) gate8 (writeBaseline);
     if (want ("v2")) gateV2();
     if (want ("v3")) gateV3();
+    if (want ("v4")) gateV4();
     const double secs = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
 
     int fails = 0, pending = 0, passes = 0;

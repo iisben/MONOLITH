@@ -1,116 +1,159 @@
 #pragma once
 
 #include "../PluginProcessor.h"
+#include "CachedLayer.h"
 #include "MeterComponents.h"
 #include "MonolithLookAndFeel.h"
+#include <array>
+#include <functional>
+#include <memory>
+#include <vector>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
-#include <memory>
 
 namespace monolith::ui
 {
 
-// ── 1. Ensemble & Register ────────────────────────────────────────────────────
-class EnsemblePanel final : public juce::Component
+using ComboAttach  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+using ButtonAttach = juce::AudioProcessorValueTreeState::ButtonAttachment;
+
+/** Section plate whose static chrome (plate, bevels, title, dividers) is one cached image. */
+class PanelBase : public juce::Component
 {
 public:
-    explicit EnsemblePanel (juce::AudioProcessorValueTreeState& apvts);
+    PanelBase (juce::String titleText, bool hasHeader = true);
     void paint (juce::Graphics& g) override;
     void resized() override;
 
-private:
-    juce::ComboBox registerBox;
-    juce::ComboBox onsetBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> registerAttach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> onsetAttach;
+protected:
+    virtual void renderChrome (juce::Graphics& g, juce::Rectangle<float> r);
+    virtual void layoutChildren() = 0;
+    virtual void paintLive (juce::Graphics&) {}
 
-    MonolithDial sizeDial, spreadDial, vibratoDial;
-    MonolithDial attackDial, releaseDial, onsetDial;
+    /** Two-page header tabs (replace the title). */
+    void initTabs (const juce::String& a, const juce::String& b);
+    void setPage (int page);
+    std::array<std::vector<juce::Component*>, 2> pages;
+    std::array<juce::TextButton, 2> tabs;
+    int activePage = 0;
+    bool tabbed = false;
+
+    juce::String title;
+    bool header = true;
+    CachedLayer chromeLayer;
 };
 
-// ── 2. Tone, Formant & Layers ─────────────────────────────────────────────────
-class ToneLayersPanel final : public juce::Component
+// ── Ensemble & Register ──────────────────────────────────────────────────────
+class EnsemblePanel final : public PanelBase
 {
 public:
-    explicit ToneLayersPanel (juce::AudioProcessorValueTreeState& apvts);
-    void paint (juce::Graphics& g) override;
-    void resized() override;
+    explicit EnsemblePanel (MonolithAudioProcessor& p);
 
 private:
-    MonolithDial tensionDial, breathDial, throatDial;
-    MonolithDial focusDial, subAbyssDial, crownDial;
+    void layoutChildren() override;
+    juce::ComboBox registerBox, onsetBox;
+    std::unique_ptr<ComboAttach> registerAttach, onsetAttach;
+    MonolithDial sizeDial, spreadDial, vibratoDial, attackDial, releaseDial, onsetDial;
 };
 
-// ── 3. Organic Orbit Bar ──────────────────────────────────────────────────────
-class OrbitPanel final : public juce::Component
+// ── Tone & Formant | Expression (MPE / expressive MIDI) ──────────────────────
+class ToneExpressionPanel final : public PanelBase
 {
 public:
-    explicit OrbitPanel (juce::AudioProcessorValueTreeState& apvts);
-    void paint (juce::Graphics& g) override;
-    void resized() override;
+    explicit ToneExpressionPanel (MonolithAudioProcessor& p);
+    void showExpressionPage() { setPage (1); }
 
 private:
-    juce::ToggleButton orbitBtn { "ORBIT" };
-    juce::ToggleButton syncBtn  { "BPM SYNC" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> orbitAttach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> syncAttach;
+    void layoutChildren() override;
+    void paintLive (juce::Graphics& g) override;
+    MonolithDial tensionDial, breathDial, throatDial, focusDial, subAbyssDial, crownDial;
+    juce::ComboBox velCurveBox;
+    std::unique_ptr<ComboAttach> velCurveAttach;
+    juce::ToggleButton mpeBtn { "MPE" };
+    std::unique_ptr<ButtonAttach> mpeAttach;
+    MonolithDial pbRangeDial, vibDial, effortDial, openDial, swellDial;
+};
 
+// ── Entropy & Witch-House ────────────────────────────────────────────────────
+class EntropyPanel final : public PanelBase
+{
+public:
+    explicit EntropyPanel (MonolithAudioProcessor& p);
+
+private:
+    void layoutChildren() override;
+    void renderChrome (juce::Graphics& g, juce::Rectangle<float> r) override;
+    juce::ToggleButton os4xBtn { "4X OS" };
+    std::unique_ptr<ButtonAttach> os4xAttach;
+    MonolithDial driveDial, tapeDial, oxideDial, screwPitchDial, screwDepthDial;
+};
+
+// ── Architectural Space | Texture Layer ──────────────────────────────────────
+class SpaceTexturePanel final : public PanelBase
+{
+public:
+    explicit SpaceTexturePanel (MonolithAudioProcessor& p);
+    void updateFreezeGlow (float freezeEnergy) noexcept;
+    void showTexturePage() { setPage (1); }
+
+private:
+    void layoutChildren() override;
+    void paintLive (juce::Graphics& g) override;
+    juce::ComboBox spaceBox;
+    std::unique_ptr<ComboAttach> spaceAttach;
+    juce::ToggleButton cc64Btn { "CC64 FRZ" }, freezeBtn { "SPECTRAL FREEZE" };
+    std::unique_ptr<ButtonAttach> cc64Attach, freezeAttach;
+    MonolithDial mixDial, decayDial, dampDial, shimmerDial;
+    float freezeGlow = 0.0f;
+
+    juce::ComboBox assetBox;
+    std::unique_ptr<ComboAttach> assetAttach;
+    MonolithDial tuneDial, keytrackDial, texAttackDial, texReleaseDial, velDial, hpDial, lpDial, widthDial;
+};
+
+// ── Organic Orbit strip ──────────────────────────────────────────────────────
+class OrbitStrip final : public PanelBase
+{
+public:
+    explicit OrbitStrip (MonolithAudioProcessor& p);
+
+private:
+    void layoutChildren() override;
+    juce::ToggleButton orbitBtn { "ORBIT" }, syncBtn { "BPM SYNC" };
+    std::unique_ptr<ButtonAttach> orbitAttach, syncAttach;
     MonolithDial rateDial, depthDial;
 };
 
-// ── 4. Entropy & Degradation ──────────────────────────────────────────────────
-class EntropyPanel final : public juce::Component
+// ── Bottom performance dock ──────────────────────────────────────────────────
+class PerformanceDock final : public PanelBase
 {
 public:
-    explicit EntropyPanel (juce::AudioProcessorValueTreeState& apvts);
-    void paint (juce::Graphics& g) override;
-    void resized() override;
+    explicit PerformanceDock (MonolithAudioProcessor& p);
+
+    /** 30 Hz: macro labels / captions, live macro rings, expression monitors. */
+    void refresh (const TelemetrySnapshot& t);
+    std::function<void (int)> onEditMacro;
+    [[nodiscard]] MonolithDial& getMacroDial (int m) noexcept { return *macroDials[static_cast<size_t> (m)]; }
 
 private:
-    juce::ToggleButton os4xBtn { "4X OS" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> os4xAttach;
+    void layoutChildren() override;
+    void renderChrome (juce::Graphics& g, juce::Rectangle<float> r) override;
 
-    MonolithDial driveDial, tapeDial, oxideDial;
-    MonolithDial screwPitchDial, screwDepthDial;
-};
+    MonolithAudioProcessor& proc;
+    std::array<std::unique_ptr<MonolithDial>, 4> macroDials;
+    std::array<std::unique_ptr<GlyphButton>, 4> routeButtons;
+    uint32_t lastRevision = 0xFFFFFFFFu;
 
-// ── 5. Architectural Space + Freeze ───────────────────────────────────────────
-class SpacePanel final : public juce::Component
-{
-public:
-    explicit SpacePanel (juce::AudioProcessorValueTreeState& apvts);
-    void updateFreezeGlow (float freezeEnergy) noexcept;
-    void paint (juce::Graphics& g) override;
-    void resized() override;
+    MonolithDial texMixDial, spaceMixDial;
+    juce::ComboBox assetBox;
+    std::unique_ptr<ComboAttach> assetAttach;
 
-private:
-    juce::ComboBox spaceBox;
-    juce::ToggleButton cc64FreezeBtn { "CC64 -> FRZ" };
-    juce::ToggleButton freezeBtn { "SPECTRAL FREEZE" };
-
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> spaceAttach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> cc64Attach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> freezeAttach;
-
-    MonolithDial mixDial, decayDial, dampDial, shimmerDial;
-    float freezeEnergyGlow = 0.0f;
-};
-
-// ── 6. Bottom Performance Dock (4 Master Macros + Expression & Legato) ─────────
-class PerformanceDock final : public juce::Component
-{
-public:
-    explicit PerformanceDock (MonolithAudioProcessor& proc);
-    void updateFromTelemetry (const TelemetrySnapshot& telemetry) noexcept;
-    void paint (juce::Graphics& g) override;
-    void resized() override;
-
-private:
-    MonolithDial colossusDial, specterDial, rotDial, abyssDial;
+    juce::TextButton panicBtn { "PANIC" };
     ExpressionBar exprBar;
+    ExpressionMeters exprMeters;
     juce::ToggleButton legatoBtn { "LEGATO" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> legatoAttach;
-    MonolithDial glideDial;
+    std::unique_ptr<ButtonAttach> legatoAttach;
+    MonolithDial glideDial, outDial;
 };
 
 } // namespace monolith::ui

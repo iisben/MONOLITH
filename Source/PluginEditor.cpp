@@ -1,62 +1,132 @@
 #include "PluginEditor.h"
+#include "V2/ModMatrix.h"
 
 namespace monolith
 {
 
+namespace
+{
+    void collectDials (juce::Component& c, std::vector<ui::MonolithDial*>& out)
+    {
+        for (auto* child : c.getChildren())
+        {
+            if (auto* d = dynamic_cast<ui::MonolithDial*> (child))
+                out.push_back (d);
+            collectDials (*child, out);
+        }
+    }
+}
+
 MonolithAudioProcessorEditor::MonolithAudioProcessorEditor (MonolithAudioProcessor& p)
     : AudioProcessorEditor (&p),
       audioProcessor (p),
-      headerBar (p),
-      ensemblePanel (p.getAPVTS()),
-      toneLayersPanel (p.getAPVTS()),
-      phonemeField (p.getAPVTS()),
-      orbitPanel (p.getAPVTS()),
-      entropyPanel (p.getAPVTS()),
-      spacePanel (p.getAPVTS()),
-      performanceDock (p)
+      topBar (p),
+      ensemblePanel (p),
+      toneExpressionPanel (p),
+      heroPanel (p),
+      orbitStrip (p),
+      entropyPanel (p),
+      spaceTexturePanel (p),
+      dock (p),
+      browser (p),
+      saveDialog (p),
+      macroEditor (p)
 {
+    const float savedScale = std::clamp (p.getEditorScale(), 0.75f, 1.5f); // read before any resized() can store a new one
     setLookAndFeel (&lookAndFeel);
+    setOpaque (true);
 
-    rootContainer.setBounds (0, 0, kDesignWidth, kDesignHeight);
-    addAndMakeVisible (rootContainer);
+    root.setBounds (0, 0, kDesignWidth, kDesignHeight);
+    addAndMakeVisible (root);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &topBar, &ensemblePanel, &toneExpressionPanel, &heroPanel, &orbitStrip,
+                                                                        &entropyPanel, &spaceTexturePanel, &dock })
+        root.addAndMakeVisible (c);
+    root.addChildComponent (browser);
+    root.addChildComponent (saveDialog);
+    root.addChildComponent (macroEditor);
 
-    rootContainer.addAndMakeVisible (headerBar);
-    rootContainer.addAndMakeVisible (ensemblePanel);
-    rootContainer.addAndMakeVisible (toneLayersPanel);
-    rootContainer.addAndMakeVisible (phonemeField);
-    rootContainer.addAndMakeVisible (orbitPanel);
-    rootContainer.addAndMakeVisible (entropyPanel);
-    rootContainer.addAndMakeVisible (spacePanel);
-    rootContainer.addAndMakeVisible (performanceDock);
+    // 1200 x 800 design canvas on an 8 px grid
+    topBar.setBounds              (0, 0, kDesignWidth, 64);
+    ensemblePanel.setBounds       (16, 80, 344, 248);
+    toneExpressionPanel.setBounds (16, 336, 344, 248);
+    heroPanel.setBounds           (368, 80, 464, 400);
+    orbitStrip.setBounds          (368, 488, 464, 96);
+    entropyPanel.setBounds        (840, 80, 344, 248);
+    spaceTexturePanel.setBounds   (840, 336, 344, 248);
+    dock.setBounds                (16, 600, 1168, 184);
+    browser.setBounds             (16, 80, 1168, 704);
+    saveDialog.setBounds          (0, 0, kDesignWidth, kDesignHeight);
+    macroEditor.setBounds         (0, 0, kDesignWidth, kDesignHeight);
 
-    // Layout children cleanly on the 1180x720 reference canvas
-    headerBar.setBounds       (10, 10, 1160, 54);
-    ensemblePanel.setBounds   (10, 72, 340, 248);
-    toneLayersPanel.setBounds (10, 328, 340, 226);
-    phonemeField.setBounds    (358, 72, 464, 390);
-    orbitPanel.setBounds      (358, 470, 464, 84);
-    entropyPanel.setBounds    (830, 72, 340, 236);
-    spacePanel.setBounds      (830, 316, 340, 238);
-    performanceDock.setBounds (10, 562, 1160, 148);
+    topBar.onBrowse = [this] { browser.isVisible() ? browser.close() : showPresetBrowser(); };
+    topBar.onSave = [this] { showSaveDialog(); };
+    topBar.onZoom = [this] (float s) { setZoom (s); };
+    topBar.onClipReset = [this] { analyser.resetClip(); };
+    dock.onEditMacro = [this] (int m) { showMacroEditor (m); };
+    browser.onLoaded = [this] { refreshSlow(); };
+    for (auto* o : std::initializer_list<std::function<void()>*> { &browser.onClosed, &saveDialog.onClosed, &macroEditor.onClosed })
+        *o = [this] { refreshSlow(); };
+
+    collectDials (root, dials);
 
     setResizable (true, true);
     if (auto* constrainer = getConstrainer())
     {
-        constrainer->setFixedAspectRatio (static_cast<double> (kDesignWidth)
-                                        / static_cast<double> (kDesignHeight));
-        constrainer->setSizeLimits (885, 540, 2360, 1440);
+        constrainer->setFixedAspectRatio (static_cast<double> (kDesignWidth) / static_cast<double> (kDesignHeight));
+        constrainer->setSizeLimits (kDesignWidth * 3 / 4, kDesignHeight * 3 / 4, kDesignWidth * 3 / 2, kDesignHeight * 3 / 2);
     }
+    setSize (juce::roundToInt (kDesignWidth * savedScale), juce::roundToInt (kDesignHeight * savedScale));
 
-    setSize (kDesignWidth, kDesignHeight);
-    rootContainer.addMouseListener (&midiLearnMenu, true);
+    root.addMouseListener (&midiLearnMenu, true);
+
+    auto& tap = p.getOutputTap();
+    tap.discardPending();
+    tap.setActive (true);
+    lastFrameMs = juce::Time::getMillisecondCounterHiRes();
+    refreshSlow();
     startTimerHz (60);
 }
 
 MonolithAudioProcessorEditor::~MonolithAudioProcessorEditor()
 {
-    rootContainer.removeMouseListener (&midiLearnMenu);
     stopTimer();
+    audioProcessor.getOutputTap().setActive (false);
+    root.removeMouseListener (&midiLearnMenu);
     setLookAndFeel (nullptr);
+}
+
+void MonolithAudioProcessorEditor::setZoom (float scale)
+{
+    scale = std::clamp (scale, 0.75f, 1.5f);
+    setSize (juce::roundToInt (kDesignWidth * scale), juce::roundToInt (kDesignHeight * scale));
+}
+
+void MonolithAudioProcessorEditor::showPresetBrowser()
+{
+    saveDialog.setVisible (false);
+    macroEditor.setVisible (false);
+    browser.open();
+}
+
+void MonolithAudioProcessorEditor::showSaveDialog()
+{
+    browser.setVisible (false);
+    macroEditor.setVisible (false);
+    saveDialog.open();
+}
+
+void MonolithAudioProcessorEditor::showMacroEditor (int m)
+{
+    browser.setVisible (false);
+    saveDialog.setVisible (false);
+    macroEditor.open (m);
+}
+
+void MonolithAudioProcessorEditor::closeOverlays()
+{
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &browser, &saveDialog, &macroEditor })
+        c->setVisible (false);
+    refreshSlow();
 }
 
 void MonolithAudioProcessorEditor::MidiLearnMenu::mouseDown (const juce::MouseEvent& e)
@@ -114,36 +184,83 @@ void MonolithAudioProcessorEditor::MidiLearnMenu::mouseDown (const juce::MouseEv
 
 void MonolithAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (ui::palette::obsidianBg);
+    g.fillAll (ui::palette::chassis);
 }
 
 void MonolithAudioProcessorEditor::resized()
 {
+    if (getWidth() <= 0 || getHeight() <= 0)
+        return;
     const float sx = static_cast<float> (getWidth()) / static_cast<float> (kDesignWidth);
     const float sy = static_cast<float> (getHeight()) / static_cast<float> (kDesignHeight);
-    rootContainer.setBounds (0, 0, kDesignWidth, kDesignHeight);
-    rootContainer.setTransform (juce::AffineTransform::scale (sx, sy));
+    root.setBounds (0, 0, kDesignWidth, kDesignHeight);
+    root.setTransform (juce::AffineTransform::scale (sx, sy));
+    audioProcessor.setEditorScale (sx);
+    topBar.setZoomPercent (juce::roundToInt (sx * 100.0f));
 }
 
-void MonolithAudioProcessorEditor::timerCallback()
+namespace
 {
+    /** Visible through every parent up to the editor (unlike isShowing(), independent of a native peer). */
+    bool isVisibleWithin (const juce::Component* c, const juce::Component* root) noexcept
+    {
+        for (; c != nullptr && c != root; c = c->getParentComponent())
+            if (! c->isVisible())
+                return false;
+        return c == root;
+    }
+}
+
+void MonolithAudioProcessorEditor::refreshSlow()
+{
+    topBar.refresh();
+    dock.refresh (audioProcessor.getTelemetry());
+    spaceTexturePanel.updateFreezeGlow (audioProcessor.getTelemetry().freezeEnergy.load (std::memory_order_relaxed));
+
+    // Modulation rings on every routed destination (live control-plane shadow vs base value)
+    const auto& cp = audioProcessor.getControlPlane();
+    for (auto* d : dials)
+    {
+        const int dest = d->getModDestination();
+        auto* prm = d->getParameter();
+        if (dest < 0 || prm == nullptr || ! isVisibleWithin (d, this))
+            continue;
+        const float modNorm = prm->convertTo0to1 (cp.getShadowValue (dest));
+        d->setModulation (std::abs (modNorm - prm->getValue()) > 0.003f ? modNorm : -1.0f);
+    }
+}
+
+void MonolithAudioProcessorEditor::runUiFrame (double dt)
+{
+    const double rate = audioProcessor.getSampleRate();
+    if (rate > 0.0 && std::abs (rate - analyserRate) > 0.5)
+    {
+        analyserRate = rate;
+        analyser.prepare (rate);
+    }
+    analyser.process (audioProcessor.getOutputTap(), dt);
+
     const auto& telemetry = audioProcessor.getTelemetry();
-    headerBar.updateFromTelemetry (telemetry);
-    phonemeField.updateFromTelemetry (telemetry);
-    spacePanel.updateFreezeGlow (telemetry.freezeEnergy.load (std::memory_order_relaxed));
-    performanceDock.updateFromTelemetry (telemetry);
+    if (! modalOpen())
+        topBar.updateMeter (analyser);
+    if (! browser.isVisible() && ! modalOpen())
+        heroPanel.update (telemetry, analyser, dt);
+
+    if ((++frameCounter & 1) == 0 && ! modalOpen())
+        refreshSlow();
 
     // V2: persist a freshly learned CC to the global map (learn completes on the audio thread)
     if (audioProcessor.getMidiLearn().consumeLearnCompleted()
         && audioProcessor.getMidiLearn().getScope() == v2::MidiLearn::Scope::global)
         (void) audioProcessor.saveGlobalMidiMap();
+}
 
-    const int currentIdx = audioProcessor.getPresetManager().getCurrentPresetIndex();
-    if (currentIdx != lastSyncedPresetIdx)
-    {
-        lastSyncedPresetIdx = currentIdx;
-        headerBar.refreshPresetDisplay();
-    }
+void MonolithAudioProcessorEditor::timerCallback()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    const double dt = (now - lastFrameMs) * 0.001;
+    lastFrameMs = now;
+    runUiFrame (dt);
 }
 
 } // namespace monolith

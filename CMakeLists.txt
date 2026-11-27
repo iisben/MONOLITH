@@ -58,6 +58,18 @@ set(MONOLITH_V2_SOURCES
     Source/Presets/PresetLibrary.cpp
 )
 
+set(MONOLITH_UI_SOURCES
+    Source/PluginEditor.cpp
+    Source/UI/MonolithLookAndFeel.cpp
+    Source/UI/MeterComponents.cpp
+    Source/UI/OutputAnalyser.cpp
+    Source/UI/HeroVisualizer.cpp
+    Source/UI/TopBar.cpp
+    Source/UI/SectionPanels.cpp
+    Source/UI/PresetBrowser.cpp
+    Source/UI/MacroEditor.cpp
+)
+
 set(MONOLITH_DSP_AND_PRESET_SOURCES
     Source/DSP/PhonemeField.cpp
     Source/DSP/HarmonicLayers.cpp
@@ -74,12 +86,7 @@ target_sources(MONOLITH
         ${MONOLITH_DSP_AND_PRESET_SOURCES}
         Source/PluginProcessor.cpp
         ${MONOLITH_V2_SOURCES}
-        Source/PluginEditor.cpp
-        Source/UI/MonolithLookAndFeel.cpp
-        Source/UI/MeterComponents.cpp
-        Source/UI/PhonemeFieldComponent.cpp
-        Source/UI/HeaderBar.cpp
-        Source/UI/SectionPanels.cpp
+        ${MONOLITH_UI_SOURCES}
 )
 
 target_include_directories(MONOLITH
@@ -193,6 +200,51 @@ if(MSVC)
     target_compile_options(MonolithQA PRIVATE /W4 /O2)
 else()
     target_compile_options(MonolithQA PRIVATE -Wall -Wextra -Wpedantic $<$<CONFIG:Release>:-O3>)
+endif()
+
+# ── V2 Stage 4: headless UI snapshot runner (1x / 2x Retina PNGs for visual self-inspection) ──
+juce_add_console_app(MonolithUISnapshot
+    PRODUCT_NAME "MonolithUISnapshot"
+)
+
+target_sources(MonolithUISnapshot
+    PRIVATE
+        Tests/UI/UISnapshotRunner.cpp
+        Source/PluginProcessor.cpp
+        ${MONOLITH_V2_SOURCES}
+        ${MONOLITH_UI_SOURCES}
+        ${MONOLITH_DSP_AND_PRESET_SOURCES}
+)
+
+target_include_directories(MonolithUISnapshot
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/Source"
+)
+
+target_compile_definitions(MonolithUISnapshot
+    PRIVATE
+        "JucePlugin_Name=\"MONOLITH\""
+        "MONOLITH_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
+    PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_STRICT_REFCOUNTEDPOINTER=1
+)
+
+target_link_libraries(MonolithUISnapshot
+    PRIVATE
+        MonolithV2Assets
+        juce::juce_audio_utils
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(MonolithUISnapshot PRIVATE /W4)
+else()
+    target_compile_options(MonolithUISnapshot PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 enable_testing()

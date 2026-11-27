@@ -9,7 +9,7 @@ namespace monolith
 namespace
 {
     /** Session-state children that belong to MONOLITH, not to the APVTS parameter tree. */
-    constexpr std::array<const char*, 6> kNonParamChildren { "SlotA", "SlotB", "V2Control", "MidiMap", "V2AB", "V2PresetMeta" };
+    constexpr std::array<const char*, 7> kNonParamChildren { "SlotA", "SlotB", "V2Control", "MidiMap", "V2AB", "V2PresetMeta", "V2UI" };
 
     void stripNonParamChildren (juce::ValueTree& tree)
     {
@@ -118,6 +118,7 @@ void MonolithAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // V2 post-core bus: additive texture layer (returns untouched while bypassed at 0 % mix)
     textureLayer.process (buffer, midiMessages, engine.getLatencySamples());
     expression.publishTelemetry();
+    outputTap.push (buffer); // V2 Stage 4: observer only (one relaxed load while no editor is open)
 }
 
 juce::AudioProcessorEditor* MonolithAudioProcessor::createEditor()
@@ -197,6 +198,16 @@ void MonolithAudioProcessor::loadPresetRecord (const PresetRecord& record)
     currentMeta = record;
     currentMeta.params.clear();
     undoHistory.commit();
+}
+
+void MonolithAudioProcessor::loadInitPatch()
+{
+    PresetRecord init;
+    init.name = "Init";
+    init.category = "Init";
+    init.author = "MONOLITH II";
+    init.description = "Neutral starting point: every parameter at its default, V1 macro curves.";
+    loadPresetRecord (init); // empty param list -> defaults; invalid control tree -> factory routing
 }
 
 PresetRecord MonolithAudioProcessor::captureCurrentPreset (const juce::String& name, const juce::String& author,
@@ -324,6 +335,7 @@ void MonolithAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         if (controlSlotA.isValid()) if (auto a = controlSlotA.createXml()) ab->createNewChildElement ("A")->addChildElement (a.release());
         if (controlSlotB.isValid()) if (auto b = controlSlotB.createXml()) ab->createNewChildElement ("B")->addChildElement (b.release());
         writeMeta (*xml->createNewChildElement ("V2PresetMeta"), currentMeta);
+        xml->createNewChildElement ("V2UI")->setAttribute ("scale", static_cast<double> (editorScale));
 
         copyXmlToBinary (*xml, destData);
     }
@@ -365,6 +377,8 @@ void MonolithAudioProcessor::setStateInformation (const void* data, int sizeInBy
         currentMeta.params.clear();
         if (auto* meta = xmlState->getChildByName ("V2PresetMeta"))
             readMeta (*meta, currentMeta);
+        if (auto* ui = xmlState->getChildByName ("V2UI"))
+            setEditorScale (static_cast<float> (ui->getDoubleAttribute ("scale", 1.0)));
 
         auto tree = juce::ValueTree::fromXml (*xmlState);
         tree.removeProperty (params::stateVersionAttr, nullptr);
