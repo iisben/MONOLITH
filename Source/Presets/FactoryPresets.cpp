@@ -68,7 +68,7 @@ namespace
         list.push_back ({
             "01. Monolith Awakening",
             "Epic Cinematic",
-            "Flagship signature choir wall — soaring SATB realism, wide sub-abyss, cathedral majesty.",
+            juce::String::fromUTF8 ("Flagship signature choir wall — soaring SATB realism, wide sub-abyss, cathedral majesty."),
             {
                 { phonemeX, 0.50f }, { phonemeY, 0.86f }, { registerMode, 4.0f },
                 { ensembleSize, 20.0f }, { ensembleSpread, 0.68f }, { vibratoDepth, 0.36f },

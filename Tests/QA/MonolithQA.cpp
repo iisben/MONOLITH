@@ -1062,7 +1062,7 @@ void gate8 (bool writeBaseline)
         double num = 0, den = 0;
         for (size_t k = 1; k < ps.size(); ++k)
         {
-            const double fq = k * sr / 4096.0;
+            const double fq = static_cast<double> (k) * sr / 4096.0;
             if (fq < 20.0 || fq > 20000.0) continue;
             num += fq * ps[k]; den += ps[k];
         }

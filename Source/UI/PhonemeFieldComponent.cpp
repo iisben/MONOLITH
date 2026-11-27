@@ -343,7 +343,7 @@ void PhonemeFieldComponent::paint (juce::Graphics& g)
     const auto& nearest = anchors[static_cast<size_t> (nearestIdx)];
     g.setColour (palette::moltenAmber);
     g.setFont (makeFont (10.0f, true, false));
-    g.drawText (juce::String (nearest.code) + "  ·  " + juce::String (nearest.name).toUpperCase(),
+    g.drawText (juce::String (nearest.code) + juce::String::fromUTF8 ("  ·  ") + juce::String (nearest.name).toUpperCase(),
                 footer, juce::Justification::centredRight, false);
 }
 

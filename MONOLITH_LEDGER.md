@@ -10,8 +10,9 @@
 | 3.3 — Swarm / Humanization / Voice Mgmt | PASS (after user re-baseline of 8snap preset RMS) | `--phase 3.3` exit 0; 14 PASS / 2 PENDING |
 | 3.4 — Throat Drive ADAA / 64-bit FDN | PASS | `--phase 3.4` exit 0; 16 PASS / 0 PENDING |
 | 3.5 — Swarm SoA SIMD / Lock-Free Polish | PASS | `--phase 3.5` (all gates) exit 0; 16 PASS / 0 PENDING |
+| 4 — Final Build & Validation | PASS | Debug + Release build; 16/16 gates; ctest, legacy audit, `auval` PASS; `pluginval` SKIPPED |
 
-**Next: Phase 4**
+**STATUS: ALL_PHASES_COMPLETE**
 
 ## Toolchain & Architecture
 - CMake 3.22+ / Ninja, C++20, JUCE 8.0.15 (FetchContent), AppleClang arm64 macOS. Targets: `MONOLITH` (AU/VST3/Standalone), `MonolithDspAudit` (console, DSP+presets only).
@@ -88,7 +89,7 @@ Phase 3.1 blockers (gate 6 + 7dc active): fix D7 block-size dependence, integer 
 Notes: `triggerAsyncUpdate` now also fires on drive automation (audio thread; verify lock-free in 3.5). Preset RMS margin: 0.26 dB left on #18 — 3.2 vowel normalization will need justification per spec.
 
 ## Phase 3.2 — first run (FAIL — 3-strike rollback; superseded by re-run below)
-Work saved, re-applies cleanly: `build/monolith_qa/phase32_attempt3.patch` (new `DSP/VocalTract.h`; SwarmVoice, DspMath `logHarmonicPower`, TractProbe adapter).
+The attempt-3 work was saved as a patch in `build/monolith_qa/` (removed in Phase 4; superseded by 52c6f63).
 - Tract: 64-bit Cytomic TPT SVFs loaded from Vicanek-matched BPs (impulse-invariant poles, |H| matched at fc + Nyquist, exact DC zero). Phase-progressive parallel sum: all +, F2–F5 rotated by phase-matched 1st-order allpasses (fa/Fk 1.397/0.824/0.396/0.276 → −71/−101/−136/−149° at resonance), branch magnitudes untouched. Plain Klatt ± sum stays −23.6 dB (F1 skirt vs F2+F3, /u/ 1.9 kHz); new sum worst −9 dB over 600 random phoneme/register/throat/f0 points.
 - Nasal pole-zero (270 Hz SVF, identity at nasalDip 0) on voice sum; log-domain epsilon-settled formant smoother + per-singer dirty coefficients.
 - Vowel norm: gain −0.65·(L_vowel − L_field-centre) dB at the same pitch/register/throat/focus, loudness from calibrated LF harmonic powers.
@@ -197,3 +198,24 @@ Audit: no audio-thread allocations or locks (design and assign happen in `prepar
 | 7dry / 7fdn | idle 0.43 → 0.45 % / CPU 1.00 → 1.01× (noise) |
 | 1–6, 7dc, 7steal, 8snap | unchanged to the printed digit (8snap max dRMS 0.88 dB) |
 Audit: no audio-thread allocations or locks (stack lane arrays only), no float tract states, no raw tanh added, no parameter-ID changes. The build is warning-clean apart from 1 pre-existing harness warning.
+
+## Phase 4 — Final Build, Validation & Cleanup (PASS)
+- Builds: clean Release and Debug of AU/VST3/Standalone, `MonolithQA`, `MonolithDspAudit`: 0 errors. Remaining warnings: 3 JUCE-only `-Wdeprecated-declarations` (1 harness cast fixed).
+- Fixed (pre-existing): non-ASCII `char*` literals (`—`, `·`) hit JUCE's ASCII `String` ctor (57 Debug assertions, garbled UI text); now `String::fromUTF8` (preset 01 description, macro captions, phoneme footer). Debug re-run: 0 assertions.
+- QA: Release `--phase 4` 16 PASS / 0 PENDING; Debug non-timing gates PASS (CPU gates are Release-only); `ctest` 1/1; legacy audit all PASS (13.0 % RT, was 10.91 % at Phase 1).
+- `auval -v aumu Mnch Mnlt`: VALIDATION SUCCEEDED. New AU ad-hoc signed and installed temporarily, then the previous install was restored (verified identical). `pluginval`: SKIPPED (not installed).
+- Packaging note: the AU in `build/release` fails `codesign -v` (no resource seal); run `codesign --force --deep -s -` after copying, or sign properly for distribution. VST3 not validated.
+
+| Metric | Baseline (Phase 2) | Final |
+|---|---|---|
+| Gates | 9 PASS / 7 PENDING | 16 PASS |
+| Glottal alias C5–C7 / DC | −91.9…−93.2 dBc / −144.6 | −91.4…−93.2 dBc / −147.7 dBFS |
+| Formant error / notch / vowel RMS dev | 1.48 % / −23.5 / 7.86 dB | 0.66 % / −4.5 / 2.40 dB (tract; re-scoped gate) |
+| Drive alias / DC | −29.6 dBc / −114 | −52.7 dBc / −169.7 dBFS |
+| Block-size residual | −57.3 dBFS | exact |
+| PDC 2x / 4x / bypass (rep/meas) | 4/5, 6/6, 4≠0 | 60/60, 67/67, 0/0 |
+| Held-chord DC / steal d2 | −84.3 dBFS / 6.23× | −106.9 dBFS / 3.36× |
+| Swarm comb / sub corr / mono drop | −7.7/−8.5 dB, 0.97/0.99, 0.75 dB | −5.0/−7.6 dB, 0.97/0.99, 0.84/0.85 dB |
+| Idle CPU / FDN tail | 0.48 % / −184 dBFS | 0.45 % / −189 dBFS |
+| 8cpu | 7.78 % RT | 8.75 % RT (1.12×; cap 1.35×) |
+| Preset RMS | captured | max 0.88 dB vs the 3.3 re-baseline (Phase 2 copy archived) |
