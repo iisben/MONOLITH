@@ -138,3 +138,36 @@ Stage 4: PASS · Next: Stage 5
 - QA is locked at 48 kHz. Stage 6 should spot-check 44.1/96 kHz true peak, and AU/VST3 hosts with 50 programs (auval/pluginval).
 
 Stage 5: PASS · Next: Stage 6
+
+## Stage 6 — NAMM 2027 Release Build, Host Validation & macOS Installation — PASS (2026-11-27)
+- **Build:** clean (`--clean-first`) Release `-O3` + Debug, all targets (AU/VST3/Standalone, MonolithQA, DspAudit, PresetQA, UISnapshot): 0 errors, **0 project warnings**. The 30 remaining warnings are 3 JUCE-internal Metal deprecations (`juce_CGMetalLayerRenderer_mac.h`, macOS 27 SDK), repeated across translation units: not critical, and the fix belongs upstream.
+- **Tests (Release):** DspAudit 6/6 · MonolithQA v2.4 36/36 (16 V1 gates; v2reg 0.0005 dB, 30 V1 presets; 8snap 0.88 dB; 8cpu 8.69 % RT) · PresetQA 20/20 + diversity + library · ctest 2/2 · UISnapshot OK (0 chassis re-renders) · `git diff Source/DSP` empty.
+- **Debug (asserts on):** PresetQA subset 6/6 with no assertion hits. DspAudit 5/6: its CPU gate fails at −O0 (130 % RT, expected). The V1 harness also logs JUCE Timer asserts because it builds an APVTS without a MessageManager; it is untouched since `a135246`, so it stays as is.
+- **Host-rate spot-check (Stage 5 warning):** new `MonolithPresetQA --rate <Hz>` re-runs every LOCKED assertion; audition export is 48 kHz only. At 96 kHz #18 Breathing Nebula failed at TP −0.22 dBTP (pressure127, engine-dominated). Fix: `master_gain` −5.5 → −6.5 dB in `Tools/v2_flagship_presets.py`, regenerated. Now **20/20 at 44.1 / 48 / 96 kHz**. Snapshots in `Tests/QA/preset_qa_v2_stage6_{44100,48000,96000}.csv`; at 48 kHz only #18 differs from Stage 5.
+- **auval** `-strict -v aumu Mnch Mnlt`: **AU VALIDATION SUCCEEDED** (50 factory presets, 61 params, cold open 29 ms).
+- **pluginval 2.0.0** (Tracktion, notarized; `~/Downloads/pluginval.app`) strictness 5: **VST3 PASS 21/21 · AU PASS 21/21**. Covers 50 programs, Steinberg vstvalidator exit 0, auval, editor whilst processing, automation, and 44.1/48/96 kHz × block 64–1024. Info only: the AU current program is −1 until the host picks one (AU SDK `AUBase` default).
+  - Extra strictness 10: VST3 29/31, AU 30/31. The only failures are the (Discrete) parameter state restoration tests on the 7 bool params. Cause is in JUCE 8.0.15: `AudioParameterBool::setValue` keeps the raw value unsnapped, and the APVTS skips the restore when the snapped value already matches. The effective on/off state is always correct and the engine reads the snapped value.
+- **Sign + install:** ad-hoc (`codesign --force --deep -s -`; the keychain has no Developer ID), `--verify --deep --strict` OK. Installed to `~/Library/Audio/Plug-Ins/Components/MONOLITH.component`, `~/Library/Audio/Plug-Ins/VST3/MONOLITH.vst3` and `~/Applications/MONOLITH.app`; AU registered. The previous V1 install (2026-11-20) was moved to `build/install_backup_v1_20261120/`. Repeat with `Tools/v2_release_install.sh [identity]`.
+- **Cleanup:** removed the Stage 1–6 scratch logs/CSVs from `build/v2_qa/`; kept `audition/` (20 WAVs), `ui_snapshots/` (18 PNGs) and `asset_manifest.json`.
+
+### NAMM 2027 Readiness Summary
+- **V1 DSP integrity:** frozen core untouched in Stages 1–6. All 30 V1 presets within 0.0005 dB of the Stage 1 baseline (lock ±0.05). DspAudit 6/6.
+- **V2 features:**
+  - ✔ Texture Layer A (8 assets, 8.0 MB, bypassed at 0 %)
+  - ✘ IR Space Layer B (no IRs on the drive)
+  - ✔ Control plane (4 macros × 8 routes, XY Sculptor, MPE/AT/CC2/CC74, MIDI Learn, A/B, undo)
+  - ✔ V2 schema + V1 migration
+  - ✔ MONOLITH II editor
+  - ✔ 20 flagship presets (programs 31–50)
+- **20 presets (44.1/48/96 kHz):** chord RMS −16.4…−12.0 dBFS · worst TP −0.67 dBTP (96 k), −1.0 (48 k) · sub-150 Hz corr ≥ 0.74 · mono drop ≤ 1.2 dB · DC ≤ −102 dBFS.
+- **Host validation:** auval strict PASS · pluginval s5 VST3 PASS / AU PASS · s10 bool-restore only (above).
+- **Before sale:**
+  - (1) ⚠ `ASSET_PROVENANCE.md`: all 8 Splice texture assets are NOT CLEARED; 10/20 presets depend on them.
+  - (2) Developer ID signing and notarization are needed; the ad-hoc build is for this Mac only.
+  - (3) Bundle version is still 1.0.0 (`project(MONOLITH VERSION …)`).
+  - (4) Optional: a snapping bool param for the s10 restore tests.
+  - (5) Orbit plus closed-vowel DC behaviour in the frozen engine (Stage 5).
+  - (6) Windows needs embedded fonts.
+
+Stage 6: PASS
+STATUS: ALL_STAGES_COMPLETE

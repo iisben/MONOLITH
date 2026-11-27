@@ -2,13 +2,16 @@
     MONOLITH II — Stage 5 closed-loop flagship preset QA + audition export.
 
     Usage:
-      MonolithPresetQA [--preset-dir <dir>] [--only <1-based list, e.g. 3,7>] [--no-audition] [--csv <path>]
+      MonolithPresetQA [--preset-dir <dir>] [--only <1-based list, e.g. 3,7>] [--no-audition] [--csv <path>] [--rate <Hz>]
 
     Presets: by default the 20 flagship presets embedded in the binary (assets/v2_presets via BinaryData).
     --preset-dir loads the same V2-schema *.mnlpreset files from disk (tuning loop, no rebuild); the runner then
     also reports whether the embedded copy is stale.
 
-    Phrases (48 kHz, 512-sample blocks, fresh processor per render):
+    --rate (V2 Stage 6) re-runs every phrase and LOCKED assertion at another host rate (e.g. 44100, 96000);
+    audition export is 48 kHz only and is disabled at any other rate, and the CSV defaults to preset_qa_<rate>.csv.
+
+    Phrases (48 kHz unless --rate, 512-sample blocks, fresh processor per render):
       susC3 / susC4      single sustained note, velocity 100
       chord              C3 G3 C4 Eb4 at velocity 110, held 4 s (sustain window 2-4 s, tail window 4-5.5 s)
       melody             C5 line (8 notes, legato overlaps), velocity 100
@@ -79,7 +82,7 @@ namespace lock5
     constexpr double dupShapeDb      = 2.0;   // normalised 1/3-octave spectral-shape RMS distance
 }
 
-constexpr double kSr = 48000.0;
+double gSr = 48000.0; // QA rate; --rate overrides for the Stage 6 host-rate spot-check (thresholds unchanged)
 constexpr int kBlock = 512;
 constexpr double kPi = 3.14159265358979323846;
 
@@ -90,7 +93,7 @@ struct Stereo
     [[nodiscard]] size_t size() const noexcept { return L.size(); }
 };
 
-size_t S (double sec) { return static_cast<size_t> (std::llround (sec * kSr)); }
+size_t S (double sec) { return static_cast<size_t> (std::llround (sec * gSr)); }
 double dbPow (double p) { return 10.0 * std::log10 (std::max (p, 1.0e-300)); }
 double dbAmp (double a) { return 20.0 * std::log10 (std::max (std::abs (a), 1.0e-300)); }
 
@@ -241,7 +244,7 @@ double centroidHz (const Vec& ps)
     double num = 0, den = 0;
     for (size_t k = 1; k < ps.size(); ++k)
     {
-        const double f = static_cast<double> (k) * kSr / static_cast<double> (kFft);
+        const double f = static_cast<double> (k) * gSr / static_cast<double> (kFft);
         if (f < 20.0 || f > 20000.0) continue;
         num += f * ps[k]; den += ps[k];
     }
@@ -258,7 +261,7 @@ std::array<double, kBands> bandsDb (const Vec& ps)
         double e = 0.0;
         for (size_t k = 1; k < ps.size(); ++k)
         {
-            const double f = static_cast<double> (k) * kSr / static_cast<double> (kFft);
+            const double f = static_cast<double> (k) * gSr / static_cast<double> (kFft);
             if (f >= lo && f < hi) e += ps[k];
         }
         out[static_cast<size_t> (b)] = dbPow (e);
@@ -317,7 +320,7 @@ struct Biquad
     double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
     void lowpass (double fc, double q)
     {
-        const double w = 2.0 * kPi * fc / kSr, c = std::cos (w), s = std::sin (w), al = s / (2.0 * q), a0 = 1.0 + al;
+        const double w = 2.0 * kPi * fc / gSr, c = std::cos (w), s = std::sin (w), al = s / (2.0 * q), a0 = 1.0 + al;
         b0 = (1.0 - c) * 0.5 / a0; b1 = (1.0 - c) / a0; b2 = b0; a1 = -2.0 * c / a0; a2 = (1.0 - al) / a0;
     }
     double process (double x)
@@ -412,8 +415,8 @@ public:
 
     Stereo render (double seconds, Phrase ev, const std::function<void (double)>& autom = nullptr)
     {
-        proc->setRateAndBufferSizeDetails (kSr, kBlock);
-        proc->prepareToPlay (kSr, kBlock);
+        proc->setRateAndBufferSizeDetails (gSr, kBlock);
+        proc->prepareToPlay (gSr, kBlock);
         std::stable_sort (ev.begin(), ev.end(), [] (const Event& a, const Event& b) { return a.t < b.t; });
         const size_t total = S (seconds);
         Stereo out;
@@ -425,7 +428,7 @@ public:
         while (pos < total)
         {
             const int bs = static_cast<int> (std::min<size_t> (kBlock, total - pos));
-            if (autom) autom (static_cast<double> (pos) / kSr);
+            if (autom) autom (static_cast<double> (pos) / gSr);
             midi.clear();
             while (ei < ev.size() && S (ev[ei].t) < pos + static_cast<size_t> (bs))
             {
@@ -535,7 +538,7 @@ bool writeWav (const juce::File& file, const Stereo& s)
     if (! static_cast<juce::FileOutputStream*> (os.get())->openedOk())
         return false;
     juce::WavAudioFormat wav;
-    auto writer = wav.createWriterFor (os, juce::AudioFormatWriterOptions {}.withSampleRate (kSr).withNumChannels (2).withBitsPerSample (24));
+    auto writer = wav.createWriterFor (os, juce::AudioFormatWriterOptions {}.withSampleRate (gSr).withNumChannels (2).withBitsPerSample (24));
     return writer != nullptr && writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
 }
 
@@ -848,6 +851,13 @@ int main (int argc, char** argv)
         else if (a == "--only" && i + 1 < argc)  only = parseList (argv[++i]);
         else if (a == "--no-audition")           audition = false;
         else if (a == "--csv" && i + 1 < argc)   csvPath = argv[++i];
+        else if (a == "--rate" && i + 1 < argc)  gSr = std::stod (argv[++i]);
+    }
+    if (gSr != 48000.0)
+    {
+        audition = false; // the audition set is the 48 kHz / 24-bit deliverable; never overwrite it
+        if (csvPath == std::string (MONOLITH_SOURCE_DIR) + "/build/v2_qa/preset_qa.csv")
+            csvPath = std::string (MONOLITH_SOURCE_DIR) + "/build/v2_qa/preset_qa_" + std::to_string (juce::roundToInt (gSr)) + ".csv";
     }
 
     const auto embedded = monolith::preset_schema::loadFlagshipPresets();
@@ -901,7 +911,7 @@ int main (int argc, char** argv)
 
     // table
     std::ostringstream t;
-    t << "MONOLITH II PRESET QA | " << reps.size() << " presets | " << (presetDir == juce::File() ? "embedded" : "dir")
+    t << "MONOLITH II PRESET QA | " << fmt (gSr / 1000.0, 1) << " kHz | " << reps.size() << " presets | " << (presetDir == juce::File() ? "embedded" : "dir")
       << (stale ? " (EMBEDDED COPY STALE: rebuild)" : "") << " | "
       << fmt (std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count(), 1) << " s\n";
     t << " #  name                     TPmax  (phrase)        RMS    corC  drC  corC3 drC3   M1   M2   M3   M4  whl  prs  mpe  cent   wid  att  rel  aud        result\n";

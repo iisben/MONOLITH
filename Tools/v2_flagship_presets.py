@@ -391,7 +391,7 @@ PRESETS = [
         description="A choir that breathes: sampled choral drone and orbiting swarm drifting through a ghost void.",
         params=dict(pX=0.40, pY=0.56, orb=1, oR=0.08, oD=0.30, reg=4, sz=18, spr=0.56, vib=0.30, att=1.4, rel=3.8,
                     onM=1, onA=0.20, ten=0.50, br=0.30, thr=-1.5, foc=0.58, sub=0.44, crn=0.30, drv=0.12, tape=0.16,
-                    oxd=0.14, spT=3, spM=0.42, spD=0.84, spDm=0.36, shim=0.44, expr=0.78, gain=-5.5, xyMode=2,
+                    oxd=0.14, spT=3, spM=0.42, spD=0.84, spDm=0.36, shim=0.44, expr=0.78, gain=-6.5, xyMode=2,  # Stage 6: -1 dB (96 kHz TP)
                     tMix=0.28, tAsset=TEX_CHOIR_DRONE, tKey=1.0, tAtt=1.5, tRel=4.0, tVel=0.3, tHp=200, tLp=9000, tW=1.1,
                     eVib=0.40, eEff=0.50, eOpen=0.55, eSwell=0.50),
         macros=[
