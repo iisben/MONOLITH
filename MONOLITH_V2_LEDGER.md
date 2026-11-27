@@ -160,16 +160,22 @@ Stage 5: PASS · Next: Stage 6
   - ✔ MONOLITH II editor
   - ✔ 20 flagship presets (programs 31–50)
 - **20 presets (44.1/48/96 kHz):** chord RMS −16.4…−12.0 dBFS · worst TP −0.67 dBTP (96 k), −1.0 (48 k) · sub-150 Hz corr ≥ 0.74 · mono drop ≤ 1.2 dB · DC ≤ −102 dBFS.
-- **Host validation:** auval strict PASS · pluginval s5 VST3 PASS / AU PASS · s10 bool-restore only (above).
+- **Host validation:** auval strict PASS · pluginval s5 VST3 PASS / AU PASS · s10 VST3 31/31 / AU 31/31 after the post-release bool fix (below).
 - **Before sale:**
   - (1) ⚠ `ASSET_PROVENANCE.md`: all 8 Splice texture assets are NOT CLEARED; 10/20 presets depend on them.
   - (2) Developer ID signing and notarization are needed; the ad-hoc build is for this Mac only.
   - (3) Bundle version is still 1.0.0 (`project(MONOLITH VERSION …)`).
-  - (4) Optional: a snapping bool param for the s10 restore tests.
+  - (4) ✔ Done post-release (below): a snapping bool param for the s10 restore tests.
   - (5) Orbit plus closed-vowel DC behaviour in the frozen engine (Stage 5).
   - (6) Windows needs embedded fonts.
 
 Stage 6: PASS
+
+## Post-release — pluginval strictness 10 (2026-11-27)
+- **Fix:** new `Source/State/SnappedBoolParameter.h`, a `RangedAudioParameter` that stores only 0 / 1 (snaps at the same ≥ 0.5 threshold `AudioParameterBool::get()` uses). It replaces `juce::AudioParameterBool` for the 7 bool params (`orbit_enable`, `orbit_sync`, `oversample_hq`, `space_freeze`, `cc64_freeze`, `legato_enable`, `v2_mpe_enable`), with the same `ParameterID{id, version}`, names, defaults, 2 steps, discrete/boolean flags and On/Off text. The effective state and the APVTS raw value the engine reads are unchanged. `git diff Source/DSP` is empty.
+- **pluginval 2.0.0 strictness 10:** **VST3 31/31 · AU 31/31** (was 29/31 · 30/31). Before/after on VST3: identical `Parameter info` for all params; the Stage 6 build still fails 7/14 discrete restores, the new build passes 14/14. AU reports the 7 params as `isBoolean 1`, 2 steps.
+- **Regression:** Release `-O3`, 0 project warnings (only the 3 JUCE Metal deprecations) · MonolithQA v2.4 36/36 (v2reg 0.0005 dB, 8snap 0.88 dB, 8cpu 8.78 % RT) · DspAudit 6/6 · PresetQA 20/20 + diversity + library. Reinstalled with `Tools/v2_release_install.sh`; AU registered.
+
 STATUS: ALL_STAGES_COMPLETE
 
 ## Stage 7 — Replace Splice Textures with Original Synthesised Audio — PASS (2026-11-27)
