@@ -15,18 +15,68 @@ enum class SpaceType : int
     GhostVoid     = 3
 };
 
+/** Pre-allocated power-of-2 64-bit ring buffer with Catmull-Rom cubic reads (denormal-flushing writes). */
+class DelayLine64
+{
+public:
+    void prepare (size_t minCapacitySamples)
+    {
+        size_t cap = 16;
+        while (cap < minCapacitySamples + 8)
+            cap <<= 1;
+        buffer.assign (cap, 0.0);
+        mask = cap - 1;
+        writePos = 0;
+    }
+
+    void reset() noexcept
+    {
+        std::fill (buffer.begin(), buffer.end(), 0.0);
+        writePos = 0;
+    }
+
+    inline void push (double x) noexcept
+    {
+        // Finite-guard + explicit sub-1e-30 flush: denormal-free on every FPU regardless of FTZ/DAZ
+        buffer[writePos] = (std::isfinite (x) && std::abs (x) > 1.0e-30) ? x : 0.0;
+        writePos = (writePos + 1) & mask;
+    }
+
+    [[nodiscard]] inline double readCubic (double delaySamples) const noexcept
+    {
+        const double d = std::clamp (delaySamples, 1.0, static_cast<double> (mask - 4));
+        const size_t id = static_cast<size_t> (d);
+        const double t  = d - static_cast<double> (id);
+        const double y0 = buffer[(writePos - id) & mask];
+        const double y1 = buffer[(writePos - 1 - id) & mask];
+        const double y2 = buffer[(writePos - 2 - id) & mask];
+        const double y3 = buffer[(writePos - 3 - id) & mask];
+        const double c1 = 0.5 * (y2 - y0);
+        const double c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+        const double c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+        return ((c3 * t + c2) * t + c1) * t + y1;
+    }
+
+private:
+    std::vector<double> buffer;
+    size_t mask     = 0;
+    size_t writePos = 0;
+};
+
 /**
     Custom choir-tuned Brutalist Architectural Reverb & Spectral Freeze engine.
-    Combines a fractional-interpolated 4-stage allpass early reflection diffuser,
-    an 8x8 normalized Hadamard modulated FDN, dual-grain Hann-windowed pitch-shifted
-    dark shimmer, and click-free infinite Spectral Freeze with RMS stabilization.
-    All continuous parameters and Space Model delay geometries morph smoothly per sample.
+    64-bit throughout: cubic-interpolated 4-stage allpass early diffuser, an 8x8 orthonormal
+    (unitary) Hadamard FDN with rate-scaled mutually prime delays, gentle sinusoidal delay
+    modulation, wall (2-pole) + delay-length-proportional air-absorption damping, 5 Hz DC
+    blocking, a linear (saturation-free) feedback path guarded by a slow RMS safety gain,
+    dual-grain dark shimmer, and click-free infinite Spectral Freeze with RMS stabilization.
 */
 class BrutalistReverb
 {
 public:
     static constexpr int kNumFdnLines = 8;
     static constexpr int kNumAllpass  = 4;
+    static constexpr int kNumSpaces   = 4;
 
     void prepare (double sampleRate, int maxBlockSize);
     void reset() noexcept;
@@ -46,110 +96,119 @@ public:
 private:
     double sr = 48000.0;
 
-    CubicDelayLine preDelayL, preDelayR;
+    DelayLine64 preDelayL, preDelayR;
 
     struct AllpassStage
     {
-        CubicDelayLine line;
+        DelayLine64 line;
 
-        void prepare (size_t maxLen)
+        void prepare (size_t maxLen) { line.prepare (maxLen + 8); }
+        void clear() noexcept { line.reset(); }
+        inline double process (double x, double delaySamples, double g) noexcept
         {
-            line.prepare (maxLen + 8);
-        }
-        void clear() noexcept
-        {
-            line.reset();
-        }
-        inline float process (float x, float delaySamples, float g) noexcept
-        {
-            const float delayed = line.readLinear (delaySamples);
-            const float v = sanitize (x + g * delayed);
+            const double delayed = line.readCubic (delaySamples);
+            const double v = x + g * delayed;
             line.push (v);
             return delayed - g * v;
         }
     };
     std::array<AllpassStage, kNumAllpass> earlyApL, earlyApR;
 
-    // 8x8 Modulated FDN tank
-    std::array<CubicDelayLine, kNumFdnLines> fdnLines;
-    std::array<ZdfSvf, kNumFdnLines> fdnDampLp;
-    std::array<DCBlocker, kNumFdnLines> fdnDc;
-    std::array<float, kNumFdnLines> lfoPhases {};
-    std::array<float, kNumFdnLines> lfoRates {};
+    // 8x8 unitary FDN tank (64-bit)
+    std::array<DelayLine64, kNumFdnLines> fdnLines;
+    // Wall absorption: 64-bit TPT 2-pole low-pass, shared coefficients / per-line states
+    double wallM1 = 1.0, wallM2 = 0.0, wallM3 = 0.0;
+    std::array<double, kNumFdnLines>      wallIc1 {}, wallIc2 {};
+    double lastWallCutHz = -1.0, lastAirFreeze = -1.0;
+    std::array<double, kNumFdnLines>      lastAirDelay {};
+    std::array<double, kNumFdnLines>      fdnAirZ {}; // air absorption one-pole state
+    std::array<double, kNumFdnLines>      fdnAirP {}; // air absorption one-pole pole (delay-proportional)
+    std::array<DCBlocker64, kNumFdnLines> fdnDc;
+    std::array<double, kNumFdnLines>      lfoSin {}, lfoCos {}; // rotating-phasor LFOs (no per-sample sin)
+    std::array<double, kNumFdnLines>      lfoRotS {}, lfoRotC {};
+    std::array<double, kNumFdnLines>      lfoRates {};
+    std::array<std::array<double, kNumFdnLines>, kNumSpaces> primeDelays {}; // rate-scaled mutually prime lengths
 
-    // Dual-grain Hann-windowed pitch shimmer (stereo)
+    // Dual-grain Hann-windowed pitch shimmer (stereo, 64-bit ring)
     struct GrainShifter
     {
-        CubicDelayLine ring;
-        float grainSizeSamples = 3200.0f;
-        float phaseA           = 0.0f;
-        float phaseB           = 0.5f;
+        DelayLine64 ring;
+        double grainSizeSamples = 3200.0;
+        double phaseA           = 0.0;
+        double phaseB           = 0.5;
 
         void prepare (double sampleRate)
         {
-            const size_t cap = static_cast<size_t> (sampleRate * 0.25) + 64;
-            ring.prepare (cap);
-            grainSizeSamples = static_cast<float> (sampleRate * 0.075);
-            phaseA = 0.0f;
-            phaseB = 0.5f;
+            ring.prepare (static_cast<size_t> (sampleRate * 0.25) + 64);
+            grainSizeSamples = sampleRate * 0.075;
+            phaseA = 0.0;
+            phaseB = 0.5;
         }
 
         void reset() noexcept
         {
             ring.reset();
-            phaseA = 0.0f;
-            phaseB = 0.5f;
+            phaseA = 0.0;
+            phaseB = 0.5;
         }
 
-        inline float process (float input, float pitchSemitones) noexcept
+        double delta = 0.0; // phase increment, refreshed at control rate by setPitch()
+
+        void setPitch (double pitchSemitones) noexcept
+        {
+            delta = (1.0 - std::exp2 (pitchSemitones / 12.0)) / std::max (grainSizeSamples, 64.0);
+        }
+
+        /** Hann window 0.5(1 - cos 2 pi p) = cos^2(pi (p - 1/2)), even Taylor polynomial (|err| < 1e-5). */
+        static inline double hann (double p) noexcept
+        {
+            const double x  = 3.14159265358979323846 * (p - 0.5);
+            const double x2 = x * x;
+            const double c  = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40320.0))));
+            return c * c;
+        }
+
+        inline double process (double input) noexcept
         {
             ring.push (input);
-            const float ratio = semitonesToRatio (pitchSemitones);
-            const float delta = (1.0f - ratio) / std::max (grainSizeSamples, 64.0f);
 
             phaseA += delta;
             phaseB += delta;
-            if (phaseA >= 1.0f) phaseA -= 1.0f;
-            if (phaseA <  0.0f) phaseA += 1.0f;
-            if (phaseB >= 1.0f) phaseB -= 1.0f;
-            if (phaseB <  0.0f) phaseB += 1.0f;
+            phaseA -= std::floor (phaseA);
+            phaseB -= std::floor (phaseB);
 
-            const float dA = 12.0f + phaseA * grainSizeSamples;
-            const float dB = 12.0f + phaseB * grainSizeSamples;
-
-            const float wA = 0.5f * (1.0f - std::cos (kTwoPi * phaseA));
-            const float wB = 0.5f * (1.0f - std::cos (kTwoPi * phaseB));
-
-            const float sA = ring.readLinear (dA) * wA;
-            const float sB = ring.readLinear (dB) * wB;
-            return sA + sB;
+            const double wA = hann (phaseA);
+            const double wB = hann (phaseB);
+            return ring.readCubic (12.0 + phaseA * grainSizeSamples) * wA
+                 + ring.readCubic (12.0 + phaseB * grainSizeSamples) * wB;
         }
     };
     GrainShifter shimmerL, shimmerR;
 
     // Spectral Freeze state
-    float freezeBlend           = 0.0f;
-    float frozenTargetRms       = 0.0f;
-    float currentTankRms        = 0.0f;
+    double freezeBlend          = 0.0;
+    double frozenTargetRms      = 0.0;
+    double currentTankRms       = 0.0;
+    double safetyGain           = 1.0;
     float freezeEnergyIndicator = 0.0f;
     bool  wasFrozen             = false;
 
     // Smoothed controls & room geometry (eliminates clicks on Space switch & knob drag)
-    bool  smoothersPrimed       = false;
-    int   dampCtrlCounter       = 0;     // absolute control counter (block-size invariant)
-    float smMix                 = 0.46f;
-    float smShimmer             = 0.22f;
-    float smDampCutHz           = 6000.0f;
-    float smPreDelaySamples     = 1152.0f;
-    float smEarlyBalance        = 0.25f;
-    float smModDepthSamples     = 25.0f;
-    float smShimmerCap          = 0.28f;
-    float smShimmerStL          = 12.0f;
-    float smShimmerStR          = 12.0f;
-    std::array<float, kNumAllpass>  smApLenL {};
-    std::array<float, kNumAllpass>  smApLenR {};
-    std::array<float, kNumFdnLines> smFdnDelay {};
-    std::array<float, kNumFdnLines> smFdnFeedback {};
+    bool   smoothersPrimed      = false;
+    int    dampCtrlCounter      = 0;     // absolute control counter (block-size invariant)
+    double smMix                = 0.46;
+    double smShimmer            = 0.22;
+    double smDampCutHz          = 6000.0;
+    double smPreDelaySamples    = 1152.0;
+    double smEarlyBalance       = 0.25;
+    double smModDepthSamples    = 25.0;
+    double smShimmerCap         = 0.28;
+    double smShimmerStL         = 12.0;
+    double smShimmerStR         = 12.0;
+    std::array<double, kNumAllpass>  smApLenL {};
+    std::array<double, kNumAllpass>  smApLenR {};
+    std::array<double, kNumFdnLines> smFdnDelay {};
+    std::array<double, kNumFdnLines> smFdnFeedback {};
 };
 
 } // namespace monolith::dsp

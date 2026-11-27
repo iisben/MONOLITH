@@ -1,6 +1,8 @@
 #pragma once
 
 #include "DspMath.h"
+#include "ThroatDrive.h"
+#include "VocalTract.h"
 #include <juce_dsp/juce_dsp.h>
 #include <memory>
 #include <vector>
@@ -10,8 +12,8 @@ namespace monolith::dsp
 
 /**
     Per-voice pre-sum analog degradation & witch-house stage.
-    Applies constant-latency 2x/4x polyphase IIR oversampled asymmetric tape/tube
-    saturation with click-free mode crossfading, DC blocking, smoothed cubic-interpolated
+    Applies constant-latency 2x/4x linear-phase FIR oversampled, 64-bit ADAA1 asymmetric
+    tape/tube saturation with click-free mode crossfading, DC blocking, smoothed cubic-interpolated
     tape wow/flutter, and smoothed oxide high-frequency damping.
 */
 class EntropyStage
@@ -21,7 +23,7 @@ public:
     void reset() noexcept;
 
     /**
-        Exact integer latency (measured impulse peak at prepare) for the selected mode.
+        Exact integer latency (analytic linear-phase FIR + ADAA1 group delay) for the selected mode.
         Returns 0 when the oversampled drive stage is bypassed (drive disengaged).
     */
     [[nodiscard]] int getLatencySamples (bool highQuality4x, bool driveEngaged = true) const noexcept;
@@ -44,8 +46,28 @@ private:
     int      preparedMaxBlock = 512;
     uint32_t seed             = 1u;
 
-    std::unique_ptr<juce::dsp::Oversampling<float>> os2x;
-    std::unique_ptr<juce::dsp::Oversampling<float>> os4x;
+    /** One oversampled drive route: outer 48<->96k stage (+ inner 96<->192k stage for 4x) + ADAA1 state. */
+    struct DriveRoute
+    {
+        LinearPhase2x outer[2];
+        LinearPhase2x inner[2];
+        bool fourX = false;
+        double u1[2]   = { 0.0, 0.0 }; // previous shaper argument (g*x + b)
+        double F1u1[2] = { 0.0, 0.0 }; // cached F1(u1)
+        double x1[2]   = { 0.0, 0.0 }; // previous dry OS sample (midpoint dry path, phase-matched to ADAA1)
+        void reset() noexcept
+        {
+            for (int c = 0; c < 2; ++c)
+            {
+                outer[c].reset();
+                inner[c].reset();
+                u1[c] = F1u1[c] = x1[c] = 0.0;
+            }
+        }
+    };
+    DriveRoute route2x, route4x;
+    std::vector<float> osBufA[2]; // 2x-rate scratch (2 * maxBlock)
+    std::vector<float> osBufB[2]; // 4x-rate scratch (4 * maxBlock)
     juce::AudioBuffer<float> scratchBuffer;
     juce::AudioBuffer<float> xfadeScratchBuffer;
 
@@ -54,8 +76,8 @@ private:
     CubicDelayLine delayL, delayR;
     PinkNoiseGen flutterNoise;
 
-    ZdfSvf oxideLpL, oxideLpR;
-    ZdfSvf headBumpBpL, headBumpBpR;
+    TptSvf64 oxideLpL, oxideLpR;       // 64-bit oxide HF damping
+    TptSvf64 headBumpBpL, headBumpBpR; // 64-bit unit-peak 240 Hz head bump
 
     float wowPhase        = 0.0f;
     float flutterPhase    = 0.0f;

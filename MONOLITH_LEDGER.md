@@ -8,8 +8,9 @@
 | 3.1 — Glottal & Aspiration | PASS | `--phase 3.1` exit 0; 12 PASS / 4 PENDING |
 | 3.2 — Vocal Tract / Formant | PASS (after user re-scope of gate-2 vowel RMS) | `--phase 3.2` exit 0; 13 PASS / 3 PENDING; first run rolled back (b06c863) |
 | 3.3 — Swarm / Humanization / Voice Mgmt | PASS (after user re-baseline of 8snap preset RMS) | `--phase 3.3` exit 0; 14 PASS / 2 PENDING |
+| 3.4 — Throat Drive ADAA / 64-bit FDN | PASS | `--phase 3.4` exit 0; 16 PASS / 0 PENDING |
 
-**Next: Phase 3.4**
+**Next: Phase 3.5**
 
 ## Toolchain & Architecture
 - CMake 3.22+ / Ninja, C++20, JUCE 8.0.15 (FetchContent), AppleClang arm64 macOS. Targets: `MONOLITH` (AU/VST3/Standalone), `MonolithDspAudit` (console, DSP+presets only).
@@ -144,3 +145,32 @@ Notes: full-processor vowel loudness stays source-coupled by design (C3 /a/ −2
 | 7dc / 7dry | −123.5 → −106.7 dBFS / idle 0.49 % RT (3.2 code measures the same on this machine) |
 | 8snap / 8cpu | re-baselined, peak −1.56 dBFS / 8.59 % RT |
 Notes: the remaining 7steal margin is set by `softSafetyLimit` (memoryless tanh above 0.75) on dense chords, which is out of 3.3 scope. The 7dc change is random-draw level drive drift, 16.7 dB inside the limit.
+
+## Phase 3.4 — Throat Drive ADAA & 64-bit Unitary FDN (PASS)
+- 4alias root cause (D11): at 6 kHz and 8 kHz the 4th or 3rd harmonic folds exactly onto Nyquist. The JUCE half-band IIR passes fs/2 at −3 dB, and its non-linear phase makes that component non-zero on the sample grid, so it read −36 dBc in the bins next to Nyquist. Shaper aliasing was not the cause.
+- New `DSP/ThroatDrive.h`:
+  - `ThroatShaper`: double Padé-tanh f, closed-form F1 (log1p) and F2 (log1p/atan), ADAA1 (cached F1) and ADAA2, with a 1e-5 midpoint fallback.
+  - `LinearPhase2x`: Kaiser 100 dB polyphase stage; 8-lane dot product, so it SLP-vectorizes.
+- Oversampling routes:
+  - Outer 48↔96k: Type II up (112 taps), Type I down (129 taps), passband 0.40 fs, stopband 0.50 fs.
+  - 4x adds an inner 96↔192k stage: 30 up / 29 down taps.
+  - The Type II half-sample offset cancels the ADAA1 half-sample delay, so PDC is an exact integer: 2x = 60, 4x = 67 (analytic, measured equal), bypass = 0.
+  - The dry/wet blend uses a midpoint dry path, phase-matched to ADAA1.
+- Route switch: the new FIR route is reset, then a pre-roll of latency + 32 samples holds the crossfade at 0 before the 5 ms raised cosine. Without it, 3toggle measured 1.75×.
+- Oxide LP and head bump now use 64-bit `TptSvf64`; DC handling is 15 Hz + 5 Hz `DCBlocker64` (unchanged).
+- FDN (D14), all double:
+  - Unitary Hadamard 8×8 mixing; per-Space delays are rate-scaled distinct primes.
+  - Phasor LFOs at ×0.6 depth; Catmull-Rom reads everywhere, linear-interp allpasses removed.
+  - Shared-coefficient TPT wall low-pass, plus ISO 9613 air absorption (0.1 dB/m at 8 kHz × path length per line).
+  - 5 Hz `DCBlocker64` per line.
+  - `fastTanh` removed from the loop, replaced by a slow 50 ms RMS safety gain (0.35) and an identity-below-1 C1 guard.
+  - Writes flush below 1e-30; feedback clamp 0.999 → 0.99995.
+
+| Gate | 3.3 → 3.4 |
+|---|---|
+| 4adaa / 4alias | PENDING → PASS: F1′ err 1e-9, F2′ err 2e-9, cont 3e-8 / −29.6 → −52.7 dBc worst (6k −125, 8k −93.7, 10k −52.7 vs naive −10.6), DC −169.7 dBFS |
+| 6pdc | 5/6/0 → 60/67/0 (rep = meas) |
+| 7fdn | max rise −1.17 → −1.42 dB, end −184.6 → −189.1 dBFS, CPU 1.00× |
+| 3toggle / 3morph | 0.31× → 0.29× bound / 1.30× → 0.78× ref |
+| 7dry / 8snap / 8cpu | idle 0.49 → 0.43 % / max dRMS 0.88 dB (#21) / 8.59 → 9.95 % RT (cap 10.50) |
+Audit: no audio-thread allocations or locks (design and assign happen in `prepare`), no float FDN or resonator states, no raw tanh added, no parameter-ID changes. CPU note: FIR + ADAA cost about 1.9 % RT at 12 voices; 8cpu margin is now 0.55 %.
