@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-project(MONOLITH VERSION 1.0.0 LANGUAGES C CXX)
+project(MONOLITH VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,6 +25,19 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+# AU is Apple-only; Windows and Linux ship VST3 + Standalone. A cross-compiled build cannot load its own VST3
+# binary on the build machine, so the (optional) moduleinfo.json manifest step is skipped there.
+if(APPLE)
+    set(MONOLITH_FORMATS AU VST3 Standalone)
+else()
+    set(MONOLITH_FORMATS VST3 Standalone)
+endif()
+if(CMAKE_CROSSCOMPILING)
+    set(MONOLITH_VST3_MANIFEST FALSE)
+else()
+    set(MONOLITH_VST3_MANIFEST TRUE)
+endif()
+
 juce_add_plugin(MONOLITH
     COMPANY_NAME                "Monolith Audio"
     IS_SYNTH                    TRUE
@@ -35,7 +48,8 @@ juce_add_plugin(MONOLITH
     COPY_PLUGIN_AFTER_BUILD     FALSE
     PLUGIN_MANUFACTURER_CODE    Mnlt
     PLUGIN_CODE                 Mnch
-    FORMATS                     AU VST3 Standalone
+    FORMATS                     ${MONOLITH_FORMATS}
+    VST3_AUTO_MANIFEST          ${MONOLITH_VST3_MANIFEST}
     PRODUCT_NAME                "MONOLITH"
     BUNDLE_ID                   "com.monolithaudio.monolith"
     AU_MAIN_TYPE                kAudioUnitType_MusicDevice

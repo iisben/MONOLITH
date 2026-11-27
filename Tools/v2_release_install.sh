@@ -2,12 +2,12 @@
 # MONOLITH II (V2 Stage 6): ad-hoc codesign the Release AU / VST3 / Standalone bundles and install them for the
 # current user. Previously installed bundles are moved once into build/install_backup_previous/ (never deleted).
 #
-#   Tools/v2_release_install.sh [identity]     identity defaults to "-" (ad-hoc); pass a Developer ID to sign for release
+#   [ART=<artefacts dir>] Tools/v2_release_install.sh [identity]     identity defaults to "-" (ad-hoc); pass a Developer ID to sign for release
 #
 # Close any DAW that has MONOLITH loaded before running. Afterwards hosts pick the new build up on their next rescan.
 set -u
 REPO="${0:A:h:h}"
-ART="$REPO/build/release/MONOLITH_artefacts/Release"
+ART="${ART:-$REPO/build/release/MONOLITH_artefacts/Release}"   # override: ART=build/dist-mac/MONOLITH_artefacts/Release
 BK="$REPO/build/install_backup_previous"
 COMP="$HOME/Library/Audio/Plug-Ins/Components"
 VST="$HOME/Library/Audio/Plug-Ins/VST3"
