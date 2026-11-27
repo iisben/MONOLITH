@@ -6,8 +6,9 @@
 | 1 — Setup & Audit | PASS | Release `-O3` build clean (exit 0, 6 JUCE-only Metal deprecation warnings); legacy `MonolithDspAudit` 6/6 PASS, 10.91% RT (12v/24s, 64-spl @48k) |
 | 2 — QA Harness | PASS | `MonolithQA` (Release -O3, headless, 9 s run); baseline 9 PASS / 7 PENDING |
 | 3.1 — Glottal & Aspiration | PASS | `--phase 3.1` exit 0; 12 PASS / 4 PENDING |
+| 3.2 — Vocal Tract / Formant | FAIL → rolled back (3-strike) | gate 2 passes, 8snap fails in all 3 attempts (locked-gate conflict); tree = `53a8454` + ledger |
 
-**Next: Phase 3.2**
+**Next: Phase 3.2 BLOCKED — needs a user decision (see Phase 3.2 section)**
 
 ## Toolchain & Architecture
 - CMake 3.22+ / Ninja, C++20, JUCE 8.0.15 (FetchContent), AppleClang arm64 macOS. Targets: `MONOLITH` (AU/VST3/Standalone), `MonolithDspAudit` (console, DSP+presets only).
@@ -82,3 +83,23 @@ Phase 3.1 blockers (gate 6 + 7dc active): fix D7 block-size dependence, integer 
 | 8snap / 8cpu | max dRMS 1.24 dB (#18 Neon Mausoleum −1.24; mean 0.53), peak −1.11 / 7.90% RT |
 | inactive | 2 vowel dev 7.2 dB; 7steal 5.84× (baseline 6.23×); others unchanged |
 Notes: `triggerAsyncUpdate` now also fires on drive automation (audio thread; verify lock-free in 3.5). Preset RMS margin: 0.26 dB left on #18 — 3.2 vowel normalization will need justification per spec.
+
+## Phase 3.2 — Vocal Tract / Formant Engine (FAIL — 3-strike rollback)
+Work saved, re-applies cleanly: `build/monolith_qa/phase32_attempt3.patch` (new `DSP/VocalTract.h`; SwarmVoice, DspMath `logHarmonicPower`, TractProbe adapter).
+- Tract: 64-bit Cytomic TPT SVFs loaded from Vicanek-matched BPs (impulse-invariant poles, |H| matched at fc + Nyquist, exact DC zero). Phase-progressive parallel sum: all +, F2–F5 rotated by phase-matched 1st-order allpasses (fa/Fk 1.397/0.824/0.396/0.276 → −71/−101/−136/−149° at resonance), branch magnitudes untouched. Plain Klatt ± sum stays −23.6 dB (F1 skirt vs F2+F3, /u/ 1.9 kHz); new sum worst −9 dB over 600 random phoneme/register/throat/f0 points.
+- Nasal pole-zero (270 Hz SVF, identity at nasalDip 0) on voice sum; log-domain epsilon-settled formant smoother + per-singer dirty coefficients.
+- Vowel norm: gain −0.65·(L_vowel − L_field-centre) dB at the same pitch/register/throat/focus, loudness from calibrated LF harmonic powers.
+
+| Attempt | Gate 2 Ferr / notch / vowel dev | 8snap presets outside ±1.5 dB | Other |
+|---|---|---|---|
+| 1 tract only | 0.64% / −5.4 / 6.11 ✗ | P23 +2.49 | 7dc −85.5 ✗ |
+| 2 + smooth-loudness norm | 0.64% / −5.4 / 2.89 ✓ | P01 +3.05, P17 −1.63, P18 +2.19, P23 +5.24, P29 −3.77 | |
+| 3 + harmonic-exact norm | 0.64% / −5.4 / 2.86 ✓ | P01 +3.18, P23 +5.50, P26 −1.55, P29 −2.16 | 7dc −79.0 ✗; other 12 gates ✓, 8cpu 9.0% |
+
+Root cause (a conflict between locked gates, not an implementation defect):
+- Gate-2 vowel levels are set by how F1 lines up with the source harmonics. At C3, /i/ and /u/ put F1 on h2, while /a/'s F1 falls between h5 and h6. A single singer measures −12.9 / −1.2 / −3.2 dB, so passing needs a ≥5 dB relative /a/ vs /i/,/u/ shift.
+- P01 (the default patch at y 0.86) and P23 sit on the /a/ anchor and P14 on the /u/ anchor (same register, note 48), so any loudness law that passes gate 2 breaks 8snap. A 30-preset model with measured tract sensitivity per preset (0.15–0.98) gives: best non-monotonic law P07 1.74 dB; monotonic laws ≥3.1 dB.
+- Filling the old F1/F2 antiphase notch alone raises /a/ voices 1.3–2.0 dB (rotation-independent, notch-safe candidates within 0.35 dB), so P23 is +2.49 dB even with no normalization.
+- 7dc: louder tract output lifts sub-Hz IM residue through drive/tape (the filters have an exact DC zero). If revisited, this needs a stronger post-nonlinearity DC blocker.
+- Decision needed: (a) accept documented preset RMS shifts for 3.2 (8snap re-baseline), or (b) re-scope the gate-2 vowel-RMS assertion. Then re-apply the patch and fix 7dc.
+
