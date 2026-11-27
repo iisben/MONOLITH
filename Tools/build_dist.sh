@@ -29,7 +29,7 @@ build_mac() {
     ditto "$b" "$P/$(basename "$b")"
   done
   lipo -archs "$P/MONOLITH.component/Contents/MacOS/MONOLITH"
-  rm -f "$P.zip" && ditto -c -k --keepParent "$P" "$P.zip"
+  rm -f "$P.zip" && ditto -c -k --norsrc --noextattr --noqtn --keepParent "$P" "$P.zip"   # no ._ AppleDouble files: they would break the signature when unzipped with unzip
   echo "mac -> $P.zip"
 }
 
