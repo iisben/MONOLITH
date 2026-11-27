@@ -32,7 +32,7 @@
 
 ## Install
 
-Download the build for your system (or build it yourself, below), close your DAW, copy the files, then rescan plugins.
+Download the build for your system from the [latest release](https://github.com/iisben/MONOLITH/releases/latest) (or build it yourself, below). Close your DAW, copy the files, then rescan plugins.
 
 ### macOS (11 or newer, Apple Silicon and Intel)
 | File | Copy to |
