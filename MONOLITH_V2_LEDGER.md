@@ -197,3 +197,17 @@ Stage 7: PASS
 - Installed AU / VST3 / app embed 8/8 new textures, 0/8 Splice. auval strict PASS · pluginval s5 AU PASS · s10 VST3 PASS (5 seeds).
 - ⚠ Correction: pluginval s10 **AU is flaky**, not 31/31. Seeds 11–40: Stage 6 AU 5/30 fail, merged AU 9/30 fail (not a significant difference; "Drive 4x OS … after restoring the same state" also failed on the Stage 6 AU, seeds 2 and 6). Failing param is random per run. VST3 unaffected.
 - **Diagnosis: host-side, not MONOLITH.** pluginval checks JUCE's hosted-AU cached value (`AUInstanceParameter::cachedValue`, refreshed by async run-loop events) right after `setStateInformation`, which it calls off the message thread for AU only. A harness replaying pluginval's per-param restore loop with audio running (1830 checks) caught 1 failure: cache held the random value (Velocity Curve 0.750), the plugin's own `AudioUnitGetParameter` held the restored 0.000, and the cache self-corrected within 200 ms. No plugin-side value was ever wrong. No code change; s5 AU and auval strict remain the AU gates.
+
+## Post-release — bug fixes, v2.0.0, macOS / Windows / Linux builds (2026-11-27)
+- **Fixes:**
+  - Orbit + closed-vowel DC drift (Stage 5 item 5): `Source/V2/DcBlocker.h`, 2nd-order 5 Hz Butterworth HP (double), on the engine output before the texture bus; frozen core untouched. New `MonolithPresetQA --dc-probe` (18 Init+orbit patches, depth 0.6/1, rate 0.05/0.4/2 Hz, Y 0/0.15/0.3, lock −80 dBFS): before 13/18, worst −76.0 dBFS; after 18/18, worst −136.9 (48 k) / −135.9 (44.1 k) / −132.1 (96 k). A post-texture placement broke v2bypass (−163 dBFS residue after a fade), hence pre-texture.
+  - Fonts (item 6): Segoe UI / Consolas on Windows; fontconfig default sans (86 % width, so DejaVu fits the Avenir layout) / mono on Linux; macOS unchanged.
+  - User preset folder was `~/Library/...` on every OS: now `Documents\Monolith Audio\MONOLITH II\Presets` (Windows), `~/.local/share/Monolith Audio/MONOLITH II/Presets` (Linux).
+  - `MonolithDspAudit` now initialises a MessageManager: 0 JUCE asserts in Debug (its CPU gate still fails at −O0, as before).
+  - Version 2.0.0 (item 3; AU 0x20000).
+- **Build system:** AU on Apple only; VST3 manifest step off when cross-compiling. `cmake/toolchains/windows-x64-clang-cl.cmake` (clang-cl + lld-link + xwin SDK, static CRT), `Tools/linux/Dockerfile` + `Tools/build_linux_docker.sh` (Ubuntu 22.04 x86_64), `Tools/build_dist.sh mac|windows|linux|all`, `ART=` override in `Tools/v2_release_install.sh`.
+- **macOS QA (Release):** DspAudit 6/6 · MonolithQA 36/36 (8cpu 8.90 % RT, v2reg 0.0005 dB) · PresetQA 20/20 @ 44.1/48/96 k · DC probe 18/18 · ctest 2/2 · UISnapshot OK · 0 project warnings · `Source/DSP` diff 0. Debug PresetQA 6/6.
+- **macOS dist:** universal arm64 + x86_64, minos 11.0, ad-hoc signed. auval strict PASS · pluginval s5 AU/VST3 PASS · s10 VST3 PASS · s5 VST3 x86_64 under Rosetta PASS. Installed.
+- **Windows dist:** x64 VST3 + standalone, imports only system DLLs (no VC++ redistributable). Not run: no Windows machine.
+- **Linux dist:** x86_64 VST3 + standalone (Ubuntu 22.04, glibc 2.35). In the container (x86_64 under Rosetta in a VM): DspAudit 6/6 · PresetQA 20/20 · DC probe 18/18 · UISnapshot OK (fonts fit; two long macro route captions ellipsize) · MonolithQA 34/36, failing only the timing gates 7dry idle CPU (0.88 %) and 8cpu (16.8 % RT), which are emulated ~2x and not meaningful. Native Linux timing not measured.
+- **Not verified:** the Windows build has not been run; no DAW listening on any platform.
