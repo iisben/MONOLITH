@@ -50,6 +50,7 @@ private:
     juce::AudioBuffer<float> xfadeScratchBuffer;
 
     DCBlocker64 dcL, dcR;   // end-of-chain 64-bit DC blocker (post drive, tape & oxide)
+    DCBlocker64 dc2L, dc2R; // 2nd (5 Hz) stage: 2nd-order rejection of sub-Hz drive-DC drift
     CubicDelayLine delayL, delayR;
     PinkNoiseGen flutterNoise;
 

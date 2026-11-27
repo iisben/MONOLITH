@@ -89,6 +89,7 @@ void SwarmVoice::reset() noexcept
     screwSagSt          = 0.0f;
 
     formantSmoothPrimed = false;
+    formantSmoother.invalidate();
     smoothedSingerNorm  = 1.0f;
     smFormantFreq.fill (500.0f);
     smFormantBw.fill (80.0f);
@@ -96,6 +97,9 @@ void SwarmVoice::reset() noexcept
     smVoicedMix         = 1.0f;
     smBreathBoost       = 0.0f;
     smNasalDip          = 0.0f;
+    nasalL.reset();
+    nasalR.reset();
+    nasalCoeffDip       = -1.0f;
 
     lastPostOutL        = 0.0f;
     lastPostOutR        = 0.0f;
@@ -120,11 +124,8 @@ void SwarmVoice::reset() noexcept
         sg.excDc.reset();
         sg.breathNoise.resetFilter();
         sg.wanderNoise.resetFilter();
-        for (auto& svf : sg.formants)
-        {
-            svf.reset();
-            svf.invalidateCache();
-        }
+        sg.tract.reset();
+        sg.tractJitter = -1.0f;
         sg.breathBp.reset();
         sg.onsetBpA.reset();
         sg.onsetBpB.reset();
@@ -178,6 +179,9 @@ void SwarmVoice::startNote (int midiNote, float velocity01, float currentGlideTi
     scoopDecayPerSample = 0.0f;
     screwSagSt          = -0.45f;
     formantSmoothPrimed = false;
+    formantSmoother.invalidate();
+    nasalL.reset();
+    nasalR.reset();
 
     for (int i = 0; i < kMaxSingersPerVoice; ++i)
     {
@@ -188,8 +192,7 @@ void SwarmVoice::startNote (int midiNote, float velocity01, float currentGlideTi
         sg.envLevel     = 0.0f;
         sg.activeGain   = 0.0f;
         sg.excDc.reset();
-        for (auto& svf : sg.formants)
-            svf.reset();
+        sg.tract.reset();
         sg.breathBp.reset();
         sg.onsetBpA.reset();
         sg.onsetBpB.reset();
@@ -390,8 +393,7 @@ void SwarmVoice::renderBlock (float* outL,
 
             if (! formantSmoothPrimed)
             {
-                smFormantFreq       = baseTarget.freq;
-                smFormantBw         = baseTarget.bw;
+                formantSmoother.prime (baseTarget);
                 smFormantGain       = baseTarget.gain;
                 smVoicedMix         = baseTarget.voicedMix;
                 smBreathBoost       = baseTarget.breathBoost;
@@ -400,14 +402,30 @@ void SwarmVoice::renderBlock (float* outL,
             }
             else
             {
-                // 12 ms formant frequency/bandwidth smoothing eliminates pops on Register / Preset switches
-                const float ctrlDt    = static_cast<float> (ctrlStep) * invSrF;
-                const float fmtAlpha  = 1.0f - std::exp (-ctrlDt / 0.012f);
+                // 12 ms log-domain formant frequency/bandwidth glide (epsilon-settled: steady vowels skip all
+                // coefficient work) eliminates pops on Register / Preset switches
+                const double ctrlDt = static_cast<double> (ctrlStep) / sr;
+                formantSmoother.advance (baseTarget, 1.0 - std::exp (-ctrlDt / 0.012));
+            }
+
+            const bool tractDirty = formantSmoother.isDirty();
+            if (tractDirty)
                 for (size_t f = 0; f < 5; ++f)
                 {
-                    smFormantFreq[f] += fmtAlpha * (baseTarget.freq[f] - smFormantFreq[f]);
-                    smFormantBw[f]   += fmtAlpha * (baseTarget.bw[f]   - smFormantBw[f]);
+                    smFormantFreq[f] = static_cast<float> (formantSmoother.freq (f));
+                    smFormantBw[f]   = static_cast<float> (formantSmoother.bw (f));
                 }
+
+            if (std::abs (smNasalDip - nasalCoeffDip) > 1.0e-6f)
+            {
+                nasalCoeffDip = smNasalDip;
+                nasalL.set (nasalCoeffDip, sr);
+                nasalR.set (nasalCoeffDip, sr);
+            }
+            if (! (nasalL.isFinite() && nasalR.isFinite()))
+            {
+                nasalL.reset();
+                nasalR.reset();
             }
 
             harmonicLayers.updateFilters (baseF0, smTension);
@@ -416,16 +434,23 @@ void SwarmVoice::renderBlock (float* outL,
             {
                 auto& sg = singers[static_cast<size_t> (s)];
                 if (sg.activeGain < 1.0e-5f && targetSingerWeights[static_cast<size_t> (s)] < 1.0e-5f)
+                {
+                    sg.tractJitter = -1.0f; // coefficients go stale while parked
                     continue;
+                }
 
                 const float jitter = 1.0f + (sg.formantJitter - 1.0f) * spread;
-                for (size_t f = 0; f < 5; ++f)
+                if (tractDirty || std::abs (jitter - sg.tractJitter) > 0.0f)
                 {
-                    const float fc = smFormantFreq[f] * jitter;
-                    const float bw = smFormantBw[f];
-                    const float q  = std::clamp (fc / std::max (bw, 20.0f), 0.5f, 20.0f);
-                    sg.formants[f].setParameters (fc, q, srF);
+                    sg.tractJitter = jitter;
+                    for (int f = 0; f < VocalTract::kNumFormants; ++f)
+                    {
+                        const double fc = formantSmoother.freq (static_cast<size_t> (f)) * static_cast<double> (jitter);
+                        sg.tract.setFormant (f, fc, VocalTract::qFor (fc, formantSmoother.bw (static_cast<size_t> (f))), sr);
+                    }
                 }
+                if (! sg.tract.isFinite())
+                    sg.tract.reset();
 
                 const float breathFc = std::clamp (1700.0f + 950.0f * baseTarget.breathBoost + 850.0f * smTension, 600.0f, 5200.0f);
                 sg.breathBp.setParameters (breathFc, 0.80f, srF);
@@ -476,8 +501,7 @@ void SwarmVoice::renderBlock (float* outL,
                 if (sg.activeGain > 0.0f)
                 {
                     sg.activeGain = 0.0f;
-                    for (auto& svf : sg.formants)
-                        svf.reset();
+                    sg.tract.reset();
                 }
                 continue;
             }
@@ -555,14 +579,17 @@ void SwarmVoice::renderBlock (float* outL,
 
             breathAcc += std::abs (breathExc) * sg.activeGain * sg.envLevel;
 
-            const float f1 = sg.formants[0].processBandpass (totalExc) * smFormantGain[0];
-            const float f2 = sg.formants[1].processBandpass (totalExc) * smFormantGain[1] * nasalSuppress;
-            const float f3 = sg.formants[2].processBandpass (totalExc) * smFormantGain[2] * nasalSuppress;
-            const float f4 = sg.formants[3].processBandpass (totalExc) * smFormantGain[3] * nasalSuppress;
-            const float f5 = sg.formants[4].processBandpass (totalExc) * smFormantGain[4] * nasalSuppress;
-
-            const float nasalMul = 1.0f - 0.35f * smNasalDip;
-            const float tractOut = (f1 + (-f2 + f3 - f4 + f5) * nasalMul) * 4.2f;
+            // 64-bit notch-free Klatt parallel tract (nasal shaping happens on the voice sum, pole-zero pair)
+            std::array<double, VocalTract::kNumFormants> br {};
+            sg.tract.processBranches (static_cast<double> (totalExc), br);
+            const double t1 = br[0] * static_cast<double> (smFormantGain[0]);
+            const double t2 = br[1] * static_cast<double> (smFormantGain[1] * nasalSuppress);
+            const double t3 = br[2] * static_cast<double> (smFormantGain[2] * nasalSuppress);
+            const double t4 = br[3] * static_cast<double> (smFormantGain[3] * nasalSuppress);
+            const double t5 = br[4] * static_cast<double> (smFormantGain[4] * nasalSuppress);
+            const float f1 = static_cast<float> (t1), f2 = static_cast<float> (t2), f3 = static_cast<float> (t3);
+            const float f4 = static_cast<float> (t4), f5 = static_cast<float> (t5);
+            const float tractOut = static_cast<float> ((t1 + t2 + t3 + t4 + t5) * VocalTract::kOutputGain);
 
             const float singerOut = tractOut * sg.envLevel * sg.activeGain;
             sumL += singerOut * sg.currentPanL;
@@ -583,6 +610,9 @@ void SwarmVoice::renderBlock (float* outL,
 
         // Per-sample envelope for Sub-Abyss & Spectral Crown (zero block-boundary staircase steps!)
         const float envForLayers = std::clamp (sampleMaxEnv, 0.0f, 1.0f);
+        sumL = static_cast<float> (nasalL.process (static_cast<double> (sumL)));
+        sumR = static_cast<float> (nasalR.process (static_cast<double> (sumR)));
+
         float outSampleL = sumL * smoothedSingerNorm * voiceGainScale;
         float outSampleR = sumR * smoothedSingerNorm * voiceGainScale;
 

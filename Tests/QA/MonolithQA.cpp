@@ -20,6 +20,7 @@
 #include "DSP/DspMath.h"
 #include "DSP/EntropyStage.h"
 #include "DSP/PhonemeField.h"
+#include "DSP/VocalTract.h"
 #include "State/ParameterIDs.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -60,7 +61,12 @@ namespace lock
     constexpr double g2FreqPct        = 1.0;     // |peak - analytical| and cross-rate tracking
     constexpr double g2LevelDb        = 0.5;     // cross-rate peak level tracking vs 48 kHz
     constexpr double g2NotchDb        = 12.0;    // max dip below normalized analytical reference
-    constexpr double g2VowelRmsDb     = 3.0;     // per-note vowel RMS deviation from mean
+    constexpr double g2VowelRmsDb     = 3.0;     // vowel-space RMS deviation from mean (tract, source-neutral; see RE-SCOPE)
+    // RE-SCOPE (user decision 2026-11-26, Phase 3.2): the full-processor sustained-vowel RMS spread is set by
+    // glottal-harmonic / F1 coupling and cannot be levelled without moving factory presets beyond g8RmsDb
+    // (P01/P23 sit on the /a/ anchor, P14 on /u/). g2VowelRmsDb now applies to the formant engine itself
+    // (TractProbe IR energy = flat-source RMS, every rate); the full-processor spread is a non-regression guard.
+    constexpr double g2VowelSpreadDb  = 7.86;    // full-processor C3/C4 vowel RMS dev must not exceed Phase 2 baseline
 
     constexpr double g3D2Ratio        = 5.0;     // morph max |d2| vs smooth static reference
     constexpr double g3ToggleD2At48k  = 0.02;    // * (48000/fs)^2
@@ -496,35 +502,27 @@ void gate1()
 }
 
 // ============================================================================
-// ADAPTER (Gate 2): voiced vocal tract, mirrors SwarmVoice::renderBlock (lines 544-551) at baseline.
+// ADAPTER (Gate 2): voiced vocal tract, mirrors SwarmVoice::renderBlock — Phase 3.2: 64-bit VocalTract + nasal pair.
 struct TractProbe
 {
-    std::array<monolith::dsp::ZdfSvf, 5> f;
+    monolith::dsp::VocalTract tract;
+    monolith::dsp::NasalPoleZero nasal;
     monolith::dsp::FormantTarget t;
 
     void setup (const monolith::dsp::FormantTarget& tgt, double sr)
     {
         t = tgt;
-        for (size_t k = 0; k < 5; ++k)
+        tract.reset();
+        nasal.reset();
+        for (int k = 0; k < monolith::dsp::VocalTract::kNumFormants; ++k)
         {
-            f[k].reset();
-            f[k].invalidateCache();
-            const float q = std::clamp (t.freq[k] / std::max (t.bw[k], 20.0f), 0.5f, 20.0f);
-            f[k].setParameters (t.freq[k], q, static_cast<float> (sr));
+            const double fc = t.freq[static_cast<size_t> (k)];
+            tract.setFormant (k, fc, monolith::dsp::VocalTract::qFor (fc, t.bw[static_cast<size_t> (k)]), sr);
         }
+        nasal.set (t.nasalDip, sr);
     }
 
-    double process (double x)
-    {
-        const float xf = static_cast<float> (x);
-        const float f1 = f[0].processBandpass (xf) * t.gain[0];
-        const float f2 = f[1].processBandpass (xf) * t.gain[1];
-        const float f3 = f[2].processBandpass (xf) * t.gain[2];
-        const float f4 = f[3].processBandpass (xf) * t.gain[3];
-        const float f5 = f[4].processBandpass (xf) * t.gain[4];
-        const float nasalMul = 1.0f - 0.35f * t.nasalDip;
-        return (f1 + (-f2 + f3 - f4 + f5) * nasalMul) * 4.2f;
-    }
+    double process (double x) { return nasal.process (tract.process (x, t.gain)); }
 };
 
 monolith::dsp::FormantTarget vowelTarget (size_t v)
@@ -551,6 +549,7 @@ double analyticalRef (const monolith::dsp::FormantTarget& t, double f)
 
 void gate2()
 {
+    std::map<double, std::array<double, 3>> tractRmsDb; // flat-source tract RMS per rate / vowel
     double worstFreqPct = 0.0, worstTrackPct = 0.0, worstLevelDb = 0.0, worstNotch = 0.0;
     int missingPeaks = 0;
     for (size_t v = 0; v < kVowels.size(); ++v)
@@ -567,6 +566,11 @@ void gate2()
                 Vec ir (n);
                 for (size_t i = 0; i < n; ++i) ir[i] = probe.process (i == 0 ? 1.0 : 0.0);
                 const Vec p = powerSpectrum (ir, 0, n, Win::None);
+                {
+                    double e = 0.0;
+                    for (double x : ir) e += x * x;
+                    tractRmsDb[sr][v] = 10.0 * std::log10 (std::max (e, 1.0e-300));
+                }
                 const double binHz = sr / static_cast<double> (n);
                 auto magDb = [&] (double fq) {
                     const double b = fq / binHz;
@@ -635,11 +639,21 @@ void gate2()
         vowelStr += " " + std::string (note == 48 ? "C3" : "C4") + "[" + fmt (r[0]) + "," + fmt (r[1]) + "," + fmt (r[2]) + "]";
     }
 
+    double worstTractDev = 0.0;
+    std::string tractStr;
+    for (const auto& [rate, e] : tractRmsDb)
+    {
+        const double mean = (e[0] + e[1] + e[2]) / 3.0;
+        for (double x : e) worstTractDev = std::max (worstTractDev, std::abs (x - mean));
+        if (rate == 48000.0) tractStr = "[" + fmt (e[0] - mean) + "," + fmt (e[1] - mean) + "," + fmt (e[2] - mean) + "]";
+    }
+
     const bool pass = missingPeaks == 0 && worstFreqPct <= lock::g2FreqPct && worstTrackPct <= lock::g2FreqPct
-                   && worstLevelDb <= lock::g2LevelDb && worstNotch >= -lock::g2NotchDb && worstVowelDev <= lock::g2VowelRmsDb;
+                   && worstLevelDb <= lock::g2LevelDb && worstNotch >= -lock::g2NotchDb && worstTractDev <= lock::g2VowelRmsDb
+                   && worstVowelDev <= lock::g2VowelSpreadDb;
     record ("2", pass, "Ferr " + fmt (worstFreqPct, 2) + "% track " + fmt (worstTrackPct, 2) + "% lvl " + fmt (worstLevelDb, 2)
-                       + "dB missing " + std::to_string (missingPeaks) + " | notch " + fmt (worstNotch) + "dB | vowelRMS dev "
-                       + fmt (worstVowelDev, 2) + "dB" + vowelStr);
+                       + "dB missing " + std::to_string (missingPeaks) + " | notch " + fmt (worstNotch) + "dB | tract vowelRMS dev "
+                       + fmt (worstTractDev, 2) + "dB" + tractStr + " | full-proc spread " + fmt (worstVowelDev, 2) + "dB" + vowelStr);
 }
 
 // ============================================================================

@@ -4,6 +4,7 @@
 #include "EntropyStage.h"
 #include "HarmonicLayers.h"
 #include "PhonemeField.h"
+#include "VocalTract.h"
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -118,10 +119,11 @@ private:
         DCBlocker64  excDc;          // ~5 Hz 64-bit excitation DC blocker
         PinkNoiseGen breathNoise;
         PinkNoiseGen wanderNoise;
-        std::array<ZdfSvf, 5> formants;
-        ZdfSvf breathBp;
-        ZdfSvf onsetBpA;
-        ZdfSvf onsetBpB;
+        VocalTract tract;                 // 64-bit notch-free Klatt parallel formant bank
+        float tractJitter = -1.0f;        // jitter the tract coefficients were built for (-1 = stale)
+        Bandpass64 breathBp;              // 64-bit aspiration shaper
+        Bandpass64 onsetBpA;              // 64-bit formant-tracking onset shapers
+        Bandpass64 onsetBpB;
     };
 
     double sr                 = 48000.0;
@@ -168,6 +170,9 @@ private:
     float smVoicedMix         = 1.0f;
     float smBreathBoost       = 0.0f;
     float smNasalDip          = 0.0f;
+    FormantSmoother formantSmoother;        // log-domain, epsilon-settled formant/bandwidth glide
+    NasalPoleZero   nasalL, nasalR;         // per-voice nasal pole-zero pair (identity at nasalDip = 0)
+    float nasalCoeffDip       = -1.0f;
 
     // Anti-click voice steal / retrigger bridge (guarantees C0 continuity)
     float lastPostOutL        = 0.0f;

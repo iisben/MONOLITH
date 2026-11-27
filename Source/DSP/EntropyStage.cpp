@@ -49,6 +49,8 @@ void EntropyStage::prepare (double sampleRate, int maxBlockSize, uint32_t voiceS
 
     dcL.prepare (sr, 15.0);
     dcR.prepare (sr, 15.0);
+    dc2L.prepare (sr, 5.0);
+    dc2R.prepare (sr, 5.0);
 
     const size_t cap = static_cast<size_t> (sr * 0.04) + 64;
     delayL.prepare (cap);
@@ -76,6 +78,8 @@ void EntropyStage::reset() noexcept
 
     dcL.reset();
     dcR.reset();
+    dc2L.reset();
+    dc2R.reset();
     delayL.reset();
     delayR.reset();
     flutterNoise.resetFilter();
@@ -326,8 +330,8 @@ void EntropyStage::processBlock (float* left,
     // ── 4. End-of-chain 64-bit DC blocker (removes drive bias AND tape-flutter LF drift) ──
     for (int i = 0; i < n; ++i)
     {
-        left[i]  = sanitize (static_cast<float> (dcL.process (left[i])));
-        right[i] = sanitize (static_cast<float> (dcR.process (right[i])));
+        left[i]  = sanitize (static_cast<float> (dc2L.process (dcL.process (left[i]))));
+        right[i] = sanitize (static_cast<float> (dc2R.process (dcR.process (right[i]))));
     }
 }
 
