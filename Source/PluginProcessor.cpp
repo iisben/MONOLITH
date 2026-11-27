@@ -6,19 +6,26 @@
 namespace monolith
 {
 
+namespace
+{
+    constexpr const char* kLatencyParams[] { params::oversampleHq, params::driveAmount, params::macroRot, params::macroColossus };
+}
+
 MonolithAudioProcessor::MonolithAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "MONOLITH_STATE", params::createParameterLayout())
 {
-    apvts.addParameterListener (params::oversampleHq, this);
+    for (const char* id : kLatencyParams)
+        apvts.addParameterListener (id, this);
     presetManager.initializeAB (apvts);
 }
 
 MonolithAudioProcessor::~MonolithAudioProcessor()
 {
     cancelPendingUpdate();
-    apvts.removeParameterListener (params::oversampleHq, this);
+    for (const char* id : kLatencyParams)
+        apvts.removeParameterListener (id, this);
 }
 
 void MonolithAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -112,8 +119,10 @@ void MonolithAudioProcessor::copyActiveToInactiveAB()
 void MonolithAudioProcessor::parameterChanged (const juce::String& parameterID, float newValue)
 {
     (void) newValue;
-    if (parameterID == params::oversampleHq)
-        triggerAsyncUpdate();
+    // Latency depends on OS mode and on whether the drive stage is engaged (0 when bypassed)
+    for (const char* id : kLatencyParams)
+        if (parameterID == id)
+            triggerAsyncUpdate();
 }
 
 void MonolithAudioProcessor::handleAsyncUpdate()

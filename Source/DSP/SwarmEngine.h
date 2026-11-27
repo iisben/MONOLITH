@@ -110,6 +110,18 @@ private:
     void triggerNoteOff (int midiNote, bool legatoOn, float glideSec) noexcept;
     void panicImmediate() noexcept;
     [[nodiscard]] int allocateVoiceIndex() noexcept;
+    [[nodiscard]] bool isDriveEngagedFromParams() const noexcept;
+
+    /** Control values evaluated once per absolute 64-sample control cell (block-size invariant). */
+    struct ControlCell
+    {
+        VoiceRenderParams vParams;
+        SpaceType spaceModel = SpaceType::Cathedral;
+        float spaceMix = 0.0f, spaceDecay = 0.0f, spaceDamp = 0.0f, shimmer = 0.0f;
+        bool  freeze = false;
+        float effPhX = 0.5f, effPhY = 0.86f, effSpread = 0.68f, effTension = 0.68f, effBreath = 0.2f, liveExpr = 0.78f;
+    };
+    ControlCell cell;
 
     CachedParamPtrs ptrs;
     double   sr               = 48000.0;

@@ -49,6 +49,10 @@ struct VoiceRenderParams
     float expression01      = 0.78f;
     float aftertouch01      = 0.0f;
     float glideTimeSec      = 0.14f;
+
+    // Absolute control-grid flags supplied by SwarmEngine (block-size invariance)
+    bool  controlCellStart  = true;  // chunk begins on an absolute control-cell boundary
+    bool  controlCellEnd    = true;  // chunk ends on an absolute control-cell boundary
 };
 
 /**
@@ -76,9 +80,9 @@ public:
     [[nodiscard]] float getCurrentLevel() const noexcept { return currentEnvPeak; }
     [[nodiscard]] int  getActiveSingerCount() const noexcept { return activeSingerCount; }
 
-    [[nodiscard]] int getLatencySamples (bool hq4x) const noexcept
+    [[nodiscard]] int getLatencySamples (bool hq4x, bool driveEngaged) const noexcept
     {
-        return entropy.getLatencySamples (hq4x);
+        return entropy.getLatencySamples (hq4x, driveEngaged);
     }
 
     /**
@@ -111,6 +115,7 @@ private:
         float activeGain       = 0.0f;
         float envLevel         = 0.0f;
 
+        DCBlocker64  excDc;          // ~5 Hz 64-bit excitation DC blocker
         PinkNoiseGen breathNoise;
         PinkNoiseGen wanderNoise;
         std::array<ZdfSvf, 5> formants;
@@ -135,6 +140,9 @@ private:
     float    silentTailSec     = 0.0f;
     float    currentEnvPeak    = 0.0f;
     int      activeSingerCount = 0;
+    int      ctrlCounter       = 0;   // absolute per-voice control-rate counter
+    int      silentSamples     = 0;   // consecutive silent released samples
+    FormantTarget ctrlTarget {};      // persists across render calls
 
     // Legato portamento & smooth bell-shaped pitch scoop state
     float currentNoteF        = 60.0f;
@@ -174,6 +182,7 @@ private:
 
     std::vector<float> voiceBufL;
     std::vector<float> voiceBufR;
+    std::vector<float> envBuf;
 };
 
 } // namespace monolith::dsp

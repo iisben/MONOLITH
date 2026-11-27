@@ -4,6 +4,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <vector>
 
@@ -105,6 +106,38 @@ private:
     float r  = 0.998f;
     float x1 = 0.0f;
     float y1 = 0.0f;
+};
+
+// ============================================================================
+/** 64-bit one-pole/one-zero DC blocker with rate-scaled corner (default ~5 Hz). */
+class DCBlocker64
+{
+public:
+    void prepare (double sampleRate, double cornerHz = 5.0) noexcept
+    {
+        const double sr = std::max (8000.0, sampleRate);
+        r = std::exp (-2.0 * 3.14159265358979323846 * cornerHz / sr);
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        x1 = 0.0;
+        y1 = 0.0;
+    }
+
+    [[nodiscard]] inline double process (double x) noexcept
+    {
+        const double y = x - x1 + r * y1;
+        x1 = x;
+        y1 = std::isfinite (y) ? y : 0.0;
+        return y1;
+    }
+
+private:
+    double r  = 0.9993;
+    double x1 = 0.0;
+    double y1 = 0.0;
 };
 
 // ============================================================================
@@ -304,17 +337,33 @@ private:
 
 // ============================================================================
 /**
-    Shared, read-only, band-limited Liljencrants-Fant (LF) glottal flow
-    derivative wavetable bank. Precomputed across 8 Tension/Effort slices and
-    10 mip-map harmonic tiers with continuous trilinear interpolation across
-    phase, tension, and mip level (zero aliasing AND zero mip-switch clicks).
+    Shared, read-only, band-limited Liljencrants-Fant (LF, Rd-parametrized) glottal
+    flow-derivative wavetable bank.
+
+    - Harmonic amplitudes come from the CLOSED-FORM Fourier series of the LF model
+      (open-phase exponential sinusoid + exponential return phase, epsilon/alpha solved
+      for return-phase continuity and zero net flow) -> analytical spectral tilt set by Ta,
+      open quotient set by Te, no time-domain sampling aliasing.
+    - Tension/Effort maps to Rd (1.6 lax -> 0.3 pressed): 12 slices across OQ & tilt.
+    - 3 mip tables per octave (256 -> 1 harmonics). Mip selection keeps the brighter table
+      <= 0.466 fs and the darker table <= 0.37 fs (no component ever exceeds Nyquist).
+    - 4-point cubic Hermite phase interpolation, bilinear across tension x mip.
+    - Companion band-limited glottal AIRFLOW table (integral of the derivative,
+      normalized 0..1) drives open-phase-coupled aspiration noise.
 */
 class LfGlottalTables
 {
 public:
-    static constexpr int kNumTensionSlices = 8;
-    static constexpr int kNumMipLevels     = 10;
-    static constexpr int kTableSize        = 1024;
+    static constexpr int kNumTensionSlices = 12;
+    static constexpr int kMipsPerOctave    = 3;
+    static constexpr int kNumMipLevels     = 25;
+    static constexpr int kMaxHarmonics     = 256;
+    static constexpr int kTableSize        = 2048;
+    static constexpr int kRowStride        = kTableSize + 3; // [x(N-1), x(0..N-1), x(0), x(1)]
+    static constexpr int kFlowSize         = 256;
+    static constexpr float kDarkEdge       = 0.37f;          // fraction of fs for the darker mip
+    static constexpr int kCalibLoH         = 4;              // legacy-loudness calibration band (formant region,
+    static constexpr int kCalibHiH         = 32;             //  excludes h1-h3 which formants barely pass)
 
     static const LfGlottalTables& instance()
     {
@@ -322,161 +371,323 @@ public:
         return singleton;
     }
 
-    /** Sample band-limited LF glottal waveform with click-free trilinear interpolation. */
+    /** Tension/Effort 0..1 -> LF Rd shape parameter. */
+    [[nodiscard]] static double tensionToRd (double tension01) noexcept
+    {
+        return 1.6 - 1.3 * std::pow (std::clamp (tension01, 0.0, 1.0), 1.2);
+    }
+
+    /** Band-limited LF glottal flow derivative (RMS-normalized ~0.65). */
     [[nodiscard]] inline float sample (float phase01, float tension01,
                                        float freqHz, float sampleRate) const noexcept
     {
-        const float clampedFreq = std::max (freqHz, 12.0f);
-        // baseH = 0.23 * sr / freq guarantees even the brighter mip0 stays < 0.46 * sr (alias-free)
-        // while crossfading continuously across octave tiers (zero vibrato/glide clicks).
-        const float baseH = (0.23f * sampleRate) / clampedFreq;
-        const float mipFloat = std::clamp (8.0f - fastLog2 (std::max (baseH, 1.0f)),
-                                           0.0f,
-                                           static_cast<float> (kNumMipLevels - 2));
+        const float f  = std::max (freqHz, 12.0f);
+        const float sr = std::max (sampleRate, 8000.0f);
+        const float mipFloat = std::clamp (static_cast<float> (kMipsPerOctave)
+                                               * std::log2 (static_cast<float> (kMaxHarmonics) * f / (kDarkEdge * sr)),
+                                           0.0f, static_cast<float> (kNumMipLevels - 2));
         const int   m0    = static_cast<int> (mipFloat);
-        const int   m1    = m0 + 1;
         const float mFrac = mipFloat - static_cast<float> (m0);
 
-        const float tScaled = std::clamp (tension01, 0.0f, 1.0f)
-                            * static_cast<float> (kNumTensionSlices - 1);
+        const float tScaled = std::clamp (tension01, 0.0f, 1.0f) * static_cast<float> (kNumTensionSlices - 1);
         const int   t0      = std::min (static_cast<int> (tScaled), kNumTensionSlices - 2);
-        const int   t1      = t0 + 1;
         const float tFrac   = tScaled - static_cast<float> (t0);
 
         float p = phase01 - std::floor (phase01);
-        if (p < 0.0f) p += 1.0f;
+        const float pos = p * static_cast<float> (kTableSize);
+        int i = static_cast<int> (pos);
+        const float fr = pos - static_cast<float> (i);
+        i &= (kTableSize - 1);
 
-        const float pos  = p * static_cast<float> (kTableSize);
-        const int   i0   = static_cast<int> (pos) & (kTableSize - 1);
-        const float frac = pos - std::floor (pos);
+        // Catmull-Rom cubic Hermite weights
+        const float fr2 = fr * fr, fr3 = fr2 * fr;
+        const float wm1 = -0.5f * fr + fr2 - 0.5f * fr3;
+        const float w0  = 1.0f - 2.5f * fr2 + 1.5f * fr3;
+        const float w1  = 0.5f * fr + 2.0f * fr2 - 1.5f * fr3;
+        const float w2  = -0.5f * fr2 + 0.5f * fr3;
 
-        const auto& r00 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m0)];
-        const auto& r01 = tables[static_cast<size_t> (t0)][static_cast<size_t> (m1)];
-        const auto& r10 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m0)];
-        const auto& r11 = tables[static_cast<size_t> (t1)][static_cast<size_t> (m1)];
+        auto tap = [&] (int t, int m) noexcept
+        {
+            const float* r = row (t, m) + i;
+            return wm1 * r[0] + w0 * r[1] + w1 * r[2] + w2 * r[3];
+        };
 
-        const size_t ui0 = static_cast<size_t> (i0);
-        const float s00 = r00[ui0] + frac * (r00[ui0 + 1] - r00[ui0]);
-        const float s01 = r01[ui0] + frac * (r01[ui0 + 1] - r01[ui0]);
-        const float s10 = r10[ui0] + frac * (r10[ui0 + 1] - r10[ui0]);
-        const float s11 = r11[ui0] + frac * (r11[ui0 + 1] - r11[ui0]);
-
+        const float s00 = tap (t0, m0),     s01 = tap (t0, m0 + 1);
+        const float s10 = tap (t0 + 1, m0), s11 = tap (t0 + 1, m0 + 1);
         const float s0 = s00 + mFrac * (s01 - s00);
         const float s1 = s10 + mFrac * (s11 - s10);
         return s0 + tFrac * (s1 - s0);
     }
 
-    /** Returns [0, 1] glottal-open envelope pulse used to modulate aspirated breath noise. */
+    /** Normalized [0, 1] band-limited glottal airflow at this phase (drives aspiration). */
     [[nodiscard]] inline float glottalOpenGate (float phase01, float tension01) const noexcept
     {
-        const float t  = std::clamp (tension01, 0.0f, 1.0f);
-        const float te = 0.72f - 0.30f * t;
-        if (phase01 >= te || phase01 < 0.0f)
-            return 0.08f;
+        float p = phase01 - std::floor (phase01);
+        const float pos = p * static_cast<float> (kFlowSize);
+        int i = static_cast<int> (pos);
+        const float fr = pos - static_cast<float> (i);
+        i &= (kFlowSize - 1);
 
-        const float norm = phase01 / std::max (te, 0.05f);
-        // Smooth raised parabolic pulse matching sin(pi * norm) with zero trig overhead
-        return 0.08f + 0.92f * (4.0f * norm * (1.0f - norm));
+        const float tScaled = std::clamp (tension01, 0.0f, 1.0f) * static_cast<float> (kNumTensionSlices - 1);
+        const int   t0      = std::min (static_cast<int> (tScaled), kNumTensionSlices - 2);
+        const float tFrac   = tScaled - static_cast<float> (t0);
+
+        const auto& a = flow[static_cast<size_t> (t0)];
+        const auto& b = flow[static_cast<size_t> (t0 + 1)];
+        const size_t ui = static_cast<size_t> (i);
+        const float fa = a[ui] + fr * (a[ui + 1] - a[ui]);
+        const float fb = b[ui] + fr * (b[ui + 1] - b[ui]);
+        return fa + tFrac * (fb - fa);
+    }
+
+    [[nodiscard]] static int mipMaxHarmonic (int mip) noexcept
+    {
+        const double h = static_cast<double> (kMaxHarmonics)
+                       * std::pow (2.0, -static_cast<double> (mip) / static_cast<double> (kMipsPerOctave));
+        return std::max (1, static_cast<int> (std::floor (h + 1.0e-9)));
     }
 
 private:
-    static constexpr std::array<int, kNumMipLevels> kMipMaxHarmonic {
-        256, 128, 64, 32, 16, 8, 4, 2, 1, 1
+    std::vector<float> tables;
+    std::array<std::array<float, kFlowSize + 1>, kNumTensionSlices> flow {};
+
+    [[nodiscard]] inline const float* row (int t, int m) const noexcept
+    {
+        return tables.data() + static_cast<size_t> (t * kNumMipLevels + m) * static_cast<size_t> (kRowStride);
+    }
+
+    struct LfShape
+    {
+        double te = 0.6, tp = 0.4, ta = 0.03, eps = 30.0, alpha = 2.0, e0 = 1.0, wg = 7.85;
     };
 
-    using WaveRow = std::array<float, kTableSize + 1>;
-    std::array<std::array<WaveRow, kNumMipLevels>, kNumTensionSlices> tables {};
+    static LfShape solveLf (double rd) noexcept
+    {
+        constexpr double pi = 3.14159265358979323846;
+        const double rap = (-1.0 + 4.8 * rd) / 100.0;
+        const double rkp = (22.4 + 11.8 * rd) / 100.0;
+        const double rgp = 0.25 * rkp / ((0.11 * rd / (0.5 + 1.2 * rkp)) - rap);
+
+        LfShape s;
+        s.tp = 1.0 / (2.0 * rgp);
+        s.te = std::min (s.tp * (1.0 + rkp), 0.97);
+        s.ta = std::max (rap, 1.0e-3);
+        s.wg = pi / s.tp;
+
+        // Return phase: eps * Ta = 1 - exp(-eps * (Tc - Te)), Tc = 1
+        double eps = 1.0 / s.ta;
+        for (int it = 0; it < 80; ++it)
+            eps = (1.0 - std::exp (-eps * (1.0 - s.te))) / s.ta;
+        s.eps = eps;
+
+        // Zero net flow: open-phase area + return-phase area = 0 (Ee normalized to 1)
+        const double tc = 1.0 - s.te;
+        const double retArea = -(1.0 / (eps * s.ta)) * ((1.0 - std::exp (-eps * tc)) / eps - tc * std::exp (-eps * tc));
+        auto net = [&] (double a) noexcept
+        {
+            const double e0 = -1.0 / (std::exp (a * s.te) * std::sin (s.wg * s.te));
+            const double openArea = e0 * (std::exp (a * s.te) * (a * std::sin (s.wg * s.te) - s.wg * std::cos (s.wg * s.te)) + s.wg)
+                                  / (a * a + s.wg * s.wg);
+            return openArea + retArea;
+        };
+
+        double lo = -40.0, hi = -40.0, prev = net (-40.0);
+        bool bracketed = false;
+        for (double a = -39.75; a <= 400.0; a += 0.25)
+        {
+            const double v = net (a);
+            if ((v > 0.0) != (prev > 0.0)) { lo = a - 0.25; hi = a; bracketed = true; break; }
+            prev = v;
+        }
+        double alpha = 0.0;
+        if (bracketed)
+        {
+            double flo = net (lo);
+            for (int it = 0; it < 100; ++it)
+            {
+                const double mid = 0.5 * (lo + hi);
+                const double fm = net (mid);
+                if ((fm > 0.0) == (flo > 0.0)) { lo = mid; flo = fm; } else { hi = mid; }
+            }
+            alpha = 0.5 * (lo + hi);
+        }
+        s.alpha = alpha;
+        s.e0 = -1.0 / (std::exp (alpha * s.te) * std::sin (s.wg * s.te));
+        return s;
+    }
+
+    /** Closed-form complex Fourier coefficient c_h of the LF derivative (period 1). */
+    static std::complex<double> lfCoeff (const LfShape& s, int h) noexcept
+    {
+        using C = std::complex<double>;
+        constexpr double pi = 3.14159265358979323846;
+        const double w = 2.0 * pi * static_cast<double> (h);
+        const C j (0.0, 1.0);
+
+        auto expInt = [&] (C sv, double T) noexcept -> C
+        {
+            if (std::abs (sv) < 1.0e-12) return C (T, 0.0);
+            return (std::exp (sv * T) - 1.0) / sv;
+        };
+        const C s1 (s.alpha, s.wg - w);
+        const C s2 (s.alpha, -(s.wg + w));
+        const C open = (s.e0 / (2.0 * j)) * (expInt (s1, s.te) - expInt (s2, s.te));
+
+        const double k = std::exp (-s.eps * (1.0 - s.te));
+        const C eTe = std::exp (-j * w * s.te);
+        const C e1  = std::exp (-j * w);
+        const C i1  = (eTe - k * e1) / (C (s.eps, w));
+        const C i2  = k * (eTe - e1) / (j * w);
+        const C ret = -(1.0 / (s.eps * s.ta)) * (i1 - i2);
+        return open + ret;
+    }
+
+    /** Formant-band (kCalibLoH..kCalibHiH) harmonic power of the legacy MONOLITH pulse at RMS 0.65. */
+    static double legacyBandPower (double tension) noexcept
+    {
+        constexpr double pi = 3.14159265358979323846;
+        constexpr int n = 2048;
+        std::array<double, n> raw {};
+        const double te = 0.72 - 0.30 * tension, tp = 0.44 - 0.16 * tension;
+        const double ta = 0.065 - 0.056 * tension, alpha = 1.2 + 3.4 * tension;
+        const double eAtTe = std::sin (pi * te / tp);
+        const double endDecay = std::exp (-(1.0 - te) / ta);
+        double mean = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = static_cast<double> (i) / n;
+            const double v = (t < te) ? std::exp (alpha * (t - te)) * std::sin (pi * t / tp)
+                                      : eAtTe * (std::exp (-(t - te) / ta) - endDecay) / std::max (1.0 - endDecay, 1.0e-6);
+            raw[static_cast<size_t> (i)] = v;
+            mean += v / n;
+        }
+        double pw = 0.0;
+        for (auto& v : raw) { v -= mean; pw += v * v / n; }
+        const double sc2 = (0.65 * 0.65) / std::max (pw, 1.0e-18);
+        double band = 0.0;
+        for (int h = kCalibLoH; h <= kCalibHiH; ++h)
+        {
+            double c = 0.0, sn = 0.0;
+            for (int i = 0; i < n; ++i)
+            {
+                const double ang = 2.0 * pi * h * i / n;
+                c  += raw[static_cast<size_t> (i)] * std::cos (ang);
+                sn += raw[static_cast<size_t> (i)] * std::sin (ang);
+            }
+            band += 2.0 * (c * c + sn * sn) / (static_cast<double> (n) * n) * sc2;
+        }
+        return band;
+    }
+
+    static void inverseRealFft (std::vector<std::complex<double>>& a)
+    {
+        // ifft via conj(fft(conj(X))), no 1/N scaling (X holds Fourier-series coefficients)
+        for (auto& v : a) v = std::conj (v);
+        const size_t n = a.size();
+        for (size_t i = 1, jj = 0; i < n; ++i)
+        {
+            size_t bit = n >> 1;
+            for (; (jj & bit) != 0; bit >>= 1) jj ^= bit;
+            jj ^= bit;
+            if (i < jj) std::swap (a[i], a[jj]);
+        }
+        for (size_t len = 2; len <= n; len <<= 1)
+        {
+            const size_t half = len / 2;
+            for (size_t kk = 0; kk < half; ++kk)
+            {
+                const double ang = -2.0 * 3.14159265358979323846 * static_cast<double> (kk) / static_cast<double> (len);
+                const std::complex<double> tw (std::cos (ang), std::sin (ang));
+                for (size_t i = 0; i < n; i += len)
+                {
+                    const auto u = a[i + kk];
+                    const auto v = a[i + kk + half] * tw;
+                    a[i + kk] = u + v;
+                    a[i + kk + half] = u - v;
+                }
+            }
+        }
+        for (auto& v : a) v = std::conj (v);
+    }
 
     LfGlottalTables()
     {
-        constexpr int kRawN = 2048;
-        std::array<double, kRawN> raw {};
-        std::array<double, 257> cosCoeff {};
-        std::array<double, 257> sinCoeff {};
+        constexpr double pi = 3.14159265358979323846;
+        tables.assign (static_cast<size_t> (kNumTensionSlices * kNumMipLevels * kRowStride), 0.0f);
+        std::vector<std::complex<double>> coeff (static_cast<size_t> (kMaxHarmonics + 1));
+        std::vector<std::complex<double>> spec (static_cast<size_t> (kTableSize));
 
         for (int slice = 0; slice < kNumTensionSlices; ++slice)
         {
             const double tension = static_cast<double> (slice) / static_cast<double> (kNumTensionSlices - 1);
+            const LfShape shape = solveLf (tensionToRd (tension));
 
-            const double te = 0.72 - 0.30 * tension;
-            const double tp = 0.44 - 0.16 * tension;
-            const double ta = 0.065 - 0.056 * tension;
-            const double alpha = 1.2 + 3.4 * tension;
-
-            double mean = 0.0;
-            for (int n = 0; n < kRawN; ++n)
+            double pw = 0.0;
+            for (int h = 1; h <= kMaxHarmonics; ++h)
             {
-                const double t = static_cast<double> (n) / static_cast<double> (kRawN);
-                double val = 0.0;
-                if (t < te)
-                {
-                    val = std::exp (alpha * (t - te)) * std::sin (3.14159265358979323846 * t / tp);
-                }
-                else
-                {
-                    const double eAtTe = std::sin (3.14159265358979323846 * te / tp);
-                    const double dt = t - te;
-                    const double rem = std::max (1.0 - te, 1.0e-4);
-                    const double decay = std::exp (-dt / std::max (ta, 1.0e-4));
-                    const double endDecay = std::exp (-rem / std::max (ta, 1.0e-4));
-                    val = eAtTe * (decay - endDecay) / std::max (1.0 - endDecay, 1.0e-6);
-                }
-                raw[static_cast<size_t> (n)] = val;
-                mean += val;
+                coeff[static_cast<size_t> (h)] = lfCoeff (shape, h);
+                pw += 2.0 * std::norm (coeff[static_cast<size_t> (h)]);
             }
-            mean /= static_cast<double> (kRawN);
+            const double rms = std::sqrt (pw);
+            double normScale = (rms > 1.0e-12) ? (0.65 / rms) : 1.0;
 
-            double rms = 0.0;
-            for (int n = 0; n < kRawN; ++n)
-            {
-                raw[static_cast<size_t> (n)] -= mean;
-                rms += raw[static_cast<size_t> (n)] * raw[static_cast<size_t> (n)];
-            }
-            rms = std::sqrt (rms / static_cast<double> (kRawN));
-            const double normScale = (rms > 1.0e-9) ? (0.65 / rms) : 1.0;
-            for (int n = 0; n < kRawN; ++n)
-                raw[static_cast<size_t> (n)] *= normScale;
-
-            for (int h = 1; h <= 256; ++h)
-            {
-                double c = 0.0;
-                double s = 0.0;
-                const double w = (2.0 * 3.14159265358979323846 * static_cast<double> (h)) / static_cast<double> (kRawN);
-                for (int n = 0; n < kRawN; ++n)
-                {
-                    const double ang = w * static_cast<double> (n);
-                    c += raw[static_cast<size_t> (n)] * std::cos (ang);
-                    s += raw[static_cast<size_t> (n)] * std::sin (ang);
-                }
-                cosCoeff[static_cast<size_t> (h)] = (2.0 / static_cast<double> (kRawN)) * c;
-                sinCoeff[static_cast<size_t> (h)] = (2.0 / static_cast<double> (kRawN)) * s;
-            }
+            // Loudness calibration: match the formant-band (h 4..32) energy of the legacy MONOLITH
+            // glottal pulse at this tension so factory preset gain staging is preserved.
+            double bandNew = 0.0;
+            for (int h = kCalibLoH; h <= kCalibHiH; ++h)
+                bandNew += 2.0 * std::norm (coeff[static_cast<size_t> (h)]) * normScale * normScale;
+            const double bandOld = legacyBandPower (tension);
+            if (bandNew > 1.0e-15 && bandOld > 1.0e-15)
+                normScale *= std::sqrt (bandOld / bandNew);
 
             for (int mip = 0; mip < kNumMipLevels; ++mip)
             {
-                const int maxH = kMipMaxHarmonic[static_cast<size_t> (mip)];
-                auto& out = tables[static_cast<size_t> (slice)][static_cast<size_t> (mip)];
-                for (int i = 0; i < kTableSize; ++i)
+                const int maxH = mipMaxHarmonic (mip);
+                std::fill (spec.begin(), spec.end(), std::complex<double> (0.0, 0.0));
+                for (int h = 1; h <= maxH; ++h)
                 {
-                    const double phase = (2.0 * 3.14159265358979323846 * static_cast<double> (i))
-                                       / static_cast<double> (kTableSize);
-                    double acc = 0.0;
-                    for (int h = 1; h <= maxH; ++h)
+                    double window = 1.0;
+                    if (maxH >= 4 && h > maxH - 2)
                     {
-                        double window = 1.0;
-                        if (maxH >= 4 && h > maxH - 2)
-                        {
-                            const double u = static_cast<double> (h - (maxH - 2)) / 3.0;
-                            window = 0.5 * (1.0 + std::cos (3.14159265358979323846 * u));
-                        }
-                        const double ang = static_cast<double> (h) * phase;
-                        acc += window * (cosCoeff[static_cast<size_t> (h)] * std::cos (ang)
-                                       + sinCoeff[static_cast<size_t> (h)] * std::sin (ang));
+                        const double u = static_cast<double> (h - (maxH - 2)) / 3.0;
+                        window = 0.5 * (1.0 + std::cos (pi * u));
                     }
-                    out[static_cast<size_t> (i)] = static_cast<float> (acc);
+                    const auto c = coeff[static_cast<size_t> (h)] * (window * normScale);
+                    spec[static_cast<size_t> (h)] = c;
+                    spec[static_cast<size_t> (kTableSize - h)] = std::conj (c);
                 }
-                out[kTableSize] = out[0];
+                inverseRealFft (spec);
+
+                float* out = tables.data() + static_cast<size_t> (slice * kNumMipLevels + mip) * static_cast<size_t> (kRowStride);
+                for (int i = 0; i < kTableSize; ++i)
+                    out[i + 1] = static_cast<float> (spec[static_cast<size_t> (i)].real());
+                out[0]              = out[kTableSize];
+                out[kTableSize + 1] = out[1];
+                out[kTableSize + 2] = out[2];
             }
+
+            // Band-limited airflow U(phi) = integral of derivative, normalized to [0, 1]
+            std::array<double, kFlowSize> u {};
+            double uMin = 1.0e30, uMax = -1.0e30;
+            for (int n = 0; n < kFlowSize; ++n)
+            {
+                const double ph = static_cast<double> (n) / static_cast<double> (kFlowSize);
+                double acc = 0.0;
+                for (int h = 1; h <= kMaxHarmonics; ++h)
+                {
+                    const double w = 2.0 * pi * static_cast<double> (h);
+                    const auto c = coeff[static_cast<size_t> (h)] / std::complex<double> (0.0, w);
+                    acc += 2.0 * (c * std::exp (std::complex<double> (0.0, w * ph))).real();
+                }
+                u[static_cast<size_t> (n)] = acc;
+                uMin = std::min (uMin, acc);
+                uMax = std::max (uMax, acc);
+            }
+            auto& fl = flow[static_cast<size_t> (slice)];
+            const double span = std::max (uMax - uMin, 1.0e-12);
+            for (int n = 0; n < kFlowSize; ++n)
+                fl[static_cast<size_t> (n)] = static_cast<float> ((u[static_cast<size_t> (n)] - uMin) / span);
+            fl[kFlowSize] = fl[0];
         }
     }
 };

@@ -127,10 +127,21 @@ void SwarmEngine::reset() noexcept
     smoothersPrimed    = false;
 }
 
+bool SwarmEngine::isDriveEngagedFromParams() const noexcept
+{
+    // Mirrors the effDrive macro mapping in processBlock (drive + Rot + Colossus contributions)
+    const float drive = loadParam (ptrs.driveAmount, params::defaults::driveAmount);
+    const float rot   = loadParam (ptrs.macroRot, 0.0f);
+    const float col   = loadParam (ptrs.macroColossus, 0.0f);
+    const float rCurve = rot * (0.65f + 0.35f * rot);
+    const float cCurve = col * (0.65f + 0.35f * col);
+    return std::clamp (drive + 0.52f * rCurve + 0.12f * cCurve, 0.0f, 1.0f) > 1.0e-5f;
+}
+
 int SwarmEngine::getLatencySamples() const noexcept
 {
     const bool hq4x = loadParam (ptrs.oversampleHq, 0.0f) >= 0.5f;
-    return voices[0].getLatencySamples (hq4x);
+    return voices[0].getLatencySamples (hq4x, isDriveEngagedFromParams());
 }
 
 void SwarmEngine::panicImmediate() noexcept
@@ -500,8 +511,6 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
     float lastEffBreath  = smBreath;
     float lastLiveExpr   = smExpr;
 
-    const int maxStep = std::min (preparedMaxBlock, kControlSubBlockMax);
-
     auto renderSpan = [&] (int startOffset, int spanSamples) noexcept
     {
         int pos = startOffset;
@@ -509,115 +518,135 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
 
         while (remaining > 0)
         {
-            const int chunk = std::min (remaining, maxStep);
+            // Absolute control grid: cells start where sampleCounter % kControlSubBlockMax == 0,
+            // independent of host block size and MIDI event splits.
+            const int cellPos = static_cast<int> (sampleCounter % static_cast<uint64_t> (kControlSubBlockMax));
+            const int chunk   = std::min (remaining, kControlSubBlockMax - cellPos);
             ++chunkCount;
 
-            // Sample-rate-independent sub-block exponential smoothing (22 ms controls, 35 ms singer budget)
-            const float dtSec      = static_cast<float> (chunk) / static_cast<float> (sr);
-            const float ctrlAlpha  = 1.0f - std::exp (-dtSec / 0.022f);
-            const float exprAlpha  = 1.0f - std::exp (-dtSec / 0.030f);
-            const float sizeAlpha  = 1.0f - std::exp (-dtSec / 0.045f);
-
-            smoothToward (smPhX, basePhX, ctrlAlpha);
-            smoothToward (smPhY, basePhY, ctrlAlpha);
-            smoothToward (smEnsSize, baseEnsSize, sizeAlpha);
-            smoothToward (smSpread, baseSpread, ctrlAlpha);
-            smoothToward (smVibrato, baseVibrato, ctrlAlpha);
-            smoothToward (smTension, baseTension, ctrlAlpha);
-            smoothToward (smBreath, baseBreath, ctrlAlpha);
-            smoothToward (smThroat, baseThroat, ctrlAlpha);
-            smoothToward (smFocus, baseFocus, ctrlAlpha);
-            smoothToward (smSub, baseSub, ctrlAlpha);
-            smoothToward (smCrown, baseCrown, ctrlAlpha);
-            smoothToward (smDrive, baseDrive, ctrlAlpha);
-            smoothToward (smTape, baseTape, ctrlAlpha);
-            smoothToward (smOxide, baseOxide, ctrlAlpha);
-            smoothToward (smScrewPitch, baseScrewPitch, ctrlAlpha);
-            smoothToward (smScrewDepth, baseScrewDepth, ctrlAlpha);
-            smoothToward (smPitchBend, pitchBendSemitones, ctrlAlpha);
-            smoothToward (smAftertouch, channelAftertouch, exprAlpha);
-            smoothToward (smExpr, midiCc1Received ? midiModWheel : paramExpr, exprAlpha);
-            smoothToward (smColossus, colossusTarget, ctrlAlpha);
-            smoothToward (smSpecter, specterTarget, ctrlAlpha);
-            smoothToward (smRot, rotTarget, ctrlAlpha);
-            smoothToward (smAbyss, abyssTarget, ctrlAlpha);
-
-            const float cCurve = smColossus * (0.65f + 0.35f * smColossus);
-            const float sCurve = smSpecter  * (0.65f + 0.35f * smSpecter);
-            const float rCurve = smRot      * (0.65f + 0.35f * smRot);
-            const float aCurve = smAbyss    * (0.65f + 0.35f * smAbyss);
-
-            const float effSize    = std::clamp (smEnsSize + 10.0f * cCurve, 1.0f, 24.0f);
-            const float effSpread  = std::clamp (smSpread + 0.30f * cCurve, 0.0f, 1.0f);
-            const float effSub     = std::clamp (smSub + 0.45f * cCurve + 0.16f * aCurve, 0.0f, 1.0f);
-            const float effCrown   = std::clamp (smCrown + 0.35f * cCurve + 0.25f * sCurve, 0.0f, 1.0f);
-            const float effBreath  = std::clamp (smBreath + 0.48f * sCurve, 0.0f, 1.0f);
-            const float effTension = std::clamp (smTension + 0.22f * cCurve - 0.38f * sCurve, 0.0f, 1.0f);
-            const float effThroat  = std::clamp (smThroat - 2.2f * sCurve - 1.8f * rCurve, -12.0f, 12.0f);
-            const float effDrive   = std::clamp (smDrive + 0.52f * rCurve + 0.12f * cCurve, 0.0f, 1.0f);
-            const float effTape    = std::clamp (smTape + 0.58f * rCurve + 0.10f * sCurve, 0.0f, 1.0f);
-            const float effOxide   = std::clamp (smOxide + 0.48f * rCurve, 0.0f, 1.0f);
-
-            const float effSpaceMix   = std::clamp (baseSpaceMix + 0.32f * aCurve + 0.14f * cCurve + 0.14f * sCurve, 0.0f, 1.0f);
-            const float effSpaceDecay = std::clamp (baseSpaceDecay + 0.28f * aCurve + 0.12f * cCurve, 0.0f, 1.0f);
-            const float effSpaceDamp  = std::clamp (baseSpaceDamp + 0.34f * aCurve, 0.0f, 1.0f);
-            const float effShimmer    = std::clamp (baseShimmer + 0.42f * sCurve + 0.22f * aCurve, 0.0f, 1.0f);
-
-            const float compDb = -1.8f * cCurve - 1.2f * rCurve;
-            smoothMasterGain.setTargetValue (dbToGain (masterGainDb + compDb));
-
-            orbitEngine.advance (chunk, orbitOn, orbitRateHz, orbitDepth01, orbitSyncOn, hostBpm, smPhX, smPhY);
-            const float orbitX = orbitEngine.getEffectiveX();
-            const float orbitY = orbitEngine.getEffectiveY();
-            const float effPhX = std::clamp (orbitX + sCurve * (0.45f - orbitX) * 0.55f, 0.0f, 1.0f);
-            const float effPhY = std::clamp (orbitY + sCurve * (0.20f - orbitY) * 0.65f, 0.0f, 1.0f);
-
-            // Smooth dynamic 24-virtual-singer budgeting (zero step jumps when adding 4th+ chord notes)
-            int activeCount = 0;
-            for (const auto& v : voices)
+            if (cellPos == 0)
             {
-                if (v.isActive())
-                    ++activeCount;
-            }
-            const float desiredPerVoice = 1.0f + (effSize - 1.0f) * (7.0f / 23.0f);
-            float targetSingersPerVoice = desiredPerVoice;
-            if (activeCount >= 4)
-            {
-                const float budgetCap = 24.0f / static_cast<float> (activeCount);
-                const float minStereo = (effSize >= 2.0f) ? 2.0f : 1.0f;
-                targetSingersPerVoice = std::clamp (std::min (desiredPerVoice, budgetCap), minStereo, 8.0f);
-            }
-            smoothToward (smSingersPerVoice, targetSingersPerVoice, sizeAlpha);
+                // Sample-rate-independent per-cell exponential smoothing (22 ms controls, 35 ms singer budget)
+                const float dtSec      = static_cast<float> (kControlSubBlockMax) / static_cast<float> (sr);
+                const float ctrlAlpha  = 1.0f - std::exp (-dtSec / 0.022f);
+                const float exprAlpha  = 1.0f - std::exp (-dtSec / 0.030f);
+                const float sizeAlpha  = 1.0f - std::exp (-dtSec / 0.045f);
 
-            VoiceRenderParams vParams;
-            vParams.phonemeX          = effPhX;
-            vParams.phonemeY          = effPhY;
-            vParams.regMode           = regMode;
-            vParams.singersTarget     = smSingersPerVoice;
-            vParams.spread01          = effSpread;
-            vParams.vibratoDepth01    = smVibrato;
-            vParams.attackSec         = baseAttack;
-            vParams.releaseSec        = baseRelease;
-            vParams.onsetMode         = onsetModeVal;
-            vParams.onsetAmount01     = baseOnsetAmt;
-            vParams.glottalTension01  = effTension;
-            vParams.breathAmount01    = effBreath;
-            vParams.throatShiftSt     = effThroat;
-            vParams.formantFocus01    = smFocus;
-            vParams.subAbyss01        = effSub;
-            vParams.spectralCrown01   = effCrown;
-            vParams.drive01           = effDrive;
-            vParams.tapeInstability01 = effTape;
-            vParams.oxideDamping01    = effOxide;
-            vParams.screwPitchSt      = smScrewPitch;
-            vParams.screwDepth01      = smScrewDepth;
-            vParams.oversample4x      = os4x;
-            vParams.pitchBendSt       = smPitchBend;
-            vParams.expression01      = smExpr;
-            vParams.aftertouch01      = smAftertouch;
-            vParams.glideTimeSec      = glideSec;
+                smoothToward (smPhX, basePhX, ctrlAlpha);
+                smoothToward (smPhY, basePhY, ctrlAlpha);
+                smoothToward (smEnsSize, baseEnsSize, sizeAlpha);
+                smoothToward (smSpread, baseSpread, ctrlAlpha);
+                smoothToward (smVibrato, baseVibrato, ctrlAlpha);
+                smoothToward (smTension, baseTension, ctrlAlpha);
+                smoothToward (smBreath, baseBreath, ctrlAlpha);
+                smoothToward (smThroat, baseThroat, ctrlAlpha);
+                smoothToward (smFocus, baseFocus, ctrlAlpha);
+                smoothToward (smSub, baseSub, ctrlAlpha);
+                smoothToward (smCrown, baseCrown, ctrlAlpha);
+                smoothToward (smDrive, baseDrive, ctrlAlpha);
+                smoothToward (smTape, baseTape, ctrlAlpha);
+                smoothToward (smOxide, baseOxide, ctrlAlpha);
+                smoothToward (smScrewPitch, baseScrewPitch, ctrlAlpha);
+                smoothToward (smScrewDepth, baseScrewDepth, ctrlAlpha);
+                smoothToward (smPitchBend, pitchBendSemitones, ctrlAlpha);
+                smoothToward (smAftertouch, channelAftertouch, exprAlpha);
+                smoothToward (smExpr, midiCc1Received ? midiModWheel : paramExpr, exprAlpha);
+                smoothToward (smColossus, colossusTarget, ctrlAlpha);
+                smoothToward (smSpecter, specterTarget, ctrlAlpha);
+                smoothToward (smRot, rotTarget, ctrlAlpha);
+                smoothToward (smAbyss, abyssTarget, ctrlAlpha);
 
-            const bool freezeOn = uiFreeze || (cc64FreezeOn && cc64FreezeActive);
+                const float cCurve = smColossus * (0.65f + 0.35f * smColossus);
+                const float sCurve = smSpecter  * (0.65f + 0.35f * smSpecter);
+                const float rCurve = smRot      * (0.65f + 0.35f * smRot);
+                const float aCurve = smAbyss    * (0.65f + 0.35f * smAbyss);
+
+                const float effSize    = std::clamp (smEnsSize + 10.0f * cCurve, 1.0f, 24.0f);
+                const float effSpread  = std::clamp (smSpread + 0.30f * cCurve, 0.0f, 1.0f);
+                const float effSub     = std::clamp (smSub + 0.45f * cCurve + 0.16f * aCurve, 0.0f, 1.0f);
+                const float effCrown   = std::clamp (smCrown + 0.35f * cCurve + 0.25f * sCurve, 0.0f, 1.0f);
+                const float effBreath  = std::clamp (smBreath + 0.48f * sCurve, 0.0f, 1.0f);
+                const float effTension = std::clamp (smTension + 0.22f * cCurve - 0.38f * sCurve, 0.0f, 1.0f);
+                const float effThroat  = std::clamp (smThroat - 2.2f * sCurve - 1.8f * rCurve, -12.0f, 12.0f);
+                const float effDrive   = std::clamp (smDrive + 0.52f * rCurve + 0.12f * cCurve, 0.0f, 1.0f);
+                const float effTape    = std::clamp (smTape + 0.58f * rCurve + 0.10f * sCurve, 0.0f, 1.0f);
+                const float effOxide   = std::clamp (smOxide + 0.48f * rCurve, 0.0f, 1.0f);
+
+                const float effSpaceMix   = std::clamp (baseSpaceMix + 0.32f * aCurve + 0.14f * cCurve + 0.14f * sCurve, 0.0f, 1.0f);
+                const float effSpaceDecay = std::clamp (baseSpaceDecay + 0.28f * aCurve + 0.12f * cCurve, 0.0f, 1.0f);
+                const float effSpaceDamp  = std::clamp (baseSpaceDamp + 0.34f * aCurve, 0.0f, 1.0f);
+                const float effShimmer    = std::clamp (baseShimmer + 0.42f * sCurve + 0.22f * aCurve, 0.0f, 1.0f);
+
+                const float compDb = -1.8f * cCurve - 1.2f * rCurve;
+                smoothMasterGain.setTargetValue (dbToGain (masterGainDb + compDb));
+
+                orbitEngine.advance (kControlSubBlockMax, orbitOn, orbitRateHz, orbitDepth01, orbitSyncOn, hostBpm, smPhX, smPhY);
+                const float orbitX = orbitEngine.getEffectiveX();
+                const float orbitY = orbitEngine.getEffectiveY();
+                const float effPhX = std::clamp (orbitX + sCurve * (0.45f - orbitX) * 0.55f, 0.0f, 1.0f);
+                const float effPhY = std::clamp (orbitY + sCurve * (0.20f - orbitY) * 0.65f, 0.0f, 1.0f);
+
+                // Smooth dynamic 24-virtual-singer budgeting (zero step jumps when adding 4th+ chord notes)
+                int activeCount = 0;
+                for (const auto& v : voices)
+                {
+                    if (v.isActive())
+                        ++activeCount;
+                }
+                const float desiredPerVoice = 1.0f + (effSize - 1.0f) * (7.0f / 23.0f);
+                float targetSingersPerVoice = desiredPerVoice;
+                if (activeCount >= 4)
+                {
+                    const float budgetCap = 24.0f / static_cast<float> (activeCount);
+                    const float minStereo = (effSize >= 2.0f) ? 2.0f : 1.0f;
+                    targetSingersPerVoice = std::clamp (std::min (desiredPerVoice, budgetCap), minStereo, 8.0f);
+                }
+                smoothToward (smSingersPerVoice, targetSingersPerVoice, sizeAlpha);
+
+                VoiceRenderParams& vParams = cell.vParams;
+                vParams.phonemeX          = effPhX;
+                vParams.phonemeY          = effPhY;
+                vParams.regMode           = regMode;
+                vParams.singersTarget     = smSingersPerVoice;
+                vParams.spread01          = effSpread;
+                vParams.vibratoDepth01    = smVibrato;
+                vParams.attackSec         = baseAttack;
+                vParams.releaseSec        = baseRelease;
+                vParams.onsetMode         = onsetModeVal;
+                vParams.onsetAmount01     = baseOnsetAmt;
+                vParams.glottalTension01  = effTension;
+                vParams.breathAmount01    = effBreath;
+                vParams.throatShiftSt     = effThroat;
+                vParams.formantFocus01    = smFocus;
+                vParams.subAbyss01        = effSub;
+                vParams.spectralCrown01   = effCrown;
+                vParams.drive01           = effDrive;
+                vParams.tapeInstability01 = effTape;
+                vParams.oxideDamping01    = effOxide;
+                vParams.screwPitchSt      = smScrewPitch;
+                vParams.screwDepth01      = smScrewDepth;
+                vParams.oversample4x      = os4x;
+                vParams.pitchBendSt       = smPitchBend;
+                vParams.expression01      = smExpr;
+                vParams.aftertouch01      = smAftertouch;
+                vParams.glideTimeSec      = glideSec;
+
+                cell.freeze      = uiFreeze || (cc64FreezeOn && cc64FreezeActive);
+                cell.spaceModel  = spaceModel;
+                cell.spaceMix    = effSpaceMix;
+                cell.spaceDecay  = effSpaceDecay;
+                cell.spaceDamp   = effSpaceDamp;
+                cell.shimmer     = effShimmer;
+                cell.effPhX      = effPhX;
+                cell.effPhY      = effPhY;
+                cell.effSpread   = effSpread;
+                cell.effTension  = effTension;
+                cell.effBreath   = effBreath;
+                cell.liveExpr    = smExpr;
+            }
+
+            cell.vParams.controlCellStart = (cellPos == 0);
+            cell.vParams.controlCellEnd   = (cellPos + chunk == kControlSubBlockMax);
 
             std::fill (busL.begin(), busL.begin() + chunk, 0.0f);
             std::fill (busR.begin(), busR.begin() + chunk, 0.0f);
@@ -625,18 +654,18 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
             for (auto& v : voices)
             {
                 if (v.isActive())
-                    v.renderBlock (busL.data(), busR.data(), chunk, vParams, formantAcc, breathAcc);
+                    v.renderBlock (busL.data(), busR.data(), chunk, cell.vParams, formantAcc, breathAcc);
             }
 
             reverb.processBlock (busL.data(),
                                  busR.data(),
                                  chunk,
-                                 spaceModel,
-                                 effSpaceMix,
-                                 effSpaceDecay,
-                                 effSpaceDamp,
-                                 effShimmer,
-                                 freezeOn);
+                                 cell.spaceModel,
+                                 cell.spaceMix,
+                                 cell.spaceDecay,
+                                 cell.spaceDamp,
+                                 cell.shimmer,
+                                 cell.freeze);
 
             float* outL = buffer.getWritePointer (0) + pos;
             float* outR = (numChannels > 1) ? (buffer.getWritePointer (1) + pos) : nullptr;
@@ -663,12 +692,12 @@ void SwarmEngine::processBlock (juce::AudioBuffer<float>& buffer,
                 peakR = std::max (peakR, std::abs (r));
             }
 
-            lastEffPhX     = effPhX;
-            lastEffPhY     = effPhY;
-            lastEffSpread  = effSpread;
-            lastEffTension = effTension;
-            lastEffBreath  = effBreath;
-            lastLiveExpr   = smExpr;
+            lastEffPhX     = cell.effPhX;
+            lastEffPhY     = cell.effPhY;
+            lastEffSpread  = cell.effSpread;
+            lastEffTension = cell.effTension;
+            lastEffBreath  = cell.effBreath;
+            lastLiveExpr   = cell.liveExpr;
 
             sampleCounter += static_cast<uint64_t> (chunk);
             pos       += chunk;

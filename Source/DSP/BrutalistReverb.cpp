@@ -134,6 +134,7 @@ void BrutalistReverb::reset() noexcept
     freezeEnergyIndicator = 0.0f;
     wasFrozen             = false;
     smoothersPrimed       = false;
+    dampCtrlCounter       = 0;
 }
 
 void BrutalistReverb::processBlock (float* left,
@@ -232,11 +233,13 @@ void BrutalistReverb::processBlock (float* left,
         smShimmerStL      += geomCoeff * (prof.shimmerStL - smShimmerStL);
         smShimmerStR      += geomCoeff * (prof.shimmerStR - smShimmerStR);
 
-        if ((n % ctrlStep) == 0)
+        if (dampCtrlCounter == 0)
         {
             for (size_t i = 0; i < static_cast<size_t> (kNumFdnLines); ++i)
                 fdnDampLp[i].setParameters (smDampCutHz, 0.707f, srF);
         }
+        if (++dampCtrlCounter >= ctrlStep)
+            dampCtrlCounter = 0;
 
         const float dryL = sanitize (left[n]);
         const float dryR = sanitize (right[n]);

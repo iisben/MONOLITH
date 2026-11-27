@@ -20,8 +20,11 @@ public:
     void prepare (double sampleRate, int maxBlockSize, uint32_t voiceSeed);
     void reset() noexcept;
 
-    /** Returns oversampling latency in samples for the selected mode. */
-    [[nodiscard]] int getLatencySamples (bool highQuality4x) const noexcept;
+    /**
+        Exact integer latency (measured impulse peak at prepare) for the selected mode.
+        Returns 0 when the oversampled drive stage is bypassed (drive disengaged).
+    */
+    [[nodiscard]] int getLatencySamples (bool highQuality4x, bool driveEngaged = true) const noexcept;
 
     /**
         Processes stereo audio in-place inside pre-allocated buffers.
@@ -33,7 +36,8 @@ public:
                        float drive01,
                        float tapeInstability01,
                        float oxideDamping01,
-                       bool highQuality4x) noexcept;
+                       bool highQuality4x,
+                       bool allowModeSwitch = true) noexcept;
 
 private:
     double   sr               = 48000.0;
@@ -45,7 +49,7 @@ private:
     juce::AudioBuffer<float> scratchBuffer;
     juce::AudioBuffer<float> xfadeScratchBuffer;
 
-    DCBlocker dcL, dcR;
+    DCBlocker64 dcL, dcR;   // end-of-chain 64-bit DC blocker (post drive, tape & oxide)
     CubicDelayLine delayL, delayR;
     PinkNoiseGen flutterNoise;
 
@@ -64,9 +68,16 @@ private:
     float smOxide         = 0.0f;
     bool  smootherPrimed  = false;
 
-    // Click-free 2x <-> 4x oversampling switch crossfade
-    bool  lastHq4x        = false;
+    // Routing: 0 = bypass (no OS, zero latency), 1 = 2x, 2 = 4x. Switched only on absolute
+    // control-cell boundaries with a click-free 15 ms crossfade.
+    int   routeMode       = 1;
+    int   prevRouteMode   = 1;
     float osXfade         = 1.0f;
+    bool  tapeActive      = false;
+    bool  oxideActive     = false;
+    int   oxideCtrlCounter = 0;
+    int   latency2x       = 0;
+    int   latency4x       = 0;
 };
 
 } // namespace monolith::dsp

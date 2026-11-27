@@ -5,8 +5,9 @@
 |---|---|---|
 | 1 — Setup & Audit | PASS | Release `-O3` build clean (exit 0, 6 JUCE-only Metal deprecation warnings); legacy `MonolithDspAudit` 6/6 PASS, 10.91% RT (12v/24s, 64-spl @48k) |
 | 2 — QA Harness | PASS | `MonolithQA` (Release -O3, headless, 9 s run); baseline 9 PASS / 7 PENDING |
+| 3.1 — Glottal & Aspiration | PASS | `--phase 3.1` exit 0; 12 PASS / 4 PENDING |
 
-**Next: Phase 3.1**
+**Next: Phase 3.2**
 
 ## Toolchain & Architecture
 - CMake 3.22+ / Ninja, C++20, JUCE 8.0.15 (FetchContent), AppleClang arm64 macOS. Targets: `MONOLITH` (AU/VST3/Standalone), `MonolithDspAudit` (console, DSP+presets only).
@@ -66,3 +67,18 @@ Adapters to re-point (never thresholds): `renderGlottal` (G1), `TractProbe` (G2,
 | 7fdn | max rise −1.5 dB, end −184 dBFS, CPU 0.94× | PASS |
 | 8snap / 8cpu | 30 presets captured / 7.78% RT (830 µs) | PASS |
 Phase 3.1 blockers (gate 6 + 7dc active): fix D7 block-size dependence, integer 2x PDC (off by 1) + 0 when drive bypassed, held-chord DC. Idle CPU has ~4% headroom.
+
+## Phase 3.1 — Glottal Source & Aspiration (PASS)
+- `LfGlottalTables` (DspMath.h): true LF-Rd model (ε/α solved: return continuity + zero net flow), **closed-form Fourier coefficients** → analytical tilt (Ta) & OQ (Te); tension→Rd 1.6…0.3; 12 slices × 25 mips (3/oct, bright ≤0.466 fs, dark ≤0.37 fs) × 2048-pt; cubic Hermite + bilinear. Per-slice loudness calibrated to legacy pulse energy in h4–32 (preserves preset gain staging).
+- Aspiration gated by band-limited glottal **airflow** table (`glottalOpenGate` = normalized U(φ)), 0.25 leakage floor (was flat 0.35 + parabola).
+- `DCBlocker64` (5 Hz) on per-singer excitation; EntropyStage DC blocker → end-of-chain 64-bit 15 Hz (kills drive bias + tape-flutter LF, D13-adjacent).
+- Block invariance (D7 fixed): SwarmEngine absolute 64-spl control cells (`ControlCell`), per-voice/oxide/reverb absolute ctrl counters, persistent `ctrlTarget`, per-sample voice silence counter + deactivation only at cell end, EntropyStage routing/tape/oxide gating switched only at cell start.
+- PDC (D12 partial): EntropyStage measures integer impulse-peak latency at prepare (2x=5, 4x=6); bypass route (no OS, 0 latency) when effective drive (drive+Rot+Colossus) is 0; processor re-reports via async on drive/rot/colossus/HQ changes.
+| Gate | Baseline → 3.1 |
+|---|---|
+| 1 | alias ≤−91.4 dBc (C4 h61 −51 → −31 dBc, brighter), DC −148 |
+| 6block / 6pdc | −57 dBFS → exact; 2x 4/5 → 5/5, bypass 4 → 0 |
+| 7dc | −84.3 → −99.8 dBFS |
+| 8snap / 8cpu | max dRMS 1.24 dB (#18 Neon Mausoleum −1.24; mean 0.53), peak −1.11 / 7.90% RT |
+| inactive | 2 vowel dev 7.2 dB; 7steal 5.84× (baseline 6.23×); others unchanged |
+Notes: `triggerAsyncUpdate` now also fires on drive automation (audio thread; verify lock-free in 3.5). Preset RMS margin: 0.26 dB left on #18 — 3.2 vowel normalization will need justification per spec.

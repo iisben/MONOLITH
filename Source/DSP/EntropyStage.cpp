@@ -5,6 +5,28 @@
 namespace monolith::dsp
 {
 
+namespace
+{
+    /** Measures the integer impulse-peak latency of a JUCE oversampler configuration. */
+    int measureOversamplerLatency (size_t stages)
+    {
+        juce::dsp::Oversampling<float> os (1, stages, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true);
+        constexpr size_t kLen = 256;
+        os.initProcessing (kLen);
+        std::vector<float> buf (kLen, 0.0f);
+        buf[0] = 1.0f;
+        float* ch[1] = { buf.data() };
+        juce::dsp::AudioBlock<float> block (ch, 1, kLen);
+        os.processSamplesUp (block);
+        os.processSamplesDown (block);
+        size_t peak = 0;
+        for (size_t i = 1; i < kLen; ++i)
+            if (std::abs (buf[i]) > std::abs (buf[peak]))
+                peak = i;
+        return static_cast<int> (peak);
+    }
+} // namespace
+
 void EntropyStage::prepare (double sampleRate, int maxBlockSize, uint32_t voiceSeed)
 {
     sr = std::max (8000.0, sampleRate);
@@ -19,11 +41,14 @@ void EntropyStage::prepare (double sampleRate, int maxBlockSize, uint32_t voiceS
     os2x->initProcessing (static_cast<size_t> (preparedMaxBlock));
     os4x->initProcessing (static_cast<size_t> (preparedMaxBlock));
 
+    latency2x = measureOversamplerLatency (1);
+    latency4x = measureOversamplerLatency (2);
+
     scratchBuffer.setSize (2, preparedMaxBlock, false, true, true);
     xfadeScratchBuffer.setSize (2, preparedMaxBlock, false, true, true);
 
-    dcL.prepare (sr);
-    dcR.prepare (sr);
+    dcL.prepare (sr, 15.0);
+    dcR.prepare (sr, 15.0);
 
     const size_t cap = static_cast<size_t> (sr * 0.04) + 64;
     delayL.prepare (cap);
@@ -63,18 +88,17 @@ void EntropyStage::reset() noexcept
     oxideLpR.invalidateCache();
     headBumpBpL.invalidateCache();
     headBumpBpR.invalidateCache();
-    smoothedFlutter = 0.0f;
-    smootherPrimed  = false;
-    osXfade         = 1.0f;
+    smoothedFlutter  = 0.0f;
+    smootherPrimed   = false;
+    osXfade          = 1.0f;
+    oxideCtrlCounter = 0;
 }
 
-int EntropyStage::getLatencySamples (bool highQuality4x) const noexcept
+int EntropyStage::getLatencySamples (bool highQuality4x, bool driveEngaged) const noexcept
 {
-    if (highQuality4x && os4x)
-        return static_cast<int> (std::lround (os4x->getLatencyInSamples()));
-    if (os2x)
-        return static_cast<int> (std::lround (os2x->getLatencyInSamples()));
-    return 0;
+    if (! driveEngaged)
+        return 0;
+    return highQuality4x ? latency4x : latency2x;
 }
 
 void EntropyStage::processBlock (float* left,
@@ -83,46 +107,57 @@ void EntropyStage::processBlock (float* left,
                                  float drive01,
                                  float tapeInstability01,
                                  float oxideDamping01,
-                                 bool highQuality4x) noexcept
+                                 bool highQuality4x,
+                                 bool allowModeSwitch) noexcept
 {
     const int n = std::min (numSamples, preparedMaxBlock);
     if (n <= 0)
         return;
 
-    const float srF        = static_cast<float> (sr);
+    const float srF         = static_cast<float> (sr);
     const float targetDrive = std::clamp (drive01, 0.0f, 1.0f);
     const float targetTape  = std::clamp (tapeInstability01, 0.0f, 1.0f);
     const float targetOxide = std::clamp (oxideDamping01, 0.0f, 1.0f);
+
+    auto desiredRoute = [&]() noexcept
+    {
+        const bool engaged = targetDrive > 1.0e-5f || smDrive > 1.0e-5f;
+        return engaged ? (highQuality4x ? 2 : 1) : 0;
+    };
 
     if (! smootherPrimed)
     {
         smDrive        = targetDrive;
         smTape         = targetTape;
         smOxide        = targetOxide;
-        lastHq4x       = highQuality4x;
+        routeMode      = desiredRoute();
+        prevRouteMode  = routeMode;
         osXfade        = 1.0f;
+        tapeActive     = smTape > 1.0e-5f || targetTape > 1.0e-5f;
+        oxideActive    = smOxide > 1.0e-5f || targetOxide > 1.0e-5f;
         smootherPrimed = true;
     }
-
-    // Trigger click-free 15 ms crossfade when toggling 2x <-> 4x oversampling live
-    if (highQuality4x != lastHq4x)
+    else if (allowModeSwitch)
     {
-        if (highQuality4x && os4x) os4x->reset();
-        if (! highQuality4x && os2x) os2x->reset();
-        lastHq4x = highQuality4x;
-        osXfade  = 0.0f;
+        // Routing / gating decisions only on absolute control-cell boundaries (block-size invariant)
+        const int want = desiredRoute();
+        if (want != routeMode)
+        {
+            if (want == 2 && os4x) os4x->reset();
+            if (want == 1 && os2x) os2x->reset();
+            prevRouteMode = routeMode;
+            routeMode     = want;
+            osXfade       = 0.0f;
+        }
+        tapeActive  = smTape > 1.0e-5f || targetTape > 1.0e-5f;
+        oxideActive = smOxide > 1.0e-5f || targetOxide > 1.0e-5f;
     }
 
     const float paramCoeff = 1.0f - std::exp (-1.0f / (0.020f * srF));
 
-    // Helper lambda to run asymmetric tube/tape drive inside an oversampling stage
-    auto runOversampledDrive = [&] (juce::dsp::Oversampling<float>* os,
-                                    juce::AudioBuffer<float>& buf,
-                                    float startDrive) noexcept
+    // Runs one routing path (bypass / 2x / 4x asymmetric tube-tape drive) into buf
+    auto runRoute = [&] (int route, juce::AudioBuffer<float>& buf, float startDrive) noexcept
     {
-        if (os == nullptr)
-            return startDrive;
-
         float* sL = buf.getWritePointer (0);
         float* sR = buf.getWritePointer (1);
         for (int i = 0; i < n; ++i)
@@ -130,6 +165,10 @@ void EntropyStage::processBlock (float* left,
             sL[i] = left[i];
             sR[i] = right[i];
         }
+
+        auto* os = (route == 2) ? os4x.get() : (route == 1 ? os2x.get() : nullptr);
+        if (os == nullptr)
+            return startDrive; // bypass: drive disengaged, zero latency
 
         float* chans[2] = { sL, sR };
         juce::dsp::AudioBlock<float> block (chans, 2, static_cast<size_t> (n));
@@ -140,28 +179,25 @@ void EntropyStage::processBlock (float* left,
         const float osCoeff = 1.0f - std::exp (-1.0f / (0.020f * srF * factor));
 
         float curDrive = startDrive;
-        if (curDrive > 1.0e-5f || targetDrive > 1.0e-5f)
+        float* dataL = osBlock.getChannelPointer (0);
+        float* dataR = osBlock.getChannelPointer (1);
+        for (size_t i = 0; i < osLen; ++i)
         {
-            float* dataL = osBlock.getChannelPointer (0);
-            float* dataR = osBlock.getChannelPointer (1);
-            for (size_t i = 0; i < osLen; ++i)
+            curDrive += osCoeff * (targetDrive - curDrive);
+            const float wet = std::clamp (curDrive * 20.0f, 0.0f, 1.0f);
+            if (wet > 1.0e-5f)
             {
-                curDrive += osCoeff * (targetDrive - curDrive);
-                const float wet = std::clamp (curDrive * 20.0f, 0.0f, 1.0f);
-                if (wet > 1.0e-5f)
-                {
-                    const float g = 1.0f + curDrive * 7.5f;
-                    const float b = curDrive * 0.22f;
-                    const float biasOffset = fastTanh (b);
-                    const float normScale  = 1.0f / (1.0f + 4.8f * curDrive);
+                const float g = 1.0f + curDrive * 7.5f;
+                const float b = curDrive * 0.22f;
+                const float biasOffset = fastTanh (b);
+                const float normScale  = 1.0f / (1.0f + 4.8f * curDrive);
 
-                    const float xL = dataL[i];
-                    const float xR = dataR[i];
-                    const float yL = (fastTanh (g * xL + b) - biasOffset) * normScale;
-                    const float yR = (fastTanh (g * xR + b) - biasOffset) * normScale;
-                    dataL[i] = xL + wet * (yL - xL);
-                    dataR[i] = xR + wet * (yR - xR);
-                }
+                const float xL = dataL[i];
+                const float xR = dataR[i];
+                const float yL = (fastTanh (g * xL + b) - biasOffset) * normScale;
+                const float yR = (fastTanh (g * xR + b) - biasOffset) * normScale;
+                dataL[i] = xL + wet * (yL - xL);
+                dataR[i] = xR + wet * (yR - xR);
             }
         }
 
@@ -170,17 +206,15 @@ void EntropyStage::processBlock (float* left,
     };
 
     // ── 1. Per-Voice Pre-Sum Oversampled Asymmetric Tape/Tube Saturation ────
-    auto* activeOs = (highQuality4x && os4x) ? os4x.get() : os2x.get();
     const float driveBefore = smDrive;
-    smDrive = runOversampledDrive (activeOs, scratchBuffer, driveBefore);
+    smDrive = runRoute (routeMode, scratchBuffer, driveBefore);
 
     float* scratchL = scratchBuffer.getWritePointer (0);
     float* scratchR = scratchBuffer.getWritePointer (1);
 
     if (osXfade < 1.0f)
     {
-        auto* prevOs = (highQuality4x && os2x) ? os2x.get() : os4x.get();
-        (void) runOversampledDrive (prevOs, xfadeScratchBuffer, driveBefore);
+        (void) runRoute (prevRouteMode, xfadeScratchBuffer, driveBefore);
         const float* prevL = xfadeScratchBuffer.getReadPointer (0);
         const float* prevR = xfadeScratchBuffer.getReadPointer (1);
         const float xfadeInc = 1.0f / std::max (0.015f * srF, 16.0f);
@@ -188,18 +222,16 @@ void EntropyStage::processBlock (float* left,
         for (int i = 0; i < n; ++i)
         {
             osXfade = std::min (1.0f, osXfade + xfadeInc);
-            const float mixL = prevL[i] + osXfade * (scratchL[i] - prevL[i]);
-            const float mixR = prevR[i] + osXfade * (scratchR[i] - prevR[i]);
-            left[i]  = dcL.process (mixL);
-            right[i] = dcR.process (mixR);
+            left[i]  = prevL[i] + osXfade * (scratchL[i] - prevL[i]);
+            right[i] = prevR[i] + osXfade * (scratchR[i] - prevR[i]);
         }
     }
     else
     {
         for (int i = 0; i < n; ++i)
         {
-            left[i]  = dcL.process (scratchL[i]);
-            right[i] = dcR.process (scratchR[i]);
+            left[i]  = scratchL[i];
+            right[i] = scratchR[i];
         }
     }
 
@@ -209,7 +241,7 @@ void EntropyStage::processBlock (float* left,
     // Slower smoother for tape delay position avoids pitch-jump clicks on rapid knob turns
     const float tapeDelayCoeff = 1.0f - std::exp (-1.0f / (0.045f * srF));
 
-    if (smTape > 1.0e-5f || targetTape > 1.0e-5f)
+    if (tapeActive)
     {
         for (int i = 0; i < n; ++i)
         {
@@ -257,7 +289,7 @@ void EntropyStage::processBlock (float* left,
     }
 
     // ── 3. Oxide Damping & Magnetic Head Bump (Per-Sample Smoothed) ─────────
-    if (smOxide > 1.0e-5f || targetOxide > 1.0e-5f)
+    if (oxideActive)
     {
         headBumpBpL.setParameters (240.0f, 0.90f, srF);
         headBumpBpR.setParameters (240.0f, 0.90f, srF);
@@ -268,12 +300,14 @@ void EntropyStage::processBlock (float* left,
         {
             smOxide += paramCoeff * (targetOxide - smOxide);
 
-            if ((i % ctrlStep) == 0)
+            if (oxideCtrlCounter == 0)
             {
                 const float cutoff = 19500.0f * std::pow (1600.0f / 19500.0f, smOxide);
                 oxideLpL.setParameters (cutoff, 0.72f, srF);
                 oxideLpR.setParameters (cutoff, 0.72f, srF);
             }
+            if (++oxideCtrlCounter >= ctrlStep)
+                oxideCtrlCounter = 0;
 
             const float bumpGain = 0.28f * smOxide;
             const float oxideWet = std::clamp (smOxide * 22.0f, 0.0f, 1.0f);
@@ -284,9 +318,16 @@ void EntropyStage::processBlock (float* left,
             const float dampedL = oxideLpL.processLowpass (dryL + bumpGain * headBumpBpL.processBandpass (dryL));
             const float dampedR = oxideLpR.processLowpass (dryR + bumpGain * headBumpBpR.processBandpass (dryR));
 
-            left[i]  = sanitize (dryL + oxideWet * (dampedL - dryL));
-            right[i] = sanitize (dryR + oxideWet * (dampedR - dryR));
+            left[i]  = dryL + oxideWet * (dampedL - dryL);
+            right[i] = dryR + oxideWet * (dampedR - dryR);
         }
+    }
+
+    // ── 4. End-of-chain 64-bit DC blocker (removes drive bias AND tape-flutter LF drift) ──
+    for (int i = 0; i < n; ++i)
+    {
+        left[i]  = sanitize (static_cast<float> (dcL.process (left[i])));
+        right[i] = sanitize (static_cast<float> (dcR.process (right[i])));
     }
 }
 

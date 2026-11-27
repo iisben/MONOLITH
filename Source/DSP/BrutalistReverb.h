@@ -136,6 +136,7 @@ private:
 
     // Smoothed controls & room geometry (eliminates clicks on Space switch & knob drag)
     bool  smoothersPrimed       = false;
+    int   dampCtrlCounter       = 0;     // absolute control counter (block-size invariant)
     float smMix                 = 0.46f;
     float smShimmer             = 0.22f;
     float smDampCutHz           = 6000.0f;
