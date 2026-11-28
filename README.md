@@ -1,5 +1,9 @@
 # MONOLITH II
 
+[![Latest Release](https://img.shields.io/github/v/release/iisben/MONOLITH?color=b8692a&label=Latest%20Release)](https://github.com/iisben/MONOLITH/releases/latest)
+
+[**Download Latest Release — v2.0.0 (macOS Universal · Windows x64 · Linux x86_64)**](https://github.com/iisben/MONOLITH/releases/latest) · [**All Releases**](https://github.com/iisben/MONOLITH/releases)
+
 **A choir synthesizer for cinematic, dark and ethereal music.** MONOLITH builds a choir out of up to 24 virtual singers, all generated in real time from models of the voice. Each singer has its own glottal source, vocal tract, vibrato and timing. You shape the choir's vowel and register, push it through tape and tube drive, and place it in a huge modelled space. A texture layer of original breath, air and choir sounds sits on top, and four performance macros reshape the whole sound at once. It runs as a VST3, AU (macOS) or standalone app.
 
 ![MONOLITH II](docs/images/monolith-main.png)
